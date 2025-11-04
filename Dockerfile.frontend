@@ -4,6 +4,8 @@ COPY ./frontend /frontend
 RUN rm -rf /frontend/node_modules
 
 WORKDIR /frontend
-RUN npm ci --verbose
+RUN npm ci --verbose && npm install
+
+EXPOSE 5173
 
 CMD ["npm", "run", "dev"]

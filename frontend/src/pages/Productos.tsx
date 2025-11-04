@@ -245,7 +245,7 @@ export default function Productos() {
               <TableRow key={producto.id}>
                 <TableCell className="font-medium">{producto.nombre}</TableCell>
                 <TableCell>{producto.categoria ?? 'Sin categoría'}</TableCell>
-                <TableCell>${producto.precio_por_kilo.toFixed(2)}</TableCell>
+                <TableCell>${producto.precio_por_kilo}</TableCell>
                 <TableCell>
                   <Badge variant={producto.estado === 'disponible' ? 'default' : 'secondary'}>
                     {producto.estado === 'disponible' ? 'Disponible' : 'Agotado'}
