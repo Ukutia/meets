@@ -19,39 +19,50 @@ const api = axios.create({
 
 // Productos
 export const getProductos = () => api.get<Producto[]>('/productos/');
-export const getProducto = (id: number) => api.get<Producto>(`/productos/${id}/`);
-export const createProducto = (data: Partial<Producto>) => api.post<Producto>('/productos/', data);
+export const createProducto = (data: {
+  nombre: string;
+  descripcion?: string;
+  categoria?: string;
+  precio_por_kilo: number;
+  estado?: string;
+}) => api.post<Producto>('/productos/crear/', data);
 export const updateProducto = (id: number, data: Partial<Producto>) =>
   api.put<Producto>(`/productos/${id}/`, data);
-export const deleteProducto = (id: number) => api.delete(`/productos/${id}/`);
 
 // Clientes
 export const getClientes = () => api.get<Cliente[]>('/clientes/');
-export const getCliente = (id: number) => api.get<Cliente>(`/clientes/${id}/`);
-export const createCliente = (data: Partial<Cliente>) => api.post<Cliente>('/clientes/', data);
-export const updateCliente = (id: number, data: Partial<Cliente>) =>
-  api.put<Cliente>(`/clientes/${id}/`, data);
-export const deleteCliente = (id: number) => api.delete(`/clientes/${id}/`);
+export const createCliente = (data: {
+  nombre: string;
+  direccion: string;
+  telefono?: string;
+  email?: string;
+  vendedor: number;
+}) => api.post<Cliente>('/clientes/crear/', data);
 
 // Pedidos
 export const getPedidos = () => api.get<Pedido[]>('/pedidos/');
 export const getPedido = (id: number) => api.get<Pedido>(`/pedidos/${id}/`);
-export const createPedido = (data: Partial<Pedido>) => api.post<Pedido>('/pedidos/', data);
-export const updatePedido = (id: number, data: Partial<Pedido>) =>
-  api.put<Pedido>(`/pedidos/${id}/`, data);
+export const createPedido = (data: {
+  cliente: number;
+  vendedor: number;
+  detalles: {
+    producto: number;
+    cantidad_kilos: number;
+    cantidad_unidades: number;
+  }[];
+}) => api.post<Pedido>('/pedidos/crear/', data);
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
 export const actualizarKilosPedido = (id: number, detalles: any[]) =>
   api.post(`/pedidos/actualizar_kilos/${id}/`, { detalles });
 
 // Facturas
 export const getFacturas = () => api.get<Factura[]>('/facturas/');
-export const getFactura = (id: number) => api.get<Factura>(`/facturas/${id}/`);
-export const createFactura = (data: Partial<Factura>) => api.post<Factura>('/facturas/', data);
-export const pagarFactura = (id: number, metodoPago: string, fechaPago: string) =>
+export const createFactura = (data: any) => api.post('/facturas/crear/', data);
+export const pagarFactura = (factura: string, fecha_de_pago: string, monto_del_pago: number) =>
   api.post(`/facturas/pagar/`, {
-    factura_id: id,
-    metodo_pago: metodoPago,
-    fecha_pago: fechaPago,
+    factura,
+    fecha_de_pago,
+    monto_del_pago,
   });
 
 // Stock

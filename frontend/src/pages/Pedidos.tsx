@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Search, Eye, XCircle, Check } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, Search, Eye, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
@@ -19,65 +19,75 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-interface Pedido {
-  id: number;
-  cliente_nombre: string;
-  vendedor_nombre: string;
-  fecha: string;
-  estado: 'Reservado' | 'Preparado' | 'Entregado' | 'Cancelado';
-  total: number;
-}
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { cancelarPedido, getPedidos } from '@/services/api';
+import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { ErrorMessage } from '@/components/shared/ErrorMessage';
+import type { Pedido } from '@/types';
+import { useToast } from '@/hooks/use-toast';
 
 export default function Pedidos() {
   const [search, setSearch] = useState('');
-  const [estadoFilter, setEstadoFilter] = useState('todos');
+  const [estadoFilter, setEstadoFilter] = useState<'todos' | Pedido['estado']>('todos');
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
-  // Mock data
-  const pedidos: Pedido[] = [
-    {
-      id: 1001,
-      cliente_nombre: 'Restaurante El Gaucho',
-      vendedor_nombre: 'Juan Pérez',
-      fecha: '2025-01-15',
-      estado: 'Preparado',
-      total: 1250.5,
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['pedidos'],
+    queryFn: async () => {
+      const response = await getPedidos();
+      return response.data as Pedido[];
     },
-    {
-      id: 1002,
-      cliente_nombre: 'Parrilla Don José',
-      vendedor_nombre: 'María García',
-      fecha: '2025-01-15',
-      estado: 'Reservado',
-      total: 890.0,
-    },
-    {
-      id: 1003,
-      cliente_nombre: 'Supermercado La Esquina',
-      vendedor_nombre: 'Juan Pérez',
-      fecha: '2025-01-14',
-      estado: 'Entregado',
-      total: 2150.75,
-    },
-  ];
-
-  const filteredPedidos = pedidos.filter((p) => {
-    const matchesSearch = p.cliente_nombre.toLowerCase().includes(search.toLowerCase()) ||
-                         p.id.toString().includes(search);
-    const matchesEstado = estadoFilter === 'todos' || p.estado === estadoFilter;
-    return matchesSearch && matchesEstado;
   });
 
-  const getEstadoBadge = (estado: string) => {
-    const variants: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
+  const pedidos = data ?? [];
+
+  const cancelarMutation = useMutation({
+    mutationFn: (pedidoId: number) => cancelarPedido(pedidoId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      toast({
+        title: 'Pedido cancelado',
+        description: 'El pedido ha sido marcado como anulado.',
+      });
+    },
+    onError: () => {
+      toast({
+        title: 'No se pudo cancelar el pedido',
+        description: 'Intente nuevamente en unos minutos.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const filteredPedidos = useMemo(() => {
+    return pedidos.filter((pedido) => {
+      const matchesSearch =
+        pedido.cliente.nombre.toLowerCase().includes(search.toLowerCase()) ||
+        pedido.id.toString().includes(search);
+      const matchesEstado = estadoFilter === 'todos' || pedido.estado === estadoFilter;
+      return matchesSearch && matchesEstado;
+    });
+  }, [pedidos, search, estadoFilter]);
+
+  const getEstadoBadge = (estado: Pedido['estado']) => {
+    const variants: Record<Pedido['estado'], 'default' | 'secondary' | 'destructive' | 'outline'> = {
       Reservado: 'secondary',
       Preparado: 'default',
-      Entregado: 'outline',
-      Cancelado: 'destructive',
+      Pagado: 'outline',
+      Anulado: 'destructive',
     };
     return <Badge variant={variants[estado] || 'default'}>{estado}</Badge>;
   };
+
+  if (isLoading) {
+    return <LoadingSpinner />;
+  }
+
+  if (error) {
+    return <ErrorMessage message="No se pudieron cargar los pedidos" />;
+  }
 
   return (
     <div className="space-y-6">
@@ -104,7 +114,7 @@ export default function Pedidos() {
             className="pl-9"
           />
         </div>
-        <Select value={estadoFilter} onValueChange={setEstadoFilter}>
+        <Select value={estadoFilter} onValueChange={(value) => setEstadoFilter(value as any)}>
           <SelectTrigger className="w-full sm:w-[200px]">
             <SelectValue placeholder="Filtrar por estado" />
           </SelectTrigger>
@@ -112,8 +122,8 @@ export default function Pedidos() {
             <SelectItem value="todos">Todos los estados</SelectItem>
             <SelectItem value="Reservado">Reservado</SelectItem>
             <SelectItem value="Preparado">Preparado</SelectItem>
-            <SelectItem value="Entregado">Entregado</SelectItem>
-            <SelectItem value="Cancelado">Cancelado</SelectItem>
+            <SelectItem value="Pagado">Pagado</SelectItem>
+            <SelectItem value="Anulado">Anulado</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -135,8 +145,8 @@ export default function Pedidos() {
             {filteredPedidos.map((pedido) => (
               <TableRow key={pedido.id}>
                 <TableCell className="font-medium">#{pedido.id}</TableCell>
-                <TableCell>{pedido.cliente_nombre}</TableCell>
-                <TableCell>{pedido.vendedor_nombre}</TableCell>
+                <TableCell>{pedido.cliente.nombre}</TableCell>
+                <TableCell>{pedido.vendedor?.nombre ?? 'Sin vendedor'}</TableCell>
                 <TableCell>{new Date(pedido.fecha).toLocaleDateString('es-AR')}</TableCell>
                 <TableCell>{getEstadoBadge(pedido.estado)}</TableCell>
                 <TableCell className="font-semibold">${pedido.total.toFixed(2)}</TableCell>
@@ -145,13 +155,14 @@ export default function Pedidos() {
                     <Button variant="ghost" size="icon" title="Ver detalles">
                       <Eye className="h-4 w-4" />
                     </Button>
-                    {pedido.estado === 'Reservado' && (
-                      <Button variant="ghost" size="icon" title="Marcar como preparado">
-                        <Check className="h-4 w-4 text-success" />
-                      </Button>
-                    )}
-                    {pedido.estado !== 'Cancelado' && pedido.estado !== 'Entregado' && (
-                      <Button variant="ghost" size="icon" title="Cancelar pedido">
+                    {pedido.estado !== 'Anulado' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Cancelar pedido"
+                        onClick={() => cancelarMutation.mutate(pedido.id)}
+                        disabled={cancelarMutation.isPending}
+                      >
                         <XCircle className="h-4 w-4 text-destructive" />
                       </Button>
                     )}

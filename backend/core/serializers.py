@@ -15,7 +15,7 @@ class ClienteSerializer(serializers.ModelSerializer):
 class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Producto
-        fields = ['id', 'nombre', 'precio_por_kilo']
+        fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado']
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto = ProductoSerializer()

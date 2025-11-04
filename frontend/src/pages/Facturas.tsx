@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search, DollarSign, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,75 +11,61 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-interface Factura {
-  id: number;
-  fecha: string;
-  cliente_nombre: string;
-  total: number;
-  pagado: boolean;
-  fecha_pago?: string;
-  metodo_pago?: string;
-}
+import { useQuery } from '@tanstack/react-query';
+import { getFacturas } from '@/services/api';
+import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { ErrorMessage } from '@/components/shared/ErrorMessage';
+import type { Factura } from '@/types';
 
 export default function Facturas() {
   const [search, setSearch] = useState('');
-  const [pagoFilter, setPagoFilter] = useState('todas');
+  const [pagoFilter, setPagoFilter] = useState<'todas' | 'pagadas' | 'pendientes'>('todas');
 
-  // Mock data
-  const facturas: Factura[] = [
-    {
-      id: 5001,
-      fecha: '2025-01-15',
-      cliente_nombre: 'Restaurante El Gaucho',
-      total: 1250.5,
-      pagado: true,
-      fecha_pago: '2025-01-15',
-      metodo_pago: 'Transferencia',
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['facturas'],
+    queryFn: async () => {
+      const response = await getFacturas();
+      return response.data as Factura[];
     },
-    {
-      id: 5002,
-      fecha: '2025-01-15',
-      cliente_nombre: 'Parrilla Don José',
-      total: 890.0,
-      pagado: false,
-    },
-    {
-      id: 5003,
-      fecha: '2025-01-14',
-      cliente_nombre: 'Supermercado La Esquina',
-      total: 2150.75,
-      pagado: true,
-      fecha_pago: '2025-01-14',
-      metodo_pago: 'Efectivo',
-    },
-    {
-      id: 5004,
-      fecha: '2025-01-14',
-      cliente_nombre: 'Restaurante El Gaucho',
-      total: 675.25,
-      pagado: false,
-    },
-  ];
-
-  const filteredFacturas = facturas.filter((f) => {
-    const matchesSearch =
-      f.cliente_nombre.toLowerCase().includes(search.toLowerCase()) ||
-      f.id.toString().includes(search);
-    const matchesPago =
-      pagoFilter === 'todas' ||
-      (pagoFilter === 'pagadas' && f.pagado) ||
-      (pagoFilter === 'pendientes' && !f.pagado);
-    return matchesSearch && matchesPago;
   });
+
+  const facturas = data ?? [];
+
+  const facturasConPago = useMemo(() => {
+    return facturas.map((factura) => ({
+      ...factura,
+      pagado: Boolean(factura.pago_factura),
+    }));
+  }, [facturas]);
+
+  const filteredFacturas = useMemo(() => {
+    return facturasConPago.filter((factura) => {
+      const matchesSearch =
+        factura.proveedor.toLowerCase().includes(search.toLowerCase()) ||
+        factura.numero_factura.toLowerCase().includes(search.toLowerCase());
+      const matchesPago =
+        pagoFilter === 'todas' ||
+        (pagoFilter === 'pagadas' && factura.pagado) ||
+        (pagoFilter === 'pendientes' && !factura.pagado);
+      return matchesSearch && matchesPago;
+    });
+  }, [facturasConPago, pagoFilter, search]);
 
   const totalPagado = filteredFacturas
     .filter((f) => f.pagado)
-    .reduce((sum, f) => sum + f.total, 0);
-  
+    .reduce((sum, f) => sum + Number(f.total || 0), 0);
+
   const totalPendiente = filteredFacturas
     .filter((f) => !f.pagado)
-    .reduce((sum, f) => sum + f.total, 0);
+    .reduce((sum, f) => sum + Number(f.total || 0), 0);
+
+  if (isLoading) {
+    return <LoadingSpinner />;
+  }
+
+  if (error) {
+    return <ErrorMessage message="No se pudieron cargar las facturas" />;
+  }
 
   return (
     <div className="space-y-6">
@@ -115,13 +101,13 @@ export default function Facturas() {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Buscar por cliente o número de factura..."
+            placeholder="Buscar por proveedor o número de factura..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
           />
         </div>
-        <Select value={pagoFilter} onValueChange={setPagoFilter}>
+        <Select value={pagoFilter} onValueChange={(value) => setPagoFilter(value as any)}>
           <SelectTrigger className="w-full sm:w-[200px]">
             <SelectValue placeholder="Filtrar por pago" />
           </SelectTrigger>
@@ -135,32 +121,30 @@ export default function Facturas() {
 
       <div className="grid gap-4">
         {filteredFacturas.map((factura) => (
-          <Card key={factura.id} className={factura.pagado ? '' : 'border-warning/30'}>
+          <Card key={factura.numero_factura} className={factura.pagado ? '' : 'border-warning/30'}>
             <CardContent className="p-6">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
-                    <h3 className="text-lg font-semibold">Factura #{factura.id}</h3>
+                    <h3 className="text-lg font-semibold">Factura #{factura.numero_factura}</h3>
                     <Badge variant={factura.pagado ? 'outline' : 'secondary'}>
                       {factura.pagado ? 'Pagada' : 'Pendiente'}
                     </Badge>
                   </div>
-                  <p className="text-sm text-muted-foreground">{factura.cliente_nombre}</p>
+                  <p className="text-sm text-muted-foreground">{factura.proveedor}</p>
                   <p className="text-xs text-muted-foreground">
                     Fecha: {new Date(factura.fecha).toLocaleDateString('es-AR')}
                   </p>
-                  {factura.pagado && factura.metodo_pago && (
+                  {factura.pagado && factura.pago_factura && (
                     <p className="text-xs text-success">
-                      Pagado: {factura.metodo_pago} -{' '}
-                      {factura.fecha_pago && new Date(factura.fecha_pago).toLocaleDateString('es-AR')}
+                      Pagado el {new Date(factura.pago_factura.fecha_de_pago).toLocaleDateString('es-AR')} por ${factura.pago_factura.monto_del_pago.toFixed(2)}
                     </p>
                   )}
                 </div>
                 <div className="flex flex-col items-start gap-2 sm:items-end">
-                  <p className="text-2xl font-bold">${factura.total.toFixed(2)}</p>
+                  <p className="text-2xl font-bold">${Number(factura.total).toFixed(2)}</p>
                   {!factura.pagado && (
-                    <Button size="sm">
-                      <DollarSign className="mr-2 h-4 w-4" />
+                    <Button size="sm" variant="outline" disabled>
                       Registrar Pago
                     </Button>
                   )}
