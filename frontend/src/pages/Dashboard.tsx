@@ -1,4 +1,4 @@
-import { DollarSign, ShoppingCart, AlertCircle, TrendingUp, Plus, UserPlus } from 'lucide-react';
+import { Package, ShoppingCart, AlertCircle, Layers, Plus, UserPlus } from 'lucide-react';
 import { StatCard } from '@/components/shared/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,7 @@ import { getStock } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { StockItem } from '@/types';
+import { useMemo } from 'react';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -21,31 +22,60 @@ export default function Dashboard() {
 
   const stockData = stockResponse?.data as StockItem[] | undefined;
 
-  // Mock data - replace with actual API calls
+  const summary = useMemo(() => {
+    if (!stockData) {
+      return {
+        totalProductos: 0,
+        unidadesDisponibles: 0,
+        reservas: 0,
+        kilosActuales: 0,
+        criticos: 0,
+      };
+    }
+
+    return stockData.reduce(
+      (acc, item) => {
+        acc.totalProductos += 1;
+        acc.unidadesDisponibles += item.disponibles;
+        acc.reservas += item.reservas;
+        acc.kilosActuales += item.kilos_actuales;
+        if (item.disponibles < 10) {
+          acc.criticos += 1;
+        }
+        return acc;
+      },
+      {
+        totalProductos: 0,
+        unidadesDisponibles: 0,
+        reservas: 0,
+        kilosActuales: 0,
+        criticos: 0,
+      }
+    );
+  }, [stockData]);
+
   const kpis = [
     {
-      title: 'Ventas del Día',
-      value: '$12,450',
-      icon: DollarSign,
-      trend: { value: 12, positive: true },
+      title: 'Productos Activos',
+      value: summary.totalProductos,
+      icon: Package,
     },
     {
-      title: 'Pedidos Pendientes',
-      value: '8',
+      title: 'Unidades Disponibles',
+      value: summary.unidadesDisponibles,
       icon: ShoppingCart,
-      description: '3 Reservados, 5 Preparados',
+      description: `${summary.reservas} unidades reservadas actualmente`,
     },
     {
       title: 'Stock Crítico',
-      value: '3',
+      value: summary.criticos,
       icon: AlertCircle,
-      description: 'Productos con bajo inventario',
+      description: 'Productos con menos de 10 unidades disponibles',
     },
     {
-      title: 'Ingresos del Mes',
-      value: '$84,320',
-      icon: TrendingUp,
-      trend: { value: 8, positive: true },
+      title: 'Kilos Disponibles',
+      value: `${summary.kilosActuales.toFixed(2)} kg`,
+      icon: Layers,
     },
   ];
 
@@ -94,13 +124,13 @@ export default function Dashboard() {
                   className="flex items-center justify-between p-4 rounded-lg border border-border bg-card"
                 >
                   <div className="flex-1">
-                    <p className="font-semibold text-base">{item.producto_nombre}</p>
+                    <p className="font-semibold text-base">{item.producto}</p>
                     <p className="text-sm text-muted-foreground">
-                      {item.categoria}
+                      {item.reservas} unidades reservadas
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-2xl font-bold">{item.stock_actual.toFixed(1)}</p>
+                    <p className="text-2xl font-bold">{item.kilos_actuales.toFixed(1)}</p>
                     <p className="text-xs text-muted-foreground">kilos</p>
                   </div>
                 </div>

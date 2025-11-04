@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search, AlertTriangle } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import {
@@ -10,59 +10,47 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-
-interface StockItem {
-  producto_nombre: string;
-  categoria: string;
-  stock_actual: number;
-  precio_por_kilo: number;
-  valor_total: number;
-}
+import { useQuery } from '@tanstack/react-query';
+import { getStock } from '@/services/api';
+import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { ErrorMessage } from '@/components/shared/ErrorMessage';
+import type { StockItem } from '@/types';
 
 export default function Stock() {
   const [search, setSearch] = useState('');
 
-  // Mock data
-  const stock: StockItem[] = [
-    {
-      producto_nombre: 'Bife de Chorizo',
-      categoria: 'Cortes Premium',
-      stock_actual: 45,
-      precio_por_kilo: 8.5,
-      valor_total: 382.5,
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['stock'],
+    queryFn: async () => {
+      const response = await getStock();
+      return response.data as StockItem[];
     },
-    {
-      producto_nombre: 'Asado',
-      categoria: 'Cortes Tradicionales',
-      stock_actual: 32,
-      precio_por_kilo: 6.2,
-      valor_total: 198.4,
-    },
-    {
-      producto_nombre: 'Vacío',
-      categoria: 'Cortes Tradicionales',
-      stock_actual: 8,
-      precio_por_kilo: 7.8,
-      valor_total: 62.4,
-    },
-    {
-      producto_nombre: 'Matambre',
-      categoria: 'Cortes Especiales',
-      stock_actual: 15,
-      precio_por_kilo: 5.9,
-      valor_total: 88.5,
-    },
-  ];
+  });
 
-  const filteredStock = stock.filter((item) =>
-    item.producto_nombre.toLowerCase().includes(search.toLowerCase())
+  const stock = data ?? [];
+
+  const filteredStock = useMemo(() => {
+    return stock.filter((item) =>
+      item.producto.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [stock, search]);
+
+  const totalValor = filteredStock.reduce(
+    (sum, item) => sum + item.precio_por_kilo * item.kilos_actuales,
+    0
   );
+  const itemsCriticos = filteredStock.filter((item) => item.disponibles < 10).length;
 
-  const totalValor = filteredStock.reduce((sum, item) => sum + item.valor_total, 0);
-  const itemsCriticos = filteredStock.filter((item) => item.stock_actual < 10).length;
+  if (isLoading) {
+    return <LoadingSpinner />;
+  }
 
-  const getStockBadge = (stock: number) => {
-    if (stock < 10) {
+  if (error) {
+    return <ErrorMessage message="No se pudo cargar el stock" />;
+  }
+
+  const getStockBadge = (disponibles: number) => {
+    if (disponibles < 10) {
       return (
         <Badge variant="destructive" className="flex items-center gap-1">
           <AlertTriangle className="h-3 w-3" />
@@ -70,7 +58,7 @@ export default function Stock() {
         </Badge>
       );
     }
-    if (stock < 30) {
+    if (disponibles < 30) {
       return <Badge variant="secondary">Medio</Badge>;
     }
     return <Badge variant="outline">Normal</Badge>;
@@ -87,7 +75,7 @@ export default function Stock() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <div className="rounded-lg border border-border bg-card p-4">
-          <p className="text-sm font-medium text-muted-foreground">Valor Total</p>
+          <p className="text-sm font-medium text-muted-foreground">Valor Total (estimado)</p>
           <p className="text-2xl font-bold">${totalValor.toFixed(2)}</p>
         </div>
         <div className="rounded-lg border border-border bg-card p-4">
@@ -115,22 +103,22 @@ export default function Stock() {
           <TableHeader>
             <TableRow>
               <TableHead>Producto</TableHead>
-              <TableHead>Categoría</TableHead>
-              <TableHead>Stock Actual (kg)</TableHead>
+              <TableHead>Disponibles (unidades)</TableHead>
+              <TableHead>Reservas</TableHead>
+              <TableHead>Kilos actuales</TableHead>
               <TableHead>Precio/Kg</TableHead>
-              <TableHead>Valor Total</TableHead>
               <TableHead>Estado</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredStock.map((item, index) => (
-              <TableRow key={index}>
-                <TableCell className="font-medium">{item.producto_nombre}</TableCell>
-                <TableCell>{item.categoria}</TableCell>
-                <TableCell>{item.stock_actual} kg</TableCell>
+              <TableRow key={`${item.producto}-${index}`}>
+                <TableCell className="font-medium">{item.producto}</TableCell>
+                <TableCell>{item.disponibles}</TableCell>
+                <TableCell>{item.reservas}</TableCell>
+                <TableCell>{item.kilos_actuales.toFixed(2)} kg</TableCell>
                 <TableCell>${item.precio_por_kilo.toFixed(2)}</TableCell>
-                <TableCell className="font-semibold">${item.valor_total.toFixed(2)}</TableCell>
-                <TableCell>{getStockBadge(item.stock_actual)}</TableCell>
+                <TableCell>{getStockBadge(item.disponibles)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
