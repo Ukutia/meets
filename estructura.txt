@@ -1,0 +1,76 @@
+ESTRUCTURA DE: C:\Users\benja\Documentos\GitHub\meets
+
+📁 backend/
+    📁 backend/
+        📄 __init__.py
+        📄 asgi.py
+        📄 settings.py
+        📄 urls.py
+        📄 views.py
+        📄 wsgi.py
+    📁 core/
+        📄 __init__.py
+        📄 admin.py
+        📄 apps.py
+        📁 migrations/
+            📄 0001_initial.py
+            📄 0002_pagofactura.py
+            📄 0003_alter_factura_total.py
+            📄 0004_entradaproducto.py
+            📄 0005_entradaproducto_cantidad_unidades.py
+            📄 0006_detallepedido_margen_detallepedido_total_costo.py
+            📄 0007_alter_detallepedido_costo_por_kilo.py
+            📄 0008_pedido_total.py
+            📄 0009_detallepedido_facturas_entradaproducto_factura_and_more.py
+            📄 0010_alter_entradaproducto_factura.py
+            📄 0011_alter_pedido_estado.py
+            📄 0012_alter_detallepedido_cantidad_kilos_and_more.py
+            📄 0013_pedido_recibo_pedido_tipo_recibo.py
+            📄 __init__.py
+        📄 models.py
+        📄 serializers.py
+        📄 tests.py
+        📄 urls.py
+        📄 views.py
+    📄 manage.py
+📄 docker-compose.yml
+📄 Dockerfile
+📄 Dockerfile.frontend
+📁 docs/
+    📄 commands.md
+📁 frontend/
+    📄 index.html
+    📄 package-lock.json
+    📄 package.json
+    📁 public/
+        📄 vite.svg
+    📄 README.md
+    📁 src/
+        📄 App.css
+        📄 App.jsx
+        📁 assets/
+            📄 react.svg
+        📁 components/
+            📄 AgregarCliente.jsx
+            📄 AgregarKilos.jsx
+            📄 AgregarProducto.jsx
+            📄 CrearFactura.jsx
+            📄 CrearPedido.jsx
+            📄 DetallesPago.jsx
+            📄 Facturas.jsx
+            📄 Inventario.jsx
+            📄 PagarFactura.jsx
+            📄 Pedidos.jsx
+            📄 Stock.jsx
+            📄 VerClientes.jsx
+            📄 VerProductos.jsx
+        📄 index.css
+        📄 main.jsx
+        📁 vistas/
+            📄 Home.jsx
+    📄 vite.config.js
+📄 generar.py
+📄 LICENSE
+📄 README.md
+📄 requirements.txt
+📄 todo.md
