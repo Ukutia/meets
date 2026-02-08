@@ -1,11 +1,17 @@
-FROM node:18
-
-COPY ./frontend /frontend
-RUN rm -rf /frontend/node_modules
+FROM node:18-alpine
 
 WORKDIR /frontend
-RUN npm ci --verbose && npm install
 
+# 1. Copiamos los archivos de definición de paquetes primero
+# Es vital que estos archivos estén en la carpeta ./frontend/ de tu host
+COPY ./frontend/package*.json ./
+
+# 2. Instalamos. Usamos install en lugar de ci para mayor flexibilidad en desarrollo
+# Si prefieres ci, asegúrate de que el lockfile esté actualizado.
+RUN npm install
+
+# 3. Exponemos el puerto
 EXPOSE 5173
 
-CMD ["npm", "run", "dev"]
+# 4. El comando para arrancar (Vite necesita --host para Docker)
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

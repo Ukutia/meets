@@ -45,11 +45,20 @@ docker compose exec backend python manage.py createsuperuser
 
 FALTA:
 
-Que funcionen los 3 puntos a la primera
-Editar Unidades
-Ver tema sobre reserva
-
-
+Revisar Anulacion - Fue
+Al editar unidades, ver como se calcula el costo- Fue
+Alerta de Peso por unidad - OK
+Filtrar Pedidos
+Peso Promedio por unidad en stock - OK
+Editar Precios Productos - OK
+Estado Producto Desactivado - OK
+Vistas de Flujos Entrada-Salida - OK
+Adelantos
+Pagos y Deuda
+Ganancias
+Ajustes de inventario - kilos tambien
+Analisis de datos
+Margenes por producto
 
 
 

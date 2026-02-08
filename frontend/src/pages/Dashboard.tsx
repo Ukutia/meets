@@ -1,238 +1,137 @@
-import { Package, ShoppingCart, AlertCircle, Layers, Plus, UserPlus } from 'lucide-react';
+import { Package, AlertCircle, Plus, Search, Scale, ShoppingCart } from 'lucide-react';
 import { StatCard } from '@/components/shared/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
-import { useIsMobile } from '@/hooks/use-mobile';
 import { useQuery } from '@tanstack/react-query';
 import { getStock } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { StockItem } from '@/types';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
+  const [searchTerm, setSearchTerm] = useState('');
 
   const { data: stockResponse, isLoading, error } = useQuery({
     queryKey: ['stock'],
     queryFn: getStock,
   });
 
-  const stockData = stockResponse?.data as StockItem[] | undefined;
+  // Normalización de datos para evitar errores de tipo
+  const stockData = useMemo(() => {
+    const rawData = stockResponse?.data || [];
+    return Array.isArray(rawData) ? (rawData as StockItem[]) : [];
+  }, [stockResponse]);
 
-  const summary = useMemo(() => {
-    if (!stockData) {
-      return {
-        totalProductos: 0,
-        unidadesDisponibles: 0,
-        reservas: 0,
-        kilosActuales: 0,
-        criticos: 0,
-      };
-    }
+  // Filtrado de stock crítico (menos de 10 unidades)
+  const stockCritico = useMemo(() => 
+    stockData.filter(item => item.disponibles < 10), 
+    [stockData]
+  );
 
-    return stockData.reduce(
-      (acc, item) => {
-        acc.totalProductos += 1;
-        acc.unidadesDisponibles += item.disponibles;
-        acc.reservas += item.reservas;
-        acc.kilosActuales += item.kilos_actuales;
-        if (item.disponibles < 10) {
-          acc.criticos += 1;
-        }
-        return acc;
-      },
-      {
-        totalProductos: 0,
-        unidadesDisponibles: 0,
-        reservas: 0,
-        kilosActuales: 0,
-        criticos: 0,
-      }
-    );
-  }, [stockData]);
+  // Filtrado por búsqueda para la sección principal
+  const filteredStock = useMemo(() => 
+    stockData.filter(item => 
+      item.estado === 'disponible' && // <--- FILTRO DE ESTADO AGREGADO
+      item.producto.toLowerCase().includes(searchTerm.toLowerCase())
+    ), 
+    [stockData, searchTerm]
+  );
 
-  const kpis = [
-    {
-      title: 'Productos Activos',
-      value: summary.totalProductos,
-      icon: Package,
-    },
-    {
-      title: 'Unidades Disponibles',
-      value: summary.unidadesDisponibles,
-      icon: ShoppingCart,
-      description: `${summary.reservas} unidades reservadas actualmente`,
-    },
-    {
-      title: 'Stock Crítico',
-      value: summary.criticos,
-      icon: AlertCircle,
-      description: 'Productos con menos de 10 unidades disponibles',
-    },
-    {
-      title: 'Kilos Disponibles',
-      value: `${summary.kilosActuales.toFixed(2)} kg`,
-      icon: Layers,
-    },
-  ];
+  if (isLoading) return <LoadingSpinner />;
+  if (error) return <ErrorMessage message="Error al cargar el stock" />;
 
-  const quickActions = [
-    { label: 'Nuevo Pedido', action: () => navigate('/pedidos/nuevo'), variant: 'default' as const },
-    { label: 'Ver Stock', action: () => navigate('/stock'), variant: 'outline' as const },
-    { label: 'Facturas Pendientes', action: () => navigate('/facturas'), variant: 'outline' as const },
-  ];
-
-  // Vista móvil optimizada
-  if (isMobile) {
-    if (isLoading) return <LoadingSpinner />;
-    if (error) return <ErrorMessage message="Error al cargar el stock" />;
-
-    return (
-      <div className="space-y-4">
-        <div className="flex gap-3">
-          <Button 
-            size="lg" 
-            className="flex-1 h-16 text-base"
-            onClick={() => navigate('/pedidos/nuevo')}
-          >
-            <Plus className="mr-2 h-5 w-5" />
-            Agregar Pedido
-          </Button>
-          <Button 
-            size="lg" 
-            variant="outline"
-            className="flex-1 h-16 text-base"
-            onClick={() => navigate('/clientes')}
-          >
-            <UserPlus className="mr-2 h-5 w-5" />
-            Agregar Cliente
-          </Button>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Stock Disponible</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {stockData?.map((item) => (
-                <div
-                  key={item.producto}
-                  className="flex items-center justify-between p-4 rounded-lg border border-border bg-card"
-                >
-                  <div className="flex-1">
-                    <p className="font-semibold text-base">{item.producto}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {item.reservas} unidades reservadas
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold">{item.kilos_actuales.toFixed(1)}</p>
-                    <p className="text-xs text-muted-foreground">kilos</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Vista desktop existente
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">
-          Resumen general de operaciones
-        </p>
+      {/* Cabecera Simple con Acción Principal */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Disponibilidad de Productos</h1>
+          <p className="text-muted-foreground">Consulta rápida de existencias y precios</p>
+        </div>
+        <Button 
+          size="lg" 
+          onClick={() => navigate('/pedidos/nuevo')} 
+          className="h-14 px-8 text-lg font-bold shadow-xl transition-all hover:scale-105"
+        >
+          <Plus className="mr-2 h-6 w-6" /> Nuevo Pedido
+        </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {kpis.map((kpi) => (
-          <StatCard
-            key={kpi.title}
-            title={kpi.title}
-            value={kpi.value}
-            icon={kpi.icon}
-            trend={kpi.trend}
-            description={kpi.description}
-          />
-        ))}
-      </div>
+      {/* SECCIÓN 1: STOCK CRÍTICO (Solo aparece si hay productos en riesgo) */}
+      {stockCritico.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-destructive">
+            <AlertCircle className="h-5 w-5 fill-destructive text-white" />
+            <h2 className="text-lg font-bold uppercase tracking-wider">Stock Crítico (Reponer pronto)</h2>
+          </div>
+          <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+            {stockCritico.map(item => (
+              <Card key={`critico-${item.producto}`} className="border-destructive/50 bg-destructive/5">
+                <CardContent className="p-4 flex justify-between items-center">
+                  <div>
+                    <p className="font-bold text-destructive">{item.producto}</p>
+                    <p className="text-2xl font-black">{item.disponibles} <span className="text-xs">UNS</span></p>
+                  </div>
+                  <Badge variant="destructive" className="animate-pulse">Bajo Stock</Badge>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Accesos Rápidos</CardTitle>
+      {/* SECCIÓN 2: DISPONIBILIDAD TOTAL (Lo Principal) */}
+      <Card className="border-none shadow-none bg-transparent">
+        <CardHeader className="px-0 flex flex-row items-center justify-between space-y-0 pb-4">
+          <CardTitle className="text-xl">Catálogo de Inventario</CardTitle>
+          <div className="relative w-full max-w-sm">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input 
+              placeholder="Buscar producto..." 
+              className="pl-10 h-11 bg-white shadow-sm"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-3">
-          {quickActions.map((action) => (
-            <Button
-              key={action.label}
-              variant={action.variant}
-              onClick={action.action}
-            >
-              {action.label}
-            </Button>
-          ))}
+        <CardContent className="px-0">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {filteredStock.map((item) => (
+              <Card key={item.producto} className="overflow-hidden hover:border-primary transition-all shadow-sm">
+                <div className="bg-primary/5 p-3 border-b border-primary/10 flex justify-between items-center">
+                   <span className="font-bold text-primary truncate">{item.producto}</span>
+                   <p className="text-lg font-black text-primary">
+                    ${Number(item.precio_por_kilo).toLocaleString('es-CL')}
+                  </p>
+                </div>
+                <CardContent className="p-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center text-muted-foreground gap-1 text-xs">
+                        <ShoppingCart className="h-3 w-3" /> Unidades
+                      </div>
+                      <p className="text-xl font-bold">{item.disponibles}</p>
+                    </div>
+                    <div className="space-y-1 border-l pl-4">
+                      <div className="flex items-center text-muted-foreground gap-1 text-xs">
+                        <Scale className="h-3 w-3" /> Kilos
+                      </div>
+                      <p className="text-xl font-bold text-blue-600">
+                        {item.kilos_actuales.toFixed(1)} <span className="text-xs text-muted-foreground">kg</span>
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </CardContent>
       </Card>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Pedidos Recientes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {[1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between rounded-lg border border-border p-3 hover:bg-muted/50"
-                >
-                  <div>
-                    <p className="font-medium">Pedido #{1000 + i}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Cliente {i} - $1,{200 + i * 100}
-                    </p>
-                  </div>
-                  <div className="rounded-full bg-secondary px-3 py-1 text-xs text-secondary-foreground">
-                    Preparado
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Productos Destacados</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {['Bife de Chorizo', 'Asado', 'Vacío'].map((product, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between rounded-lg border border-border p-3 hover:bg-muted/50"
-                >
-                  <div>
-                    <p className="font-medium">{product}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Stock: {50 - i * 10} kg
-                    </p>
-                  </div>
-                  <p className="font-semibold">${(8 + i).toFixed(2)}/kg</p>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

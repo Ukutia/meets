@@ -68,6 +68,7 @@ export interface Factura {
 
 export interface StockItem {
   producto: string;
+  estado: string;
   precio_por_kilo: number;
   disponibles: number;
   stock: number;

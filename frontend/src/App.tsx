@@ -11,9 +11,12 @@ import Productos from "./pages/Productos";
 import Clientes from "./pages/Clientes";
 import Pedidos from "./pages/Pedidos";
 import PedidoNuevo from "./pages/PedidoNuevo";
+import MovimientosInventarios from "./pages/MovimientosInventario";
 import Facturas from "./pages/Facturas";
 import Stock from "./pages/Stock";
 import NotFound from "./pages/NotFound";
+import FormularioPedido from "./pages/FormularioPedido";
+import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 
 const queryClient = new QueryClient();
 
@@ -85,6 +88,16 @@ const App = () => (
               }
             />
             <Route
+              path="/gestion-pagos"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <GestionPagosVendedor />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/pedidos/nuevo"
               element={
                 <ProtectedRoute>
@@ -100,6 +113,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Facturas />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/flujos-de-inventario"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <MovimientosInventarios />
                   </Layout>
                 </ProtectedRoute>
               }

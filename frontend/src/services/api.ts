@@ -6,6 +6,7 @@ import type {
   Factura,
   StockItem,
   Vendedor,
+  Proveedor
 } from '@/types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
@@ -18,6 +19,7 @@ const api = axios.create({
 });
 
 // Productos
+export const getProveedores = () => api.get<Proveedor[]>('/proveedores/');
 export const getProductos = () => api.get<Producto[]>('/productos/');
 export const createProducto = (data: {
   nombre: string;
@@ -65,9 +67,43 @@ export const pagarFactura = (factura: string, fecha_de_pago: string, monto_del_p
     monto_del_pago,
   });
 
+// Pagos Vendedores
+export const getPagosVendedor = (vendedorId?: string) => 
+  api.get(`/pagos-vendedor/${vendedorId ? `?vendedor=${vendedorId}` : ''}`);
+
+export const createPagoVendedor = (formData: FormData) => 
+  api.post('/pagos-vendedor/', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+
+// En services/api.ts
+
+// Obtener un solo pedido para editar
+export const getPedidoById = async (id: number) => {
+  const response = await api.get(`/pedidos/${id}/`);
+  return response.data;
+};
+
+
+
+// Actualizar pedido (PUT o PATCH)
+export const updatePedido = async (id: number, data: any) => {
+  const response = await api.put(`/pedidos/${id}/`, data);
+  return response.data;
+};
+
+
+export const getDetalleFacturas = async () => {
+  return await api.get('/inventario/detalle-facturas/');
+};
+
+// Obtener detalles de todos los pedidos (Salidas)
+export const getDetallePedidos = async () => {
+  return await api.get('/inventario/detalle-pedidos/');
+};
+
 // Stock
 export const getStock = () => api.get<StockItem[]>('/stock/');
-
 // Vendedores
 export const getVendedores = () => api.get<Vendedor[]>('/vendedores/');
 

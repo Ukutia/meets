@@ -32,6 +32,13 @@ class Producto(models.Model):
     nombre = models.CharField(max_length=100, verbose_name="Nombre del producto")
     descripcion = models.TextField(blank=True, null=True, verbose_name="Descripción")
     precio_por_kilo = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio por kilo")
+    peso_minimo = models.DecimalField(
+        max_digits=10, 
+        decimal_places=3, 
+        default=0.000, 
+        verbose_name="Peso mínimo por unidad (kg)",
+        help_text="Útil para detectar errores de digitación en el pesaje"
+    )
 
     def stock_actual(self):
         entradas = self.facturas_entrada.aggregate(total=models.Sum('cantidad'))['total'] or 0
@@ -74,7 +81,7 @@ class Producto(models.Model):
         verbose_name="Categoría"
     )
     estado = models.CharField(
-        max_length=20, choices=[("disponible", "Disponible"), ("agotado", "Agotado")],
+        max_length=20, choices=[("disponible", "Disponible"), ("agotado", "Agotado"), ("desactivado", "Desactivado")],
         default="disponible", verbose_name="Estado del producto"
     )
     detalles_pedido = models.ManyToManyField(
@@ -186,10 +193,16 @@ class DetallePedido(models.Model):
         verbose_name_plural = "Detalles de pedidos"
 
 
+class Proveedor(models.Model):
+    nombre = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.nombre
+
 
 
 class Factura(models.Model):
-    proveedor = models.CharField(max_length=100, verbose_name="Proveedor")
+    proveedor = models.ForeignKey(Proveedor, on_delete=models.PROTECT, related_name="facturas")
     fecha = models.DateField(verbose_name="Fecha de la factura")
     numero_factura = models.CharField(max_length=50, unique=True, verbose_name="Número de factura" ,primary_key=True)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Subtotal")
@@ -218,6 +231,7 @@ class DetalleFactura(models.Model):
     factura = models.ForeignKey(
         Factura, on_delete=models.CASCADE, related_name="detalles", verbose_name="Factura"
     )
+
     producto = models.ForeignKey(
         Producto, on_delete=models.CASCADE, verbose_name="Producto"
     )
@@ -256,10 +270,15 @@ class PagoFactura(models.Model):
 
 
 class PagoVendedor(models.Model):
+    TIPOS = [
+        ('pago', 'Pago de Venta'),
+        ('adelanto', 'Adelanto / Saldo a Favor'),
+    ]
     id = models.AutoField(primary_key=True)  # ID automático
     vendedor = models.ForeignKey(
         Vendedor, on_delete=models.CASCADE, related_name="pagos", verbose_name="Vendedor"
     )
+    tipo = models.CharField(max_length=10, choices=TIPOS, default='pago')
     monto = models.DecimalField(
         max_digits=10, decimal_places=2, verbose_name="Monto del pago"
     )

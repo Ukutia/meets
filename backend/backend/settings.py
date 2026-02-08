@@ -26,6 +26,11 @@ SECRET_KEY = 'django-insecure-pdntuw_59%zf&kumx&!!9!f=lv4z&_o$549^8*=n6po0z)@-#l
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
+# Busca estas líneas o agrégalas:
+MEDIA_URL = '/media/'
+# Esto le dice a Django que los archivos están en la carpeta 'comprobantes_pagos'
+MEDIA_ROOT = os.path.join(BASE_DIR.parent, 'comprobantes_pagos')
+
 ALLOWED_HOSTS = []
 
 

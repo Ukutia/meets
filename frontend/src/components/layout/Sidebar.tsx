@@ -7,6 +7,7 @@ import {
   FileText,
   Warehouse,
   LogOut,
+  Feather,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -31,6 +32,8 @@ const menuItems = [
   { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
   { title: 'Facturas', url: '/facturas', icon: FileText },
   { title: 'Stock', url: '/stock', icon: Warehouse },
+  { title: 'Flujos de Inventario', url: '/flujos-de-inventario', icon: Feather },
+  { title: 'Gestión de Pagos', url: '/gestion-pagos', icon: Feather },
 ];
 
 export function AppSidebar() {

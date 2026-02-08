@@ -49,6 +49,12 @@ export default function PedidoNuevo() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  // Función de ayuda para asegurar que tratamos con números
+  const formatNumber = (val: any) => {
+    const num = Number(val);
+    return isNaN(num) ? 0 : num;
+  };
+
   const { data: clientesData, isLoading: loadingClientes, error: errorClientes } = useQuery({
     queryKey: ['clientes'],
     queryFn: async () => {
@@ -93,27 +99,50 @@ export default function PedidoNuevo() {
     return stockProducto?.disponibles ?? 0;
   };
 
-  const agregarProducto = () => {
+
+const validarPesosMinimos = () => {
+    for (const d of detalles) {
+      // @ts-ignore
+      const min = d.peso_minimo || 0;
+      if (d.unidades > 0 && d.kilos > 0) {
+        const promedio = d.kilos / d.unidades;
+        if (promedio < min) {
+          toast({
+            title: "Peso inconsistente",
+            description: `El producto ${d.producto_nombre} promedia ${promedio.toFixed(3)}kg por unidad. El mínimo permitido es ${min}kg.`,
+            variant: "destructive",
+          });
+          return false;
+        }
+      }
+    }
+    return true;
+};
+
+const agregarProducto = () => {
     if (!productoSeleccionado) return;
     const producto = productos.find((p) => p.id.toString() === productoSeleccionado);
     if (!producto) return;
 
     const stockDisponible = obtenerStockDisponible(producto);
+    const precio = formatNumber(producto.precio_por_kilo);
 
     setDetalles((prev) => [
       ...prev,
       {
         producto_id: producto.id,
         producto_nombre: producto.nombre,
-        kilos: 1,
+        kilos: 0, // Empezamos en 0 para obligar a pesar
         unidades: stockDisponible > 0 ? 1 : 0,
-        precio_unitario: producto.precio_por_kilo,
+        precio_unitario: precio,
         stock_disponible: stockDisponible,
-        subtotal: producto.precio_por_kilo * 1,
+        subtotal: 0,
+        // @ts-ignore - agregamos esto para la validación
+        peso_minimo: Number(producto.peso_minimo) || 0 
       },
     ]);
     setProductoSeleccionado('');
-  };
+};
 
   const actualizarDetalle = (
     index: number,
@@ -127,6 +156,7 @@ export default function PedidoNuevo() {
 
       if (field === 'unidades') {
         detalle.unidades = Math.min(detalle.stock_disponible, nuevoValor);
+        // Si no hay unidades, los kilos deberían ser 0 (opcional según lógica de negocio)
         if (detalle.unidades === 0) {
           detalle.kilos = 0;
         }
@@ -154,6 +184,9 @@ export default function PedidoNuevo() {
       if (detalles.length === 0) {
         throw new Error('Debe agregar al menos un producto');
       }
+      if (!validarPesosMinimos()) {
+         throw new Error('Hay productos con peso insuficiente');
+      }
       return createPedido({
         cliente: clienteSeleccionado.id,
         vendedor: clienteSeleccionado.vendedor.id,
@@ -179,6 +212,12 @@ export default function PedidoNuevo() {
         variant: 'destructive',
       });
     },
+  });
+
+  const tieneErroresDePeso = detalles.some(d => {
+  // @ts-ignore
+  const min = d.peso_minimo || 0;
+  return d.unidades > 0 && d.kilos > 0 && (d.kilos / d.unidades) < min;
   });
 
   const renderStep = () => {
@@ -222,7 +261,7 @@ export default function PedidoNuevo() {
           </Card>
         );
 
-      case 2:
+case 2:
         return (
           <Card>
             <CardHeader>
@@ -238,7 +277,7 @@ export default function PedidoNuevo() {
                     <SelectContent>
                       {productosDisponibles.map((producto) => (
                         <SelectItem key={producto.id} value={producto.id.toString()}>
-                          {producto.nombre} - ${producto.precio_por_kilo.toFixed(2)}/kg
+                          {producto.nombre} - ${Number(producto.precio_por_kilo).toLocaleString('es-CL')}/kg
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -251,115 +290,104 @@ export default function PedidoNuevo() {
               </div>
 
               {detalles.length > 0 && (
-                <div className="rounded-lg border border-border">
+                <div className="rounded-lg border border-border overflow-hidden">
                   <Table>
-                    <TableHeader>
+                    <TableHeader className="bg-muted/50">
                       <TableRow>
                         <TableHead>Producto</TableHead>
                         <TableHead>Stock</TableHead>
-                        <TableHead>Kilos</TableHead>
-                        <TableHead>Unidades</TableHead>
+                        <TableHead className="text-center">Kilos</TableHead>
+                        <TableHead className="text-center">Unidades</TableHead>
                         <TableHead>Precio</TableHead>
                         <TableHead>Subtotal</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {detalles.map((detalle, index) => (
-                        <TableRow key={detalle.producto_id}>
-                          <TableCell className="font-medium">{detalle.producto_nombre}</TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={
-                                detalle.stock_disponible < 10 ? 'destructive' : 'outline'
-                              }
-                            >
-                              {detalle.stock_disponible} unidades
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() =>
-                                  actualizarDetalle(index, 'kilos', detalle.kilos - 1)
-                                }
+                      {detalles.map((detalle, index) => {
+                        // Lógica de validación visual
+                        // @ts-ignore (por si el tipo DetalleProducto no tiene aún peso_minimo)
+                        const minPeso = detalle.peso_minimo || 0;
+                        const esPesoInvalido = detalle.unidades > 0 && 
+                                             detalle.kilos > 0 && 
+                                             (detalle.kilos / detalle.unidades) < minPeso;
+
+                        return (
+                          <TableRow 
+                            key={detalle.producto_id}
+                            className={esPesoInvalido ? "bg-red-50/50 transition-colors" : ""}
+                          >
+                            <TableCell className="font-medium">
+                              {detalle.producto_nombre}
+                              {esPesoInvalido && (
+                                <p className="text-[10px] font-bold text-red-600 animate-pulse">
+                                  PESO BAJO EL MÍNIMO ({minPeso}kg)
+                                </p>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Badge 
+                                variant={detalle.stock_disponible < 5 ? 'destructive' : 'secondary'}
+                                className="font-mono"
                               >
-                                <Minus className="h-3 w-3" />
-                              </Button>
-                              <Input
-                                type="number"
-                                className="h-7 w-20 text-center"
-                                value={detalle.kilos}
-                                min={0}
-                                onChange={(e) =>
-                                  actualizarDetalle(index, 'kilos', Number(e.target.value))
-                                }
-                              />
+                                {detalle.stock_disponible}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center justify-center gap-2">
+                                <Input
+                                  type="number"
+                                  step="any"
+                                  // Si el peso es inválido, aplicamos bordes rojos
+                                  className={`h-8 w-24 text-center ${
+                                    esPesoInvalido 
+                                      ? "border-destructive ring-destructive focus-visible:ring-destructive" 
+                                      : ""
+                                  }`}
+                                  value={detalle.kilos === 0 ? '' : detalle.kilos}
+                                  onChange={(e) => actualizarDetalle(index, 'kilos', Number(e.target.value))}
+                                  onFocus={(e) => e.target.select()}
+                                />
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center justify-center gap-1">
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-6 w-6"
+                                  onClick={() => actualizarDetalle(index, 'unidades', detalle.unidades - 1)}
+                                >
+                                  <Minus className="h-3 w-3" />
+                                </Button>
+                                <span className="w-8 text-center font-bold">{detalle.unidades}</span>
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-6 w-6"
+                                  onClick={() => actualizarDetalle(index, 'unidades', detalle.unidades + 1)}
+                                  disabled={detalle.unidades >= detalle.stock_disponible}
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                            <TableCell>${detalle.precio_unitario.toLocaleString('es-CL')}</TableCell>
+                            <TableCell className="font-bold text-primary">
+                              ${detalle.subtotal.toLocaleString('es-CL')}
+                            </TableCell>
+                            <TableCell>
                               <Button
-                                variant="outline"
+                                variant="ghost"
                                 size="icon"
-                                className="h-7 w-7"
-                                onClick={() =>
-                                  actualizarDetalle(index, 'kilos', detalle.kilos + 1)
-                                }
+                                onClick={() => eliminarDetalle(index)}
                               >
-                                <Plus className="h-3 w-3" />
+                                <XCircle className="h-4 w-4 text-destructive" />
                               </Button>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() =>
-                                  actualizarDetalle(index, 'unidades', detalle.unidades - 1)
-                                }
-                              >
-                                <Minus className="h-3 w-3" />
-                              </Button>
-                              <Input
-                                type="number"
-                                className="h-7 w-20 text-center"
-                                value={detalle.unidades}
-                                min={0}
-                                max={detalle.stock_disponible}
-                                onChange={(e) =>
-                                  actualizarDetalle(index, 'unidades', Number(e.target.value))
-                                }
-                              />
-                              <Button
-                                variant="outline"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() =>
-                                  actualizarDetalle(index, 'unidades', detalle.unidades + 1)
-                                }
-                                disabled={detalle.unidades >= detalle.stock_disponible}
-                              >
-                                <Plus className="h-3 w-3" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                          <TableCell>${detalle.precio_unitario.toFixed(2)}</TableCell>
-                          <TableCell className="font-semibold">
-                            ${detalle.subtotal.toFixed(2)}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => eliminarDetalle(index)}
-                            >
-                              <XCircle className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -367,7 +395,6 @@ export default function PedidoNuevo() {
             </CardContent>
           </Card>
         );
-
       case 3:
         return (
           <Card>
@@ -375,24 +402,25 @@ export default function PedidoNuevo() {
               <CardTitle>Paso 3: Revisar y Confirmar</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="rounded-lg border border-border bg-muted p-4 space-y-2">
-                <p className="text-sm font-medium">Resumen del Pedido</p>
-                {clienteSeleccionado && (
-                  <div className="text-sm">
-                    <p className="font-semibold">Cliente: {clienteSeleccionado.nombre}</p>
-                    <p className="text-muted-foreground">
-                      Vendedor: {clienteSeleccionado.vendedor.nombre}
-                    </p>
-                  </div>
-                )}
-                <p className="font-semibold">Total: ${total.toFixed(2)}</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-lg border p-4 bg-muted/30">
+                  <p className="text-xs uppercase text-muted-foreground font-bold">Cliente</p>
+                  <p className="text-lg font-bold">{clienteSeleccionado?.nombre}</p>
+                  <p className="text-sm">{clienteSeleccionado?.direccion}</p>
+                </div>
+                <div className="rounded-lg border p-4 bg-primary/5 border-primary/20">
+                  <p className="text-xs uppercase text-primary font-bold">Total a Pagar</p>
+                  <p className="text-3xl font-black text-primary">
+                    ${total.toLocaleString('es-CL')}
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="observaciones">Observaciones</Label>
+                <Label htmlFor="observaciones">Observaciones / Notas de Entrega</Label>
                 <Textarea
                   id="observaciones"
-                  placeholder="Notas adicionales para el pedido"
+                  placeholder="Ej: Entregar después de las 15:00, portón azul..."
                   value={observaciones}
                   onChange={(e) => setObservaciones(e.target.value)}
                 />
@@ -423,6 +451,7 @@ export default function PedidoNuevo() {
       });
       return;
     }
+    if (!validarPesosMinimos()) return;
     setStep((prev) => Math.min(prev + 1, 3));
   };
 
@@ -471,10 +500,14 @@ export default function PedidoNuevo() {
             Anterior
           </Button>
           {step < 3 ? (
-            <Button onClick={handleNext}>
-              Siguiente
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
+<Button 
+    onClick={handleNext} 
+    disabled={step === 2 && (detalles.length === 0 || tieneErroresDePeso)}
+    className={tieneErroresDePeso ? "opacity-50 cursor-not-allowed" : ""}
+  >
+    Siguiente
+    <ArrowRight className="ml-2 h-4 w-4" />
+  </Button>
           ) : (
             <Button
               onClick={() => pedidoMutation.mutate()}
