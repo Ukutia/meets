@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
+FRONTEND_URL = os.environ.get("FRONTEND_URL")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
@@ -157,3 +157,16 @@ CORS_ALLOWED_ORIGINS = [
 CSRF_TRUSTED_ORIGINS = [
     os.environ.get("FRONTEND_URL", "http://localhost:5173"),
 ]
+
+
+# Si existe FRONTEND_URL, nos aseguramos de que tenga https:// y lo agregamos
+if FRONTEND_URL:
+    # Si la URL no empieza con http, se lo ponemos
+    full_url = FRONTEND_URL if FRONTEND_URL.startswith("http") else f"https://{FRONTEND_URL}"
+    CORS_ALLOWED_ORIGINS.append(full_url)
+    CSRF_TRUSTED_ORIGINS.append(full_url)
+
+# También es buena práctica agregar la propia URL del backend a CSRF_TRUSTED_ORIGINS
+BACKEND_URL = os.environ.get("RAILWAY_STATIC_URL") # Variable automática de Railway
+if BACKEND_URL:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{BACKEND_URL}")

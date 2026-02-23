@@ -6,14 +6,20 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "0.0.0.0", // Cambiado para que Docker pueda mapear el tráfico correctamente
+    host: "0.0.0.0",
     port: 5173,
-    strictPort: true, // Evita que Vite cambie de puerto si el 5173 está ocupado
+    strictPort: true,
+    // --- ESTA ES LA PARTE QUE SOLUCIONA EL ERROR ---
+    allowedHosts: [
+      "meets-production-398c.up.railway.app", // Tu host específico
+      ".railway.app"                         // Permite cualquier subdominio de Railway
+    ],
+    // ----------------------------------------------
     watch: {
-      usePolling: true, // Necesario para detectar cambios de archivos en volúmenes de Docker
+      usePolling: true,
     },
     hmr: {
-      clientPort: 5173, // Asegura que el navegador se conecte al puerto correcto para actualizaciones en vivo
+      clientPort: 5173,
     },
   },
   plugins: [
