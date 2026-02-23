@@ -53,6 +53,9 @@ Peso Promedio por unidad en stock - OK
 Editar Precios Productos - OK
 Estado Producto Desactivado - OK
 Vistas de Flujos Entrada-Salida - OK
+Editar Clientes
+Marcar Pagadas Facturas
+Conexion SII
 Adelantos
 Pagos y Deuda
 Ganancias
