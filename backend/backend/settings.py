@@ -33,7 +33,12 @@ MEDIA_URL = '/media/'
 # Esto le dice a Django que los archivos están en la carpeta 'comprobantes_pagos'
 MEDIA_ROOT = os.path.join(BASE_DIR.parent, 'comprobantes_pagos')
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    'localhost', 
+    '127.0.0.1', 
+    'meets-production-398c.up.railway.app', # Tu backend
+    '.up.railway.app'                      # Comodín para Railway
+]
 
 
 # Application definition
@@ -151,22 +156,26 @@ MEDIA_ROOT = os.path.join(BASE_DIR.parent, 'comprobantes_pagos')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # 2. Seguridad de CORS (Vital para que React conecte)
-CORS_ALLOWED_ORIGINS = [
-    os.environ.get("FRONTEND_URL", "http://localhost:5173"),
-]
-CSRF_TRUSTED_ORIGINS = [
-    os.environ.get("FRONTEND_URL", "http://localhost:5173"),
-]
+CORS_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
 
+# Variable que viene de Railway
+FRONTEND_URL = os.environ.get("FRONTEND_URL")
 
-# Si existe FRONTEND_URL, nos aseguramos de que tenga https:// y lo agregamos
 if FRONTEND_URL:
-    # Si la URL no empieza con http, se lo ponemos
-    full_url = FRONTEND_URL if FRONTEND_URL.startswith("http") else f"https://{FRONTEND_URL}"
-    CORS_ALLOWED_ORIGINS.append(full_url)
-    CSRF_TRUSTED_ORIGINS.append(full_url)
+    # Si la URL no tiene el protocolo, se lo agregamos para que Django no dé error
+    if not FRONTEND_URL.startswith("http"):
+        full_url = f"https://{FRONTEND_URL}"
+    else:
+        full_url = FRONTEND_URL
+    
+    # Agregamos la URL limpia a las listas
+    if full_url not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(full_url)
+    if full_url not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(full_url)
 
-# También es buena práctica agregar la propia URL del backend a CSRF_TRUSTED_ORIGINS
-BACKEND_URL = os.environ.get("RAILWAY_STATIC_URL") # Variable automática de Railway
+# Agregamos la URL del propio backend a CSRF (necesario para el Admin y subidas)
+BACKEND_URL = os.environ.get("RAILWAY_STATIC_URL")
 if BACKEND_URL:
     CSRF_TRUSTED_ORIGINS.append(f"https://{BACKEND_URL}")
