@@ -3,3 +3,5 @@ djangorestframework==3.15.2
 django-cors-headers==4.6.0
 psycopg[c]==3.2.3
 Pillow
+dj-database-url
+whitenoise

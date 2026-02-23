@@ -86,14 +86,24 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
+# Intentamos cargar la configuración de Railway
 DATABASES = {
-    # Si existe DATABASE_URL (Railway), la usa. Si no, usa la local por defecto.
     'default': dj_database_url.config(
         default=os.environ.get('DATABASE_URL'),
         conn_max_age=600
     )
 }
 
+# PLAN B: Si no hay DATABASE_URL (estamos en local con Docker), sobreescribimos
+if not os.environ.get('DATABASE_URL'):
+    DATABASES['default'] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.environ.get("DB_NAME", "db"),
+        "USER": os.environ.get("DB_USER", "user"),
+        "PASSWORD": os.environ.get("DB_PASS", "localdevpw"),
+        "HOST": os.environ.get("DB_HOST", "db"),
+        "PORT": os.environ.get("DB_PORT", "5432"),
+    }
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
 
