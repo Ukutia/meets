@@ -33,12 +33,7 @@ MEDIA_URL = '/media/'
 # Esto le dice a Django que los archivos están en la carpeta 'comprobantes_pagos'
 MEDIA_ROOT = os.path.join(BASE_DIR.parent, 'comprobantes_pagos')
 
-ALLOWED_HOSTS = [
-    'localhost', 
-    '127.0.0.1', 
-    'meets-production-398c.up.railway.app', # Tu backend
-    '.up.railway.app'                      # Comodín para Railway
-]
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
