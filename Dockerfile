@@ -16,4 +16,4 @@ RUN pip install -r /requirements.txt && apk del .tmp
 COPY ./backend /backend
 WORKDIR /backend
 
-CMD ["python", "manage.py", "runserver", "0.0.0.0:$PORT"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:$PORT"]
