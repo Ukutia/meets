@@ -25,4 +25,5 @@ COPY ./backend/ .
 EXPOSE 8000
 
 # El primer 'backend' es la carpeta, el segundo 'wsgi' es el archivo
-CMD ["sh", "-c", "/py/bin/python manage.py migrate --noinput && /py/bin/gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --log-level debug"]
+# Usamos rutas completas al entorno virtual para evitar fallos de PATH
+CMD ["sh", "-c", "/py/bin/python manage.py migrate --noinput ; exec /py/bin/gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --log-level debug --access-logfile -"]
