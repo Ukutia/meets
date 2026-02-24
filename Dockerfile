@@ -24,5 +24,5 @@ COPY ./backend/ .
 # Exponemos el puerto dinámico
 EXPOSE 8000
 
-# Ejecutamos migraciones y arrancamos con el puerto de Railway
-CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT"]
+# El primer 'backend' es la carpeta, el segundo 'wsgi' es el archivo
+CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --log-level debug"]
