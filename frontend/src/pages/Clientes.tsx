@@ -28,12 +28,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createCliente, getClientes, getVendedores } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { Cliente, Vendedor } from '@/types';
+import type { Vendedor } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
 interface ClienteForm {
@@ -43,6 +43,29 @@ interface ClienteForm {
   email?: string;
   vendedor: string;
 }
+
+// Función para formatear: 9 XXXX XXXX
+const formatSimplePhone = (value: string) => {
+  // Solo números
+  const digits = value.replace(/\D/g, '');
+  
+  if (!digits) return '';
+
+  // Forzamos que el primer dígito sea siempre 9
+  let formatted = '9';
+  
+  // Si el usuario escribió algo más después del 9
+  const rest = digits.startsWith('9') ? digits.substring(1) : digits;
+
+  if (rest.length > 0) {
+    formatted += ' ' + rest.substring(0, 4);
+  }
+  if (rest.length > 4) {
+    formatted += ' ' + rest.substring(4, 8);
+  }
+
+  return formatted;
+};
 
 export default function Clientes() {
   const [search, setSearch] = useState('');
@@ -84,7 +107,8 @@ export default function Clientes() {
       createCliente({
         nombre: values.nombre,
         direccion: values.direccion,
-        telefono: values.telefono,
+        // Limpiamos espacios antes de enviar al backend si es necesario
+        telefono: values.telefono?.replace(/\s/g, ''), 
         email: values.email,
         vendedor: Number(values.vendedor),
       }),
@@ -124,13 +148,8 @@ export default function Clientes() {
     createMutation.mutate(values);
   };
 
-  if (isLoading) {
-    return <LoadingSpinner />;
-  }
-
-  if (error) {
-    return <ErrorMessage message="No se pudieron cargar los clientes" />;
-  }
+  if (isLoading) return <LoadingSpinner />;
+  if (error) return <ErrorMessage message="No se pudieron cargar los clientes" />;
 
   return (
     <div className="space-y-6">
@@ -151,9 +170,7 @@ export default function Clientes() {
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader>
               <DialogTitle>Nuevo Cliente</DialogTitle>
-              <DialogDescription>
-                Agregue un nuevo cliente al sistema
-              </DialogDescription>
+              <DialogDescription>Agregue un nuevo cliente al sistema</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
@@ -164,14 +181,28 @@ export default function Clientes() {
                   {...form.register('nombre', { required: true })}
                 />
               </div>
+              
               <div className="grid gap-2">
-                <Label htmlFor="telefono">Teléfono</Label>
-                <Input
-                  id="telefono"
-                  placeholder="+54 11 1234-5678"
-                  {...form.register('telefono')}
+                <Label htmlFor="telefono">Teléfono (9 XXXX XXXX)</Label>
+                <Controller
+                  name="telefono"
+                  control={form.control}
+                  render={({ field }) => (
+                    <Input
+                      id="telefono"
+                      placeholder="9 1234 5678"
+                      value={field.value}
+                      onChange={(e) => {
+                        const formatted = formatSimplePhone(e.target.value);
+                        if (formatted.length <= 11) { // 9 + 2 espacios + 8 dígitos
+                          field.onChange(formatted);
+                        }
+                      }}
+                    />
+                  )}
                 />
               </div>
+
               <div className="grid gap-2">
                 <Label htmlFor="direccion">Dirección</Label>
                 <Input
