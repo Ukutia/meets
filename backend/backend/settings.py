@@ -51,10 +51,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -174,3 +174,13 @@ if FRONTEND_URL:
 BACKEND_URL = os.environ.get("RAILWAY_STATIC_URL")
 if BACKEND_URL:
     CSRF_TRUSTED_ORIGINS.append(f"https://{BACKEND_URL}")
+
+
+# Confía en el proxy de Railway para identificar conexiones seguras (HTTPS)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Permite que se envíen credenciales (si usas cookies o Auth)
+CORS_ALLOW_CREDENTIALS = True
+
+# Si sigues con problemas de CORS en modo prueba, puedes habilitar esto temporalmente:
+# CORS_ALLOW_ALL_ORIGINS = True
