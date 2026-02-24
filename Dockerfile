@@ -26,5 +26,4 @@ EXPOSE 8000
 
 # El primer 'backend' es la carpeta, el segundo 'wsgi' es el archivo
 # Usamos rutas completas al entorno virtual para evitar fallos de PATH
-# Prueba esto solo para diagnosticar
-CMD ["/py/bin/gunicorn", "backend.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["sh", "-c", "/py/bin/python manage.py migrate --noinput ; exec /py/bin/gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --log-level debug --access-logfile -"]
