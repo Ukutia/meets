@@ -1,19 +1,28 @@
 FROM python:3.13.0-alpine3.20
 
 ENV PYTHONUNBUFFERED 1
-
-COPY ./requirements.txt /requirements.txt
-
 ENV PATH="/py/bin:$PATH"
+
+# Instalación de dependencias del sistema
 RUN python -m venv /py && \
-    pip install --upgrade pip && \
+    /py/bin/pip install --upgrade pip && \
     apk add --update --upgrade --no-cache postgresql-client && \
     apk add --update --upgrade --no-cache --virtual .tmp \
         build-base postgresql-dev
 
-RUN pip install -r /requirements.txt && apk del .tmp
+# Instalación de requerimientos
+COPY ./requirements.txt /requirements.txt
+RUN /py/bin/pip install -r /requirements.txt && apk del .tmp
 
-COPY ./backend /backend
-WORKDIR /backend
+# --- AQUÍ ESTÁ EL CAMBIO DE RUTAS ---
+# Nos paramos en la raíz del contenedor
+WORKDIR /app
 
+# Copiamos el contenido de la carpeta backend de tu PC a la raíz /app del contenedor
+COPY ./backend/ .
+
+# Exponemos el puerto dinámico
+EXPOSE 8000
+
+# Ejecutamos migraciones y arrancamos con el puerto de Railway
 CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:$PORT"]
