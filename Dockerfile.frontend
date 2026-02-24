@@ -1,18 +1,20 @@
 FROM node:18-alpine
 
-WORKDIR /frontend
+# Definimos el directorio de trabajo
+WORKDIR /app
 
-# 1. Copiamos los archivos de definición de paquetes primero
-# Es vital que estos archivos estén en la carpeta ./frontend/ de tu host
-COPY ./frontend/package*.json ./
+# Copiamos los archivos de dependencias desde la carpeta frontend
+COPY frontend/package*.json ./
 
-# 2. Instalamos. Usamos install en lugar de ci para mayor flexibilidad en desarrollo
-# Si prefieres ci, asegúrate de que el lockfile esté actualizado.
+# Instalamos las dependencias
 RUN npm install
 
-# 3. Exponemos el puerto
+# COPIAMOS TODO EL CONTENIDO de la carpeta frontend al directorio actual (/app)
+# Esto incluye vite.config.ts, index.html y la carpeta src
+COPY frontend/ .
+
+# Exponemos el puerto (Vite por defecto usa 5173)
 EXPOSE 5173
 
-# 4. El comando para arrancar (Vite necesita --host para Docker)
-# Cambia el CMD por este:
+# Comando de inicio usando la variable PORT de Railway
 CMD ["sh", "-c", "npm run dev -- --host 0.0.0.0 --port ${PORT:-5173}"]
