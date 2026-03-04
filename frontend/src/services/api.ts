@@ -84,7 +84,13 @@ export const getPedidoById = async (id: number) => {
   return response.data;
 };
 
-
+export const updateCliente = (id: number, data: {
+  nombre: string;
+  direccion: string;
+  telefono?: string;
+  email?: string;
+  vendedor: number;
+}) => api.put<Cliente>(`/clientes/${id}/`, data);
 
 // Actualizar pedido (PUT o PATCH)
 export const updatePedido = async (id: number, data: any) => {

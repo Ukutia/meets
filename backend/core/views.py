@@ -453,6 +453,12 @@ class ObtenerPedido(APIView):
 
 from django.db.models import Sum
 
+from rest_framework import generics
+
+class UpdateCliente(generics.UpdateAPIView):
+    queryset = Cliente.objects.all()
+    serializer_class = ClienteSerializer
+    lookup_field = 'pk'
 
 
 class StockProductos(APIView):
