@@ -457,7 +457,7 @@ from django.db.models import Sum
 
 class StockProductos(APIView):
     def get(self, request, *args, **kwargs):
-        productos = Producto.objects.all()
+        productos = Producto.objects.exclude(estado="desactivado")
         stock_data = []
 
         for producto in productos:

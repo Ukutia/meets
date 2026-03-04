@@ -36,11 +36,17 @@ export default function Stock() {
   });
 
   const filteredStock = useMemo(() => {
-    const stock = Array.isArray(data) ? data : [];
-    return stock.filter((item) =>
-      item.producto.toLowerCase().includes(search.toLowerCase())
-    );
-  }, [data, search]);
+      const stock = Array.isArray(data) ? data : [];
+      
+      // Primero filtramos
+      const filtered = stock.filter((item) =>
+        item.producto.toLowerCase().includes(search.toLowerCase())
+      );
+
+      // Luego ordenamos de mayor a menor (descendente) basado en 'stock'
+      return filtered.sort((a, b) => b.stock - a.stock);
+      
+    }, [data, search]);
 
   // Cálculos globales
   const totalValor = filteredStock.reduce(
