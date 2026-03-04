@@ -154,6 +154,19 @@ export default function Clientes() {
     setDialogOpen(true);
   };
 
+  // --- FUNCIÓN PARA ABRIR NUEVO CLIENTE ---
+  const handleNewClick = () => {
+    setEditingCliente(null);
+    form.reset({
+      nombre: '',
+      telefono: '',
+      direccion: '',
+      email: '',
+      vendedor: '',
+    });
+    setDialogOpen(true);
+  };
+
   const filteredClientes = useMemo(() => {
     return clientes.filter((c) =>
       c.nombre.toLowerCase().includes(search.toLowerCase())
@@ -173,104 +186,129 @@ export default function Clientes() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Clientes</h1>
-          <p className="text-muted-foreground">Gestión de base de clientes y vendedores</p>
-        </div>
-        
-        <Dialog open={dialogOpen} onOpenChange={(open) => !open && handleCloseDialog()}>
-          <DialogTrigger asChild>
-            <Button onClick={() => setEditingCliente(null)}>
-              <Plus className="mr-2 h-4 w-4" /> Nuevo Cliente
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[500px]">
-            <DialogHeader>
-              <DialogTitle>{editingCliente ? 'Editar Cliente' : 'Nuevo Cliente'}</DialogTitle>
-              <DialogDescription>
-                {editingCliente ? 'Modifique los datos del cliente' : 'Agregue un nuevo cliente al sistema'}
-              </DialogDescription>
-            </DialogHeader>
-            
-            <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="nombre">Nombre / Razón Social *</Label>
-                <Input
-                  id="nombre"
-                  {...form.register('nombre', { required: "El nombre es obligatorio" })}
-                />
-                {form.formState.errors.nombre && <span className="text-xs text-destructive">{form.formState.errors.nombre.message}</span>}
-              </div>
-              
-              <div className="grid gap-2">
-                <Label htmlFor="telefono">Teléfono (9 XXXX XXXX) *</Label>
-                <Controller
-                  name="telefono"
-                  control={form.control}
-                  rules={{ required: "El teléfono es obligatorio", minLength: { value: 11, message: "Teléfono incompleto" } }}
-                  render={({ field }) => (
-                    <Input
-                      id="telefono"
-                      placeholder="9 1234 5678"
-                      value={field.value}
-                      onChange={(e) => {
-                        const formatted = formatSimplePhone(e.target.value);
-                        if (formatted.length <= 11) field.onChange(formatted);
-                      }}
-                    />
-                  )}
-                />
-                {form.formState.errors.telefono && <span className="text-xs text-destructive">{form.formState.errors.telefono.message}</span>}
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="direccion">Dirección *</Label>
-                <Input
-                  id="direccion"
-                  {...form.register('direccion', { required: "La dirección es obligatoria" })}
-                />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" {...form.register('email')} />
-              </div>
-
-              <div className="grid gap-2">
-                <Label htmlFor="vendedor">Vendedor Asignado *</Label>
-                <Select
-                  value={form.watch('vendedor')}
-                  onValueChange={(val) => form.setValue('vendedor', val)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccione vendedor" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Array.isArray(vendedores) && vendedores.length > 0 ? (
-                      vendedores.map((v: Vendedor) => (
-                        <SelectItem key={v.id} value={String(v.id)}>
-                          {v.nombre} ({v.sigla})
-                        </SelectItem>
-                      ))
-                    ) : (
-                      <div className="p-2 text-sm text-muted-foreground">No hay vendedores disponibles</div>
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <DialogFooter className="mt-4">
-                <Button type="button" variant="outline" onClick={handleCloseDialog}>Cancelar</Button>
-                <Button type="submit" disabled={mutation.isPending}>
-                  {mutation.isPending ? 'Guardando...' : editingCliente ? 'Actualizar' : 'Guardar'}
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+    <div className="flex items-center justify-between">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Clientes</h1>
+        <p className="text-muted-foreground">Gestión de base de clientes y vendedores</p>
       </div>
+      
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        {/* Botón manual para asegurar que el estado se limpie antes de abrir */}
+        <Button onClick={handleNewClick}>
+          <Plus className="mr-2 h-4 w-4" /> Nuevo Cliente
+        </Button>
 
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>{editingCliente ? 'Editar Cliente' : 'Nuevo Cliente'}</DialogTitle>
+            <DialogDescription>
+              {editingCliente ? 'Modifique los datos del cliente' : 'Agregue un nuevo cliente al sistema'}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4 py-4">
+            {/* Nombre */}
+            <div className="grid gap-2">
+              <Label htmlFor="nombre">Nombre / Razón Social *</Label>
+              <Input
+                id="nombre"
+                {...form.register('nombre', { required: "El nombre es obligatorio" })}
+              />
+              {form.formState.errors.nombre && (
+                <span className="text-xs text-destructive">{form.formState.errors.nombre.message}</span>
+              )}
+            </div>
+            
+            {/* Teléfono con Controller para el formato */}
+            <div className="grid gap-2">
+              <Label htmlFor="telefono">Teléfono (9 XXXX XXXX) *</Label>
+              <Controller
+                name="telefono"
+                control={form.control}
+                rules={{ 
+                  required: "El teléfono es obligatorio", 
+                  minLength: { value: 11, message: "Teléfono incompleto" } 
+                }}
+                render={({ field }) => (
+                  <Input
+                    id="telefono"
+                    placeholder="9 1234 5678"
+                    value={field.value}
+                    onChange={(e) => {
+                      const formatted = formatSimplePhone(e.target.value);
+                      if (formatted.length <= 11) field.onChange(formatted);
+                    }}
+                  />
+                )}
+              />
+              {form.formState.errors.telefono && (
+                <span className="text-xs text-destructive">{form.formState.errors.telefono.message}</span>
+              )}
+            </div>
+
+            {/* Dirección */}
+            <div className="grid gap-2">
+              <Label htmlFor="direccion">Dirección *</Label>
+              <Input
+                id="direccion"
+                {...form.register('direccion', { required: "La dirección es obligatoria" })}
+              />
+              {form.formState.errors.direccion && (
+                <span className="text-xs text-destructive">{form.formState.errors.direccion.message}</span>
+              )}
+            </div>
+
+            {/* Email */}
+            <div className="grid gap-2">
+              <Label htmlFor="email">Email</Label>
+              <Input 
+                id="email" 
+                type="email" 
+                placeholder="ejemplo@correo.com"
+                {...form.register('email')} 
+              />
+            </div>
+
+            {/* Vendedor Asignado */}
+            <div className="grid gap-2">
+              <Label htmlFor="vendedor">Vendedor Asignado *</Label>
+              <Select
+                value={form.watch('vendedor')}
+                onValueChange={(val) => form.setValue('vendedor', val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccione vendedor" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.isArray(vendedores) && vendedores.length > 0 ? (
+                    vendedores.map((v: Vendedor) => (
+                      <SelectItem key={v.id} value={String(v.id)}>
+                        {v.nombre} ({v.sigla})
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <div className="p-2 text-sm text-muted-foreground">No hay vendedores disponibles</div>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <DialogFooter className="mt-4 gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={handleCloseDialog}>
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={mutation.isPending}>
+                {mutation.isPending ? (
+                  <><LoadingSpinner className="mr-2 h-4 w-4" /> Guardando...</>
+                ) : (
+                  editingCliente ? 'Actualizar' : 'Guardar'
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
       <div className="relative flex-1">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
