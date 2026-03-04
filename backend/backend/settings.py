@@ -15,6 +15,9 @@ import os
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_URL = os.environ.get("FRONTEND_URL")
@@ -154,8 +157,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
 
-# Variable que viene de Railway
-FRONTEND_URL = os.environ.get("FRONTEND_URL")
+
 
 if FRONTEND_URL:
     # Si la URL no tiene el protocolo, se lo agregamos para que Django no dé error
@@ -184,3 +186,6 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Si sigues con problemas de CORS en modo prueba, puedes habilitar esto temporalmente:
 # CORS_ALLOW_ALL_ORIGINS = True
+
+print(f"DEBUG: DATABASE_URL cargada -> {bool(os.environ.get('DATABASE_URL'))}")
+print(f"DEBUG: FRONTEND_URL -> {os.environ.get('FRONTEND_URL')}")

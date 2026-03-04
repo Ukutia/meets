@@ -19,7 +19,8 @@ export default defineConfig(({ mode }) => ({
       usePolling: true,
     },
     hmr: {
-      clientPort: 5173,
+
+      host: "localhost",
     },
   },
   plugins: [

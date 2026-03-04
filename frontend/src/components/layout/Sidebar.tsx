@@ -1,4 +1,5 @@
-import { NavLink } from 'react-router-dom';
+import { useEffect } from 'react'; // Añadir useEffect
+import { NavLink, useLocation } from 'react-router-dom'; // Añadir useLocation
 import {
   LayoutDashboard,
   Package,
@@ -25,6 +26,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 
+
 const menuItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
   { title: 'Productos', url: '/productos', icon: Package },
@@ -37,12 +39,20 @@ const menuItems = [
 ];
 
 export function AppSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile, setOpenMobile } = useSidebar(); // Extraemos isMobile y setOpenMobile
   const { logout, user } = useAuth();
+  const location = useLocation(); // Detecta cambios de URL
   const collapsed = state === 'collapsed';
 
+  // Cerrar automáticamente cuando cambie la ruta solo si estamos en móvil
+  useEffect(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  }, [location.pathname, isMobile, setOpenMobile]);
+
   return (
-    <Sidebar collapsible="icon" className="border-r border-border">
+    <Sidebar collapsible="icon" className="border-r border-border h-full">
       <SidebarHeader className="border-b border-border p-4">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">

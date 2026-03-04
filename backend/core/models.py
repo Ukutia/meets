@@ -9,6 +9,8 @@ class Vendedor(models.Model):
     def __str__(self):
         return f"{self.nombre} ({self.sigla})"  # Mostrar nombre y sigla en el admin
     
+
+    
 class Cliente(models.Model):
     id = models.AutoField(primary_key=True)  # Campo ID automático
     nombre = models.CharField(max_length=100)  # Nombre del cliente

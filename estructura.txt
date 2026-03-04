@@ -1,4 +1,4 @@
-ESTRUCTURA DE: C:\Users\Benjamin Urrutia\Documents\GitHub\meets
+ESTRUCTURA DE: C:\Users\benja\Documentos\GitHub\meets
 
 📁 backend/
     📁 backend/
@@ -39,6 +39,7 @@ ESTRUCTURA DE: C:\Users\Benjamin Urrutia\Documents\GitHub\meets
         📄 tests.py
         📄 urls.py
         📄 views.py
+    📄 db.sqlite3
     📄 manage.py
 📄 docker-compose.yml
 📄 Dockerfile
@@ -155,6 +156,10 @@ ESTRUCTURA DE: C:\Users\Benjamin Urrutia\Documents\GitHub\meets
     📄 vite.config.ts
 📄 generar.py
 📄 LICENSE
+📁 meatme-dash-pro/
+    📁 src/
+        📁 lib/
+            📄 utils.ts
 📄 reading
 📄 README.md
 📄 requirements.txt

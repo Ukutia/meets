@@ -1,5 +1,4 @@
-import { Package, AlertCircle, Plus, Search, Scale, ShoppingCart } from 'lucide-react';
-import { StatCard } from '@/components/shared/StatCard';
+import { Package, AlertCircle, Plus, Search, Scale, ShoppingCart, ChevronDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
@@ -11,6 +10,21 @@ import type { StockItem } from '@/types';
 import { useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableHead, 
+  TableHeader, 
+  TableRow 
+} from '@/components/ui/table';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -21,117 +35,127 @@ export default function Dashboard() {
     queryFn: getStock,
   });
 
-  // Normalización de datos para evitar errores de tipo
   const stockData = useMemo(() => {
     const rawData = stockResponse?.data || [];
     return Array.isArray(rawData) ? (rawData as StockItem[]) : [];
   }, [stockResponse]);
 
-  // Filtrado de stock crítico (menos de 10 unidades)
   const stockCritico = useMemo(() => 
     stockData.filter(item => item.disponibles < 10), 
     [stockData]
   );
 
-  // Filtrado por búsqueda para la sección principal
-  const filteredStock = useMemo(() => 
-    stockData.filter(item => 
-      item.estado === 'disponible' && // <--- FILTRO DE ESTADO AGREGADO
-      item.producto.toLowerCase().includes(searchTerm.toLowerCase())
-    ), 
-    [stockData, searchTerm]
-  );
+const filteredStock = useMemo(() => {
+    return stockData
+      .filter(item => 
+        item.estado === 'disponible' && 
+        item.producto.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+      .sort((a, b) => b.disponibles - a.disponibles); // <--- LÓGICA DE ORDENAMIENTO AGREGADA
+  }, [stockData, searchTerm]);
 
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="Error al cargar el stock" />;
 
   return (
-    <div className="space-y-6">
-      {/* Cabecera Simple con Acción Principal */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="flex flex-col h-[calc(100vh-100px)] space-y-4 pb-20 md:pb-0">
+      
+      {/* 1. CABECERA COMPACTA */}
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Disponibilidad de Productos</h1>
-          <p className="text-muted-foreground">Consulta rápida de existencias y precios</p>
+          <h1 className="text-2xl font-bold tracking-tight">Inventario</h1>
+          <p className="text-xs text-muted-foreground hidden sm:block">Existencias y precios actuales</p>
         </div>
         <Button 
-          size="lg" 
           onClick={() => navigate('/pedidos/nuevo')} 
-          className="h-14 px-8 text-lg font-bold shadow-xl transition-all hover:scale-105"
+          className="hidden md:flex shadow-lg"
         >
-          <Plus className="mr-2 h-6 w-6" /> Nuevo Pedido
+          <Plus className="mr-2 h-4 w-4" /> Nuevo Pedido
         </Button>
       </div>
 
-      {/* SECCIÓN 1: STOCK CRÍTICO (Solo aparece si hay productos en riesgo) */}
+      {/* 2. ALERTAS DE STOCK (Acordeón Desplegable) */}
       {stockCritico.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-destructive">
-            <AlertCircle className="h-5 w-5 fill-destructive text-white" />
-            <h2 className="text-lg font-bold uppercase tracking-wider">Stock Crítico (Reponer pronto)</h2>
-          </div>
-          <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-            {stockCritico.map(item => (
-              <Card key={`critico-${item.producto}`} className="border-destructive/50 bg-destructive/5">
-                <CardContent className="p-4 flex justify-between items-center">
-                  <div>
-                    <p className="font-bold text-destructive">{item.producto}</p>
-                    <p className="text-2xl font-black">{item.disponibles} <span className="text-xs">UNS</span></p>
+        <Accordion type="single" collapsible className="w-full bg-destructive/5 border border-destructive/20 rounded-lg px-4">
+          <AccordionItem value="alerts" className="border-none">
+            <AccordionTrigger className="hover:no-underline py-3">
+              <div className="flex items-center gap-2 text-destructive">
+                <AlertCircle className="h-4 w-4 fill-destructive text-white" />
+                <span className="font-bold text-sm uppercase">Alertas de Stock ({stockCritico.length})</span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 pb-3">
+                {stockCritico.map(item => (
+                  <div key={`crit-${item.producto}`} className="flex justify-between items-center bg-white p-2 rounded border border-destructive/30 text-xs">
+                    <span className="font-medium truncate mr-2">{item.producto}</span>
+                    <Badge variant="destructive" className="h-5 text-[10px]">{item.disponibles} UN</Badge>
                   </div>
-                  <Badge variant="destructive" className="animate-pulse">Bajo Stock</Badge>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
+                ))}
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       )}
 
-      {/* SECCIÓN 2: DISPONIBILIDAD TOTAL (Lo Principal) */}
-      <Card className="border-none shadow-none bg-transparent">
-        <CardHeader className="px-0 flex flex-row items-center justify-between space-y-0 pb-4">
-          <CardTitle className="text-xl">Catálogo de Inventario</CardTitle>
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input 
-              placeholder="Buscar producto..." 
-              className="pl-10 h-11 bg-white shadow-sm"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="px-0">
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {filteredStock.map((item) => (
-              <Card key={item.producto} className="overflow-hidden hover:border-primary transition-all shadow-sm">
-                <div className="bg-primary/5 p-3 border-b border-primary/10 flex justify-between items-center">
-                   <span className="font-bold text-primary truncate">{item.producto}</span>
-                   <p className="text-lg font-black text-primary">
+      {/* 3. BUSCADOR FIJO */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input 
+          placeholder="Buscar producto..." 
+          className="pl-10 h-10 shadow-sm bg-white"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+      </div>
+
+      {/* 4. TABLA DE PRODUCTOS CON SCROLL INTERNO */}
+      <Card className="flex-1 min-h-0 overflow-hidden border-none shadow-sm md:border md:shadow-none">
+        <ScrollArea className="h-full">
+          <Table>
+            <TableHeader className="sticky top-0 bg-white z-10 shadow-sm">
+              <TableRow>
+                <TableHead className="w-[45%] text-xs uppercase font-bold">Producto</TableHead>
+                <TableHead className="text-center text-xs uppercase font-bold">Stock</TableHead>
+                <TableHead className="text-right text-xs uppercase font-bold">Precio/Kg</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredStock.map((item) => (
+                <TableRow key={item.producto} className="hover:bg-primary/5 transition-colors">
+                  <TableCell className="py-3">
+                    <div className="font-bold text-sm">{item.producto}</div>
+                    <div className="text-[10px] text-blue-600 font-medium">
+                      {item.kilos_actuales.toFixed(1)} Kg disponibles
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <div className="inline-flex flex-col items-center">
+                      <span className="text-sm font-black">{item.disponibles}</span>
+                      <span className="text-[9px] text-muted-foreground uppercase">unidades</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right font-mono font-bold text-sm">
                     ${Number(item.precio_por_kilo).toLocaleString('es-CL')}
-                  </p>
-                </div>
-                <CardContent className="p-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center text-muted-foreground gap-1 text-xs">
-                        <ShoppingCart className="h-3 w-3" /> Unidades
-                      </div>
-                      <p className="text-xl font-bold">{item.disponibles}</p>
-                    </div>
-                    <div className="space-y-1 border-l pl-4">
-                      <div className="flex items-center text-muted-foreground gap-1 text-xs">
-                        <Scale className="h-3 w-3" /> Kilos
-                      </div>
-                      <p className="text-xl font-bold text-blue-600">
-                        {item.kilos_actuales.toFixed(1)} <span className="text-xs text-muted-foreground">kg</span>
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </CardContent>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </ScrollArea>
       </Card>
+
+      {/* 5. BOTÓN FLOTANTE MÓVIL (Fijado abajo) */}
+      <div className="md:hidden fixed bottom-24 right-6 z-50">
+        <Button 
+          size="lg" 
+          onClick={() => navigate('/pedidos/nuevo')} 
+          className="h-14 w-14 rounded-full shadow-2xl bg-primary flex items-center justify-center p-0"
+        >
+          <Plus className="h-8 w-8 text-white" />
+        </Button>
+      </div>
+
     </div>
   );
 }

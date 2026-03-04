@@ -88,17 +88,24 @@ export default function Clientes() {
     },
   });
 
+  
   // Busca estas líneas y cámbialas por esto:
   const clientes = Array.isArray(clientesData) ? clientesData : (clientesData as any)?.results ?? [];
   const vendedores = Array.isArray(vendedoresData) ? vendedoresData : (vendedoresData as any)?.results ?? [];
 
-  // Mutación para Crear/Editar
+// Mutación para Crear/Editar corregida
   const mutation = useMutation({
     mutationFn: (values: ClienteForm) => {
+      // Creamos el objeto que espera el backend
       const payload = {
-        ...values,
+        nombre: values.nombre,
+        direccion: values.direccion,
+        email: values.email,
+        // 1. Limpiamos el teléfono de espacios
         telefono: values.telefono.replace(/\s/g, ''),
-        vendedor: Number(values.vendedor),
+        // 2. IMPORTANTE: Cambiamos 'vendedor' por 'vendedor_id' 
+        // para que coincida con el PrimaryKeyRelatedField del backend
+        vendedor_id: Number(values.vendedor), 
       };
       
       return editingCliente 
@@ -113,7 +120,8 @@ export default function Clientes() {
       });
       handleCloseDialog();
     },
-    onError: () => {
+    onError: (error) => {
+      console.error("Error en la mutación:", error); // Útil para debuggear
       toast({
         title: 'Error',
         description: 'No se pudo procesar la solicitud. Revise los datos.',

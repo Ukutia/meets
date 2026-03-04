@@ -6,3 +6,4 @@ Pillow
 dj-database-url
 whitenoise
 gunicorn
+python-dotenv

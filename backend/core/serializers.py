@@ -7,10 +7,19 @@ class VendedorSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'sigla']
 
 class ClienteSerializer(serializers.ModelSerializer):
-    vendedor = VendedorSerializer()
+    # Esto se usa para la LECTURA (GET) - devuelve el objeto completo
+    vendedor = VendedorSerializer(read_only=True)
+    
+    # Esto se usa para la ESCRITURA (PUT/POST) - acepta el ID numérico
+    vendedor_id = serializers.PrimaryKeyRelatedField(
+        queryset=Vendedor.objects.all(), 
+        source='vendedor', 
+        write_only=True
+    )
+
     class Meta:
         model = Cliente
-        fields = ['id', 'nombre', 'vendedor', 'direccion', 'telefono', 'email']
+        fields = ['id', 'nombre', 'vendedor', 'vendedor_id', 'direccion', 'telefono', 'email']
 
 class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
