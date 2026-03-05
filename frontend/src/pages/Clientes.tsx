@@ -94,41 +94,43 @@ export default function Clientes() {
   const vendedores = Array.isArray(vendedoresData) ? vendedoresData : (vendedoresData as any)?.results ?? [];
 
 // Mutación para Crear/Editar corregida
-  const mutation = useMutation({
-    mutationFn: (values: ClienteForm) => {
-      // Creamos el objeto que espera el backend
-      const payload = {
-        nombre: values.nombre,
-        direccion: values.direccion,
-        email: values.email,
-        // 1. Limpiamos el teléfono de espacios
-        telefono: values.telefono.replace(/\s/g, ''),
-        // 2. IMPORTANTE: Cambiamos 'vendedor' por 'vendedor_id' 
-        // para que coincida con el PrimaryKeyRelatedField del backend
-        vendedor_id: Number(values.vendedor), 
-      };
-      
-      return editingCliente 
-        ? updateCliente(editingCliente.id, payload) 
-        : createCliente(payload);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['clientes'] });
-      toast({
-        title: editingCliente ? 'Cliente actualizado' : 'Cliente creado',
-        description: 'La operación se realizó correctamente.',
-      });
-      handleCloseDialog();
-    },
-    onError: (error) => {
-      console.error("Error en la mutación:", error); // Útil para debuggear
-      toast({
-        title: 'Error',
-        description: 'No se pudo procesar la solicitud. Revise los datos.',
-        variant: 'destructive',
-      });
-    },
-  });
+// Busca tu useMutation y cámbialo por este:
+const mutation = useMutation({
+  mutationFn: (values: ClienteForm) => {
+    const payload = {
+      nombre: values.nombre,
+      direccion: values.direccion,
+      // 1. Si el email está vacío, enviamos null (evita errores de formato de cadena vacía)
+      email: values.email || null,
+      // 2. Limpiamos espacios
+      telefono: values.telefono.replace(/\s/g, ''),
+      // 3. Enviamos el ID como NÚMERO. 
+      // Prueba con 'vendedor_id'. Si falla, cámbialo a 'vendedor' a secas.
+      vendedor: Number(values.vendedor), 
+    };
+    
+    return editingCliente 
+      ? updateCliente(editingCliente.id, payload) 
+      : createCliente(payload);
+  },
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['clientes'] });
+    toast({
+      title: editingCliente ? 'Cliente actualizado' : 'Cliente creado',
+      description: 'La operación se realizó correctamente.',
+    });
+    handleCloseDialog();
+  },
+  onError: (error: any) => {
+    // IMPORTANTE: Esto te dirá en la consola qué campo exacto falta
+    console.error("Error del backend:", error.response?.data);
+    toast({
+      title: 'Error',
+      description: error.response?.data?.error || 'Verifique los datos obligatorios',
+      variant: 'destructive',
+    });
+  },
+});
 
   const handleCloseDialog = () => {
     setDialogOpen(false);
@@ -273,24 +275,26 @@ export default function Clientes() {
             <div className="grid gap-2">
               <Label htmlFor="vendedor">Vendedor Asignado *</Label>
               <Select
-                value={form.watch('vendedor')}
-                onValueChange={(val) => form.setValue('vendedor', val)}
+                // Usamos el watch para que el Select refleje el estado actual del form
+                value={form.watch('vendedor')} 
+                onValueChange={(val) => {
+                  form.setValue('vendedor', val, { shouldValidate: true });
+                }}
               >
-                <SelectTrigger>
+                <SelectTrigger id="vendedor">
                   <SelectValue placeholder="Seleccione vendedor" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Array.isArray(vendedores) && vendedores.length > 0 ? (
-                    vendedores.map((v: Vendedor) => (
-                      <SelectItem key={v.id} value={String(v.id)}>
-                        {v.nombre} ({v.sigla})
-                      </SelectItem>
-                    ))
-                  ) : (
-                    <div className="p-2 text-sm text-muted-foreground">No hay vendedores disponibles</div>
-                  )}
+                  {vendedores.map((v: Vendedor) => (
+                    <SelectItem key={v.id} value={String(v.id)}>
+                      {v.nombre} ({v.sigla})
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {form.formState.errors.vendedor && (
+                <span className="text-xs text-destructive">El vendedor es requerido</span>
+              )}
             </div>
 
             <DialogFooter className="mt-4 gap-2 sm:gap-0">
