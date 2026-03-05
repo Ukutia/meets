@@ -53,39 +53,29 @@ export default function Pedidos() {
   const formatCurrency = (val: any) => 
     Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
 
-  const cobrarPedido = (pedido: Pedido) => {
-    const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text(`DETALLE DE PEDIDO #00${pedido.id}`, 14, 20);
-    doc.setFontSize(11);
-    doc.text(`Cliente: ${pedido.cliente.nombre}`, 14, 30);
-    doc.text(`Fecha: ${new Date().toLocaleDateString('es-CL')}`, 14, 36);
+const cobrarPedido = (pedido: Pedido) => {
+  // 1. Preparar el cuerpo del mensaje
+  const saludo = `*Hola ${pedido.cliente.nombre}, te envío el detalle de tu pedido #00${pedido.id}:*\n\n`;
+  
+  const items = pedido.detalles.map(d => 
+    `• ${d.producto.nombre}: ${d.cantidad_kilos}kg x ${formatCurrency(d.producto.precio_por_kilo)} = *${formatCurrency(d.total_venta)}*`
+  ).join('\n');
+  
+  const totalMsg = `\n\n*TOTAL A PAGAR: ${formatCurrency(pedido.total)}*`;
+  
+  // 2. Construir la URL de WhatsApp
+  // Usamos el formato internacional si el teléfono no lo tiene (asumiendo Chile +56)
+  let telefono = pedido.cliente.telefono.replace(/\s/g, '');
+  if (!telefono.startsWith('56')) {
+    telefono = '56' + telefono;
+  }
 
-    autoTable(doc, {
-      startY: 45,
-      head: [['Producto', 'Kilos', 'Unidades', 'Precio', 'Subtotal']],
-      body: pedido.detalles.map(d => [
-        d.producto.nombre,
-        `${d.cantidad_kilos} kg`,
-        d.cantidad_unidades || '-',
-        formatCurrency(d.producto.precio_por_kilo),
-        formatCurrency(d.total_venta)
-      ]),
-      foot: [[{ content: `TOTAL: ${formatCurrency(pedido.total)}`, colSpan: 5, styles: { halign: 'right', fontStyle: 'bold' } }]],
-      headStyles: { fillColor: [71, 85, 105] },
-    });
+  const textoCompleto = encodeURIComponent(saludo + items + totalMsg);
+  const whatsappUrl = `https://api.whatsapp.com/send?phone=${telefono}&text=${textoCompleto}`;
 
-    doc.save(`Pedido_${pedido.id}.pdf`);
-
-    const saludo = `*Hola ${pedido.cliente.nombre}, adjunto el detalle de tu pedido #00${pedido.id}:*\n\n`;
-    const items = pedido.detalles.map(d => 
-      `• ${d.producto.nombre}: ${d.cantidad_kilos}kg x ${formatCurrency(d.producto.precio_por_kilo)} = *${formatCurrency(d.total_venta)}*`
-    ).join('\n');
-    const totalMsg = `\n\n*TOTAL A PAGAR: ${formatCurrency(pedido.total)}*`;
-    const url = `https://wa.me/${pedido.cliente.telefono}?text=${encodeURIComponent(saludo + items + totalMsg )}`;
-    window.open(url, '_blank');
-  };
-
+  // 3. Redirigir directamente (mejor para móviles que window.open)
+  window.location.href = whatsappUrl;
+};
   // 1. Helper para los colores de los estados
   const getStatusColor = (estado: string) => {
     switch (estado) {
