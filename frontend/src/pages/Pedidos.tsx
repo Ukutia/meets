@@ -82,7 +82,7 @@ export default function Pedidos() {
       `• ${d.producto.nombre}: ${d.cantidad_kilos}kg x ${formatCurrency(d.producto.precio_por_kilo)} = *${formatCurrency(d.total_venta)}*`
     ).join('\n');
     const totalMsg = `\n\n*TOTAL A PAGAR: ${formatCurrency(pedido.total)}*`;
-    const url = `https://wa.me/${pedido.cliente.telefono}?text=${encodeURIComponent(saludo + items + totalMsg + "\n\n(Adjunto comprobante PDF descargado)")}`;
+    const url = `https://wa.me/${pedido.cliente.telefono}?text=${encodeURIComponent(saludo + items + totalMsg )}`;
     window.open(url, '_blank');
   };
 
