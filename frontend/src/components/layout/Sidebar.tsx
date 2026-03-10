@@ -29,9 +29,9 @@ import { useAuth } from '@/contexts/AuthContext';
 
 const menuItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
-  { title: 'Productos', url: '/productos', icon: Package },
-  { title: 'Clientes', url: '/clientes', icon: Users },
   { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
+  { title: 'Clientes', url: '/clientes', icon: Users },
+  { title: 'Productos', url: '/productos', icon: Package },
   { title: 'Facturas', url: '/facturas', icon: FileText },
   { title: 'Stock', url: '/stock', icon: Warehouse },
   { title: 'Flujos de Inventario', url: '/flujos-de-inventario', icon: Feather },

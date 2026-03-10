@@ -23,7 +23,7 @@ class Cliente(models.Model):
     )
     direccion = models.CharField(max_length=255)  # Dirección del cliente
     telefono = models.CharField(max_length=20, blank=True)
-    email = models.EmailField(blank=True)
+    email = models.EmailField(blank=True,null=True)
 
     def __str__(self):
         return self.nombre  # Mostrar el nombre del cliente en el admin de Django

@@ -38,7 +38,7 @@ export const createCliente = (data: {
   direccion: string;
   telefono?: string;
   email?: string;
-  vendedor: number;
+  vendedor_id: number;
 }) => api.post<Cliente>('/clientes/crear/', data);
 
 // Pedidos
@@ -89,7 +89,7 @@ export const updateCliente = (id: number, data: {
   direccion: string;
   telefono?: string;
   email?: string;
-  vendedor: number;
+  vendedor_id: number;
 }) => api.put<Cliente>(`/clientes/${id}/`, data);
 
 // Actualizar pedido (PUT o PATCH)

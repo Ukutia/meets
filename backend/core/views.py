@@ -260,7 +260,7 @@ class CrearCliente(APIView):
         direccion = data.get('direccion')
         telefono = data.get('telefono')
         email = data.get('email')
-        vendedor_id = data.get('vendedor')
+        vendedor_id = data.get('vendedor_id')
 
         if not nombre or not direccion or not vendedor_id:
             return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)

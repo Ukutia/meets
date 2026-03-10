@@ -44,6 +44,20 @@ interface ClienteForm {
   vendedor: string;
 }
 
+const getVendedorColor = (sigla: string) => {
+  const colors: Record<string, string> = {
+    // Puedes mapear siglas específicas a colores fijos
+    'JS': 'bg-blue-100 text-blue-700 border-blue-200',
+    'MA': 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    'CP': 'bg-amber-100 text-amber-700 border-amber-200',
+    'LG': 'bg-purple-100 text-purple-700 border-purple-200',
+    'RA': 'bg-rose-100 text-rose-700 border-rose-200',
+  };
+
+  // Si la sigla no está en la lista, asigna un color por defecto o genera uno basado en el texto
+  return colors[sigla.toUpperCase()] || 'bg-slate-100 text-slate-700 border-slate-200';
+};
+
 const formatSimplePhone = (value: string) => {
   const digits = value.replace(/\D/g, '');
   if (!digits) return '';
@@ -101,12 +115,12 @@ const mutation = useMutation({
       nombre: values.nombre,
       direccion: values.direccion,
       // 1. Si el email está vacío, enviamos null (evita errores de formato de cadena vacía)
-      email: values.email || null,
+      email: values.email?.trim() ? values.email : null,
       // 2. Limpiamos espacios
       telefono: values.telefono.replace(/\s/g, ''),
       // 3. Enviamos el ID como NÚMERO. 
       // Prueba con 'vendedor_id'. Si falla, cámbialo a 'vendedor' a secas.
-      vendedor: Number(values.vendedor), 
+      vendedor_id: Number(values.vendedor), 
     };
     
     return editingCliente 
@@ -339,7 +353,12 @@ const mutation = useMutation({
                 <TableCell className="font-medium">{cliente.nombre}</TableCell>
                 <TableCell>{cliente.telefono ? formatSimplePhone(cliente.telefono) : '---'}</TableCell>
                 <TableCell>
-                  <Badge variant="outline">{cliente.vendedor.sigla}</Badge>
+                  <Badge 
+                    variant="outline" 
+                    className={`font-bold ${getVendedorColor(cliente.vendedor.sigla)}`}
+                  >
+                    {cliente.vendedor.sigla}
+                  </Badge>
                 </TableCell>
                 <TableCell>
                   <Button variant="ghost" size="icon" onClick={() => handleEditClick(cliente)}>
