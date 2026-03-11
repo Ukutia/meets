@@ -467,44 +467,54 @@ class StockProductos(APIView):
         stock_data = []
 
         for producto in productos:
-            # 1. ENTRADAS: Todo lo que se ha comprado (esto no cambia)
-            entradas_unidades = DetalleFactura.objects.filter(
-                producto=producto
-            ).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
-            
-            entradas_kilos = DetalleFactura.objects.filter(
-                producto=producto
-            ).aggregate(total=Sum('cantidad_kilos'))['total'] or 0
+            # 1. ENTRADAS (Totales)
+            entradas = DetalleFactura.objects.filter(producto=producto).aggregate(
+                u=Sum('cantidad_unidades'), 
+                k=Sum('cantidad_kilos')
+            )
+            entradas_u = entradas['u'] or 0
+            entradas_k = entradas['k'] or 0
 
-            # 2. SALIDAS: Solo descontar pedidos que NO estén anulados
-            # Usamos .exclude(pedido__estado="Anulado")
+            # 2. FILTRAR PEDIDOS VÁLIDOS (No anulados)
             pedidos_validos = DetallePedido.objects.filter(
                 producto=producto
             ).exclude(pedido__estado="Anulado")
 
-            salidas_unidades = pedidos_validos.aggregate(total=Sum('cantidad_unidades'))['total'] or 0
-            salidas_kilos = pedidos_validos.aggregate(total=Sum('cantidad_kilos'))['total'] or 0
+            # 3. DIFERENCIAR SALIDAS REALES VS RESERVAS
+            # Salidas Reales: Tienen kilos (ya se pesaron/despacharon)
+            salidas_reales = pedidos_validos.filter(cantidad_kilos__gt=0).aggregate(
+                u=Sum('cantidad_unidades'),
+                k=Sum('cantidad_kilos')
+            )
+            salidas_u = salidas_reales['u'] or 0
+            salidas_k = salidas_reales['k'] or 0
 
-            # 3. RESERVAS: Pedidos válidos que aún no tienen kilos pesados (cantidad_kilos=0)
+            # Reservas: No tienen kilos (están en bodega esperando)
             unidades_reservadas = pedidos_validos.filter(
                 cantidad_kilos=0
-            ).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
+            ).aggregate(u=Sum('cantidad_unidades'))['u'] or 0
+
+            # --- CÁLCULOS FINALES ---
             
-            # Cálculos finales
-            stock_actual_unidades = entradas_unidades - salidas_unidades
-            stock_actual_kilos = entradas_kilos - salidas_kilos
-            estado_producto = producto.estado
+            # Stock Físico: Lo que entró menos lo que ya salió físicamente
+            # (Las reservas siguen en la repisa, por eso no se restan aquí)
+            stock_fisico = entradas_u - salidas_u
             
+            # Disponibles: Lo que hay físicamente menos lo que ya prometí (reservas)
+            disponibles = stock_fisico - unidades_reservadas
+            
+            # Kilos: Entradas menos Salidas (Las reservas no restan kilos porque valen 0)
+            kilos_actuales = entradas_k - salidas_k
+
             stock_data.append({
                 'id': producto.id,
                 'producto': producto.nombre,
                 'precio_por_kilo': producto.precio_por_kilo,
-                'disponibles': stock_actual_unidades,
-                'estado': estado_producto,
-                # El stock físico real es lo disponible más lo que está apartado en reserva
-                'stock': stock_actual_unidades + unidades_reservadas,
-                'reservas': unidades_reservadas,
-                'kilos_actuales': round(stock_actual_kilos, 2)
+                'disponibles': disponibles, # Debería dar 6
+                'estado': producto.estado,
+                'stock': stock_fisico,       # Debería dar 17
+                'reservas': unidades_reservadas, # Debería dar 11
+                'kilos_actuales': round(kilos_actuales, 2)
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
