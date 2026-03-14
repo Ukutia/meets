@@ -1,5 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search, MessageCircle, CheckCircle2, Save, Trash2, FileText, User } from 'lucide-react';
+import React from 'react';
+import { 
+  Plus, Search, MessageCircle, CheckCircle2, 
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
@@ -12,15 +16,26 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Pedido } from '@/types';
 import { useToast } from '@/hooks/use-toast';
-import { ScrollArea } from '@/components/ui/scroll-area';
-
-// Librerías para PDF
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { 
+  Select, 
+  SelectContent, 
+  SelectItem, 
+  SelectTrigger, 
+  SelectValue 
+} from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export default function Pedidos() {
   const [search, setSearch] = useState('');
+  const [filterEstado, setFilterEstado] = useState('Todos');
+  const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -34,314 +49,279 @@ export default function Pedidos() {
     },
   });
 
-  const anularMutation = useMutation({
-    mutationFn: (id: number) => cancelarPedido(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
-      toast({ title: "Anulado", description: "El pedido fue anulado y el stock devuelto." });
-      setSelectedPedido(null);
-    },
-    onError: (error: any) => {
-      toast({ 
-        title: "Error", 
-        description: error.response?.data?.error || "No se pudo anular", 
-        variant: "destructive" 
-      });
-    }
-  });
-
-  const formatCurrency = (val: any) => 
-    Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
-
-const cobrarPedido = (pedido: Pedido) => {
-  // 1. Preparar el cuerpo del mensaje
-  const saludo = `*Hola ${pedido.cliente.nombre}, te envío el detalle de tu pedido #00${pedido.id}:*\n\n`;
-  
-  const items = pedido.detalles.map(d => 
-    `• ${d.producto.nombre}: ${d.cantidad_kilos}kg x ${formatCurrency(d.producto.precio_por_kilo)} = *${formatCurrency(d.total_venta)}*`
-  ).join('\n');
-  
-  const totalMsg = `\n\n*TOTAL A PAGAR: ${formatCurrency(pedido.total)}*`;
-  
-  // 2. Construir la URL de WhatsApp
-  // Usamos el formato internacional si el teléfono no lo tiene (asumiendo Chile +56)
-  let telefono = pedido.cliente.telefono.replace(/\s/g, '');
-  if (!telefono.startsWith('56')) {
-    telefono = '56' + telefono;
-  }
-
-  const textoCompleto = encodeURIComponent(saludo + items + totalMsg);
-  const whatsappUrl = `https://api.whatsapp.com/send?phone=${telefono}&text=${textoCompleto}`;
-
-  // 3. Redirigir directamente (mejor para móviles que window.open)
-  window.location.href = whatsappUrl;
-};
-  // 1. Helper para los colores de los estados
-  const getStatusColor = (estado: string) => {
-    switch (estado) {
-      case 'Preparado':
-        return 'bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-100'; // Naranja/Dorado suave
-      case 'Pagado':
-        return 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-100'; // Verde
-      case 'Reservado':
-        return 'bg-blue-100 text-blue-700 border-blue-200 hover:bg-blue-100'; // Azul
-      default:
-        return 'bg-slate-100 text-slate-700';
-    }
-  };
-
-  // 2. Helper para el color de fondo de la fila en móvil
-  const getRowBgColor = (estado: string) => {
-    switch (estado) {
-      case 'Preparado': return 'bg-amber-50/50';
-      case 'Pagado': return 'bg-emerald-50/50';
-      case 'Reservado': return 'bg-blue-50/50';
-      default: return '';
-    }
-  };
-
-const handleSave = () => {
-    if (!selectedPedido) return;
-
-    // 1. Validar Pesos Mínimos
-    for (const det of selectedPedido.detalles) {
-      const unidades = Number(det.cantidad_unidades);
-      const kilos = Number(det.cantidad_kilos);
-      const minPeso = Number(det.producto.peso_minimo) || 0;
-
-      if (unidades > 0 && kilos > 0) {
-        const pesoPromedio = kilos / unidades;
-        if (pesoPromedio < minPeso) {
-          toast({
-            title: "Error de Pesaje",
-            description: `El producto ${det.producto.nombre} tiene un peso promedio menor al mínimo.`,
-            variant: "destructive"
-          });
-          return;
-        }
-      }
-    }
-
-    // --- NUEVA LÓGICA DE ESTADO 'PREPARADO' ---
-    // 2. Verificar si todos los productos tienen kilos ingresados
-    const todosTienenKilos = selectedPedido.detalles.every(det => Number(det.cantidad_kilos) > 0);
-    
-    // Creamos una copia del pedido para enviarlo
-    let pedidoParaEnviar = { ...selectedPedido };
-
-    // Si el estado actual es 'Pendiente' y ya se pesó todo, lo pasamos a 'Preparado'
-    if (todosTienenKilos && selectedPedido.estado === 'Reservado') {
-      pedidoParaEnviar.estado = 'Preparado';
-    } 
-    // Opcional: Si borras un kilo y vuelve a faltar peso, podrías devolverlo a Pendiente
-    else if (!todosTienenKilos && selectedPedido.estado === 'Preparado') {
-      pedidoParaEnviar.estado = 'Reservado';
-    }
-
-    // 3. Ejecutar la mutación con el objeto actualizado
-    mutation.mutate({ id: pedidoParaEnviar.id, data: pedidoParaEnviar });
-  };
-
-  // --- Lógica visual para que el usuario vea el cambio antes de guardar (Opcional pero recomendado) ---
-  const todosPesados = useMemo(() => {
-    return selectedPedido?.detalles.every(det => Number(det.cantidad_kilos) > 0);
-  }, [selectedPedido?.detalles]);
-
-  const handleEditLocal = (index: number, field: 'cantidad_kilos' | 'cantidad_unidades', value: string) => {
-    if (!selectedPedido || selectedPedido.estado === 'Pagado') return;
-    const valAsNum = value === '' ? 0 : (field === 'cantidad_kilos' ? parseFloat(value) : parseInt(value, 10));
-    const nuevosDetalles = selectedPedido.detalles.map((det, i) => {
-      if (i !== index) return det;
-      const precioUnitario = Number(det.producto.precio_por_kilo) || 0;
-      if (field === 'cantidad_kilos') {
-        return { ...det, cantidad_kilos: valAsNum, total_venta: valAsNum * precioUnitario };
-      }
-      return { ...det, [field]: valAsNum };
-    });
-    const nuevoTotalGlobal = nuevosDetalles.reduce((sum, d) => sum + (Number(d.total_venta) || 0), 0);
-    setSelectedPedido({ ...selectedPedido, detalles: nuevosDetalles, total: nuevoTotalGlobal });
-  };
-
+  // --- MUTACIONES ---
   const mutation = useMutation({
     mutationFn: (payload: { id: number, data: any }) => updatePedido(payload.id, payload.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
-      toast({ title: "Guardado", description: "Los cambios se guardaron correctamente." });
+      toast({ title: "Actualizado", description: "Pedido actualizado correctamente." });
       setSelectedPedido(null);
     },
   });
 
-  const filteredPedidos = useMemo(() => 
-    (data ?? []).filter(p => p.cliente.nombre.toLowerCase().includes(search.toLowerCase()) || p.id.toString().includes(search)),
-  [data, search]);
+  const anularMutation = useMutation({
+    mutationFn: (id: number) => cancelarPedido(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      toast({ title: "Anulado", description: "El pedido fue anulado." });
+      setSelectedPedido(null);
+    },
+  });
+
+  // --- HELPERS ---
+  const formatCurrency = (val: any) => 
+    Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
+
+  const getStatusColor = (estado: string) => {
+    switch (estado) {
+      case 'Preparado': return 'bg-amber-100 text-amber-700 border-amber-200';
+      case 'Pagado': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+      case 'Reservado': return 'bg-blue-100 text-blue-700 border-blue-200';
+      default: return 'bg-slate-100 text-slate-700';
+    }
+  };
+
+  const cobrarPedido = (pedido: Pedido) => {
+    const saludo = `*Hola ${pedido.cliente.nombre}, detalle pedido #00${pedido.id}:*\n\n`;
+    const items = pedido.detalles.map(d => 
+      `• ${d.producto.nombre}: ${d.cantidad_kilos}kg = *${formatCurrency(d.total_venta)}*`
+    ).join('\n');
+    const totalMsg = `\n\n*TOTAL: ${formatCurrency(pedido.total)}*`;
+    
+    let telefono = pedido.cliente.telefono.replace(/\s/g, '');
+    if (!telefono.startsWith('56')) telefono = '56' + telefono;
+
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=${telefono}&text=${encodeURIComponent(saludo + items + totalMsg)}`;
+    window.open(whatsappUrl, '_blank');
+  };
+
+  const filteredPedidos = useMemo(() => {
+    let filtered = data ?? [];
+    if (search) {
+      const searchLower = search.toLowerCase();
+      filtered = filtered.filter(p => 
+        p.cliente.nombre.toLowerCase().includes(searchLower) || 
+        p.id.toString().includes(searchLower)
+      );
+    }
+    if (filterEstado !== 'Todos') filtered = filtered.filter(p => p.estado === filterEstado);
+    if (filterCorte !== 'Todos') {
+      filtered = filtered.filter(p => p.detalles.some(d => d.producto.nombre === filterCorte));
+    }
+    return [...filtered].sort((a, b) => b.id - a.id);
+  }, [data, search, filterEstado, filterCorte]);
+
+  const todosPesados = useMemo(() => {
+    return selectedPedido?.detalles.every(det => Number(det.cantidad_kilos) > 0);
+  }, [selectedPedido?.detalles]);
+
+  const handleEditLocal = (index: number, field: string, value: any) => {
+    if (!selectedPedido) return;
+    const valAsNum = typeof value === 'string' ? (value === '' ? 0 : parseFloat(value)) : value;
+    const nuevosDetalles = selectedPedido.detalles.map((det, i) => {
+      if (i !== index) return det;
+      if (field === 'cantidad_kilos') {
+        const kilos = valAsNum;
+        return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.producto.precio_por_kilo) };
+      }
+      if (field === 'cantidad_unidades') {
+        return { ...det, cantidad_unidades: Math.trunc(valAsNum) };
+      }
+      return { ...det, [field]: valAsNum };
+    });
+    const nuevoTotal = nuevosDetalles.reduce((sum, d) => sum + (Number(d.total_venta) || 0), 0);
+    setSelectedPedido({ ...selectedPedido, detalles: nuevosDetalles, total: nuevoTotal });
+  };
 
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="Error al cargar pedidos" />;
 
   return (
-    <div className="space-y-6 pb-20 md:pb-0">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl md:text-3xl font-bold tracking-tighter">Gestión de Pedidos</h1>
-        <Button onClick={() => navigate('/pedidos/nuevo')} size="sm"><Plus className="mr-2 h-4 w-4" /> Nuevo Pedido</Button>
+    <div className="max-w-[100vw] overflow-x-hidden px-2 md:px-6 space-y-4 pb-24">
+      <div className="flex items-center justify-between mt-4">
+        <h1 className="text-xl md:text-2xl font-bold">Pedidos</h1>
+        <Button onClick={() => navigate('/pedidos/nuevo')} size="sm" className="rounded-full shadow-lg">
+          <Plus className="mr-1 h-4 w-4" /> Nuevo
+        </Button>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input className="pl-10 h-11" placeholder="Buscar por cliente o N°..." value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
-
-      {/* TABLA RESPONSIVA */}
-      <div className="rounded-xl border shadow-sm overflow-hidden bg-white">
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader className="bg-slate-50">
-              <TableRow>
-                <TableHead className="w-20">N°</TableHead>
-                <TableHead>Cliente</TableHead>
-                <TableHead className="hidden sm:table-cell">Estado</TableHead>
-                <TableHead>Total</TableHead>
-                <TableHead className="text-right">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredPedidos.map((pedido) => (
-                <TableRow 
-                  key={pedido.id} 
-                  // APLICAMOS COLOR A LA FILA EN MÓVIL (md:bg-transparent limpia el color en desktop)
-                  className={`cursor-pointer transition-colors hover:bg-slate-50 ${getRowBgColor(pedido.estado)} md:bg-transparent`}
-                  onClick={() => setSelectedPedido(pedido)}
-                >
-                  <TableCell className="font-mono font-bold text-blue-600 text-xs md:text-sm">#{pedido.id}</TableCell>
-                  <TableCell className="font-medium max-w-[120px] truncate md:max-w-none">
-                    {pedido.cliente.nombre}
-                    {/* Badge pequeño visible solo en móvil debajo del nombre */}
-                    <div className="sm:hidden mt-1">
-                      <Badge className={`text-[10px] px-1 py-0 h-4 uppercase ${getStatusColor(pedido.estado)}`}>
-                        {pedido.estado}
-                      </Badge>
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden sm:table-cell">
-                    <Badge className={`font-semibold uppercase ${getStatusColor(pedido.estado)}`} variant="outline">
-                      {pedido.estado}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="font-bold text-xs md:text-sm">{formatCurrency(pedido.total)}</TableCell>
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex justify-end gap-1 md:gap-2">
-                      {pedido.estado !== 'Pagado' && (
-                        <Button variant="outline" size="sm" className="h-8 px-2 text-blue-600 border-blue-200" onClick={() => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' }})}>
-                          <CheckCircle2 className="h-4 w-4 md:mr-1" /> <span className="hidden md:inline">Pagado</span>
-                        </Button>
-                      )}
-                      <Button variant="outline" size="sm" className="h-8 px-2 text-green-600 border-green-200" onClick={() => cobrarPedido(pedido)}>
-                        <MessageCircle className="h-4 w-4 md:mr-1" /> <span className="hidden md:inline">Cobrar</span>
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+      {/* FILTROS RESPONSIVOS */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input 
+            className="pl-9 h-12 bg-white border-slate-200" 
+            placeholder="Buscar pedido..." 
+            value={search} 
+            onChange={e => setSearch(e.target.value)} 
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-2 md:contents">
+          <Select value={filterEstado} onValueChange={setFilterEstado}>
+            <SelectTrigger className="h-12 bg-white">
+              <SelectValue placeholder="Estado" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Todos">Todos</SelectItem>
+              <SelectItem value="Reservado">Reservados</SelectItem>
+              <SelectItem value="Preparado">Preparados</SelectItem>
+              <SelectItem value="Pagado">Pagados</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterCorte} onValueChange={setFilterCorte}>
+            <SelectTrigger className="h-12 bg-white">
+              <SelectValue placeholder="Producto" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Todos">Cortes</SelectItem>
+              {Array.from(new Set(data?.flatMap(p => p.detalles.map(d => d.producto.nombre)))).sort().map(c => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
               ))}
-            </TableBody>
-          </Table>
+            </SelectContent>
+          </Select>
         </div>
       </div>
-      {/* DIÁLOGO ADAPTADO A MÓVIL */}
-      <Dialog open={!!selectedPedido} onOpenChange={() => setSelectedPedido(null)}>
-        <DialogContent className="max-w-4xl w-[95vw] max-h-[95vh] overflow-y-auto p-4 md:p-6 border-t-8 border-primary">
-          <DialogHeader>
-            <div className="flex justify-between items-start">
-              <div className="max-w-[70%]">
-                <DialogTitle className="text-xl md:text-2xl font-black">Pedido #{selectedPedido?.id}</DialogTitle>
-                <p className="text-sm text-muted-foreground truncate">{selectedPedido?.cliente.nombre}</p>
-              </div>
-              {/* Badge de estado dinámico también en el detalle */}
-              <div className="flex flex-col items-end gap-1">
-                <Badge className={`text-xs md:text-lg font-bold uppercase ${selectedPedido ? getStatusColor(selectedPedido.estado) : ''}`}>
-                  {selectedPedido?.estado}
-                </Badge>
-                {todosPesados && selectedPedido?.estado === 'Reservado' && (
-                  <span className="text-[10px] font-bold text-amber-600 animate-pulse">
-                    Listo para marcar como PREPARADO
-                  </span>
+
+      {/* TABLA PRINCIPAL - Optimizada para no salirse */}
+      <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-slate-50">
+            <TableRow>
+              <TableHead className="w-8 px-2"></TableHead>
+              <TableHead className="w-12 px-1">N°</TableHead>
+              <TableHead className="px-2">Cliente</TableHead>
+              <TableHead className="text-right px-2">Total</TableHead>
+              <TableHead className="w-10 px-2"></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredPedidos.map((pedido) => (
+              <React.Fragment key={pedido.id}>
+                <TableRow className="border-b last:border-0" onClick={() => setExpandedId(expandedId === pedido.id ? null : pedido.id)}>
+                  <TableCell className="px-2">
+                    {expandedId === pedido.id ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-400" />}
+                  </TableCell>
+                  <TableCell className="px-1 font-mono text-xs font-bold text-blue-600">#{pedido.id}</TableCell>
+                  <TableCell className="px-2 py-3">
+                    <div className="font-semibold text-sm line-clamp-1">{pedido.cliente.nombre}</div>
+                    <Badge className={`text-[9px] px-1 py-0 h-4 mt-0.5 border-none ${getStatusColor(pedido.estado)}`}>{pedido.estado}</Badge>
+                  </TableCell>
+                  <TableCell className="px-2 text-right font-bold text-sm">{formatCurrency(pedido.total)}</TableCell>
+                  <TableCell className="px-2" onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem onClick={() => setSelectedPedido(pedido)}>
+                          <Edit2 className="mr-2 h-4 w-4" /> Editar
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => cobrarPedido(pedido)} className="text-green-600">
+                          <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
+                        </DropdownMenuItem>
+                        {pedido.estado !== 'Pagado' && (
+                          <DropdownMenuItem onClick={() => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' }})} className="text-blue-600">
+                            <CheckCircle2 className="mr-2 h-4 w-4" /> Marcar Pagado
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+
+                {expandedId === pedido.id && (
+                  <TableRow className="bg-slate-50/80">
+                    <TableCell colSpan={5} className="p-2">
+                      <div className="grid grid-cols-1 gap-1.5 w-full">
+                        {pedido.detalles.map((det, idx) => (
+                          <div key={idx} className="flex justify-between items-center p-2.5 bg-white rounded-lg border border-slate-200 shadow-xs mx-1">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-bold text-slate-700">{det.producto.nombre}</span>
+                              <span className="text-[10px] text-slate-400 font-medium">{det.cantidad_unidades} un.</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xs font-bold text-blue-600 block">{det.cantidad_kilos} kg</span>
+                              <span className="text-[10px] text-slate-500 font-bold">{formatCurrency(det.total_venta)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </TableCell>
+                  </TableRow>
                 )}
-              </div>
-            </div>
+              </React.Fragment>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* DIÁLOGO DE EDICIÓN RESPONSIVO (VISTA TARJETAS EN MÓVIL) */}
+      <Dialog open={!!selectedPedido} onOpenChange={() => setSelectedPedido(null)}>
+        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0">
+          <DialogHeader className="p-4 border-b bg-slate-50/50">
+            <DialogTitle className="flex items-center gap-2">
+              Pedido <span className="text-blue-600">#{selectedPedido?.id}</span>
+            </DialogTitle>
           </DialogHeader>
 
-          {selectedPedido && (
-            <div className="space-y-4 md:space-y-6">
-              <div className="rounded-lg border overflow-hidden">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader className="bg-slate-100">
-                      <TableRow className="text-[10px] md:text-xs">
-                        <TableHead>Producto</TableHead>
-                        <TableHead className="w-20 md:w-28 text-center">Kilos</TableHead>
-                        <TableHead className="w-20 md:w-28 text-center">Unid.</TableHead>
-                        <TableHead className="text-right">Total</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {selectedPedido.detalles.map((det, idx) => {
-                        const esPesoInvalido = det.cantidad_unidades > 0 && 
-                        det.cantidad_kilos > 0 && 
-                        (det.cantidad_kilos / det.cantidad_unidades) < det.producto.peso_minimo;
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {selectedPedido?.detalles.map((det, idx) => (
+              <div key={idx} className="p-4 border rounded-xl bg-white shadow-sm space-y-4">
+                <div className="flex justify-between items-start">
+                  <h3 className="font-bold text-slate-900">{det.producto.nombre}</h3>
+                  <Badge variant="outline" className="text-[10px]">{formatCurrency(det.producto.precio_por_kilo)}/kg</Badge>
+                </div>
 
-                        return (
-                          <TableRow key={idx} className="text-xs md:text-sm">
-                            <TableCell className="font-medium p-2">
-                              {det.producto.nombre}
-                              {esPesoInvalido && <span className="block text-[8px] text-red-600 font-bold animate-pulse">PESO BAJO</span>}
-                            </TableCell>
-                            <TableCell className="p-1">
-                              <Input type="number" className="h-8 text-center px-1" value={det.cantidad_kilos || ''} onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)} />
-                            </TableCell>
-                            <TableCell className="p-1">
-                              <Input type="number" className="h-8 text-center px-1" value={det.cantidad_unidades || ''} onChange={(e) => handleEditLocal(idx, 'cantidad_unidades', e.target.value)} />
-                            </TableCell>
-                            <TableCell className="text-right font-bold p-2">{formatCurrency(det.total_venta)}</TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
+                    <Input 
+                      type="number" 
+                      className="h-12 text-center text-lg font-bold bg-slate-50"
+                      value={det.cantidad_unidades || ''} 
+                      onChange={(e) => handleEditLocal(idx, 'cantidad_unidades', e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
+                    <Input 
+                      type="number" 
+                      step="0.01"
+                      className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
+                      value={det.cantidad_kilos || ''} 
+                      onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)} 
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-dashed flex justify-between items-center">
+                  <span className="text-xs font-bold text-slate-400">SUBTOTAL</span>
+                  <span className="font-black text-blue-600">{formatCurrency(det.total_venta)}</span>
                 </div>
               </div>
+            ))}
+          </div>
 
-              {/* FOOTER INTERNO DEL DIÁLOGO */}
-              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  {selectedPedido.estado !== 'Pagado' && (
-                    <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10" onClick={() => anularMutation.mutate(selectedPedido.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-                <div className="text-right border-t pt-2">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Total Pedido</p>
-                  <p className="text-3xl md:text-5xl font-black text-slate-800 tracking-tighter">{formatCurrency(selectedPedido.total)}</p>
-                </div>
-              </div>
+          <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400 font-bold uppercase">Total Pedido</span>
+              <span className="text-2xl font-black">{formatCurrency(selectedPedido?.total || 0)}</span>
             </div>
-          )}
-
-          <DialogFooter className="flex flex-row gap-2 pt-4">
-            <Button variant="ghost" className="flex-1" onClick={() => setSelectedPedido(null)}>Cerrar</Button>
-            {selectedPedido?.estado !== 'Pagado' && (
-              <Button 
-                className={`flex-1 px-2 md:px-8 ${todosPesados && selectedPedido?.estado === 'Reservado' ? 'bg-amber-600 hover:bg-amber-700 text-white' : ''}`} 
-                disabled={mutation.isPending} 
-                onClick={handleSave}
-              >
-                {mutation.isPending ? <LoadingSpinner /> : (
-                  <>
-                    <Save className="mr-2 h-4 w-4" /> 
-                    {todosPesados && selectedPedido?.estado === 'Reservado' ? 'Confirmar Preparación' : 'Guardar Cambios'}
-                  </>
-                )}
-              </Button>
-            )}
-          </DialogFooter>
+            <Button 
+              className="bg-blue-600 hover:bg-blue-700 font-bold px-6 h-12"
+              onClick={() => {
+                if (selectedPedido) {
+                  let p = {...selectedPedido};
+                  if (todosPesados && p.estado === 'Reservado') p.estado = 'Preparado';
+                  mutation.mutate({ id: p.id, data: p });
+                }
+              }}
+            >
+              Listo
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

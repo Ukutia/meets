@@ -42,7 +42,7 @@ class CrearProducto(APIView):
 
 class PedidoListView(APIView):
     def get(self, request):
-        pedidos = Pedido.objects.all()
+        pedidos = Pedido.objects.exclude(estado="Anulado").order_by('-fecha')
         serializer = PedidoSerializer(pedidos, many=True)
         return Response(serializer.data)
 
