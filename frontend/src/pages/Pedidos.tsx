@@ -36,6 +36,8 @@ export default function Pedidos() {
   const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [filterVendedor, setFilterVendedor] = useState('Todos');
+  const [selectedIds, setSelectedIds] = useState<number[]>([]); // Para la selección múltiple
   
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -105,12 +107,24 @@ export default function Pedidos() {
       );
     }
     if (filterEstado !== 'Todos') filtered = filtered.filter(p => p.estado === filterEstado);
+    if (filterVendedor !== 'Todos') {
+      filtered = filtered.filter(p => p.vendedor?.id?.toString() === filterVendedor || p.vendedor_id?.toString() === filterVendedor);
+    }
     if (filterCorte !== 'Todos') {
       filtered = filtered.filter(p => p.detalles.some(d => d.producto.nombre === filterCorte));
     }
     return [...filtered].sort((a, b) => b.id - a.id);
-  }, [data, search, filterEstado, filterCorte]);
+  }, [data, search, filterEstado, filterCorte, filterVendedor]);
 
+  // Suma de pedidos seleccionados (Solo se mostrará en pantallas grandes)
+  const sumaSeleccionados = useMemo(() => {
+    return data?.filter(p => selectedIds.includes(p.id))
+              .reduce((acc, p) => acc + Number(p.total), 0) || 0;
+  }, [data, selectedIds]);
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  };
   const todosPesados = useMemo(() => {
     return selectedPedido?.detalles.every(det => Number(det.cantidad_kilos) > 0);
   }, [selectedPedido?.detalles]);
@@ -145,29 +159,40 @@ export default function Pedidos() {
         </Button>
       </div>
 
-      {/* FILTROS RESPONSIVOS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input 
-            className="pl-9 h-12 bg-white border-slate-200" 
-            placeholder="Buscar pedido..." 
-            value={search} 
-            onChange={e => setSearch(e.target.value)} 
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2 md:contents">
-          <Select value={filterEstado} onValueChange={setFilterEstado}>
-            <SelectTrigger className="h-12 bg-white">
-              <SelectValue placeholder="Estado" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Todos">Todos</SelectItem>
-              <SelectItem value="Reservado">Reservados</SelectItem>
-              <SelectItem value="Preparado">Preparados</SelectItem>
-              <SelectItem value="Pagado">Pagados</SelectItem>
-            </SelectContent>
-          </Select>
+{/* FILTROS ACTUALIZADOS */}
+<div className="grid grid-cols-1 px-2 md:grid-cols-4 gap-3"> {/* Cambiado a grid-cols-4 en md */}
+  <div className="relative">
+    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+    <Input 
+      className="pl-9 h-12 bg-white border-slate-200" 
+      placeholder="Buscar..." 
+      value={search} 
+      onChange={e => setSearch(e.target.value)} 
+    />
+  </div>
+  
+  <div className="grid grid-cols-2 gap-2 md:contents">
+    <Select value={filterEstado} onValueChange={setFilterEstado}>
+      <SelectTrigger className="h-12 bg-white"><SelectValue placeholder="Estado" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="Todos">Todos los Estados</SelectItem>
+        <SelectItem value="Reservado">Reservados</SelectItem>
+        <SelectItem value="Preparado">Preparados</SelectItem>
+        <SelectItem value="Pagado">Pagados</SelectItem>
+      </SelectContent>
+    </Select>
+
+    {/* NUEVO FILTRO VENDEDOR */}
+    <Select value={filterVendedor} onValueChange={setFilterVendedor}>
+      <SelectTrigger className="h-12 bg-white"><SelectValue placeholder="Vendedor" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="Todos">Todos los Vendedores</SelectItem>
+        {Array.from(new Set(data?.map(p => JSON.stringify(p.vendedor)).filter(Boolean))).map(vStr => {
+          const v = JSON.parse(vStr as string);
+          return <SelectItem key={v.id} value={v.id.toString()}>{v.nombre}</SelectItem>
+        })}
+      </SelectContent>
+    </Select>
           <Select value={filterCorte} onValueChange={setFilterCorte}>
             <SelectTrigger className="h-12 bg-white">
               <SelectValue placeholder="Producto" />
@@ -187,6 +212,7 @@ export default function Pedidos() {
         <Table>
           <TableHeader className="bg-slate-50">
             <TableRow>
+              <TableHead className="w-8 px-2 hidden lg:table-cell"></TableHead>
               <TableHead className="w-8 px-2"></TableHead>
               <TableHead className="w-12 px-1">N°</TableHead>
               <TableHead className="px-2">Cliente</TableHead>
@@ -198,6 +224,14 @@ export default function Pedidos() {
             {filteredPedidos.map((pedido) => (
               <React.Fragment key={pedido.id}>
                 <TableRow className="border-b last:border-0" onClick={() => setExpandedId(expandedId === pedido.id ? null : pedido.id)}>
+                  <TableCell className="px-2 hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>
+              <input 
+                type="checkbox" 
+                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                checked={selectedIds.includes(pedido.id)}
+                onChange={() => toggleSelect(pedido.id)}
+              />
+            </TableCell>
                   <TableCell className="px-2">
                     {expandedId === pedido.id ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-400" />}
                   </TableCell>
@@ -255,6 +289,27 @@ export default function Pedidos() {
             ))}
           </TableBody>
         </Table>
+        {/* BARRA DE SUMA FLOTANTE (Desktop Only) */}
+  {selectedIds.length > 0 && (
+    <div className="hidden lg:flex fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl items-center gap-6 animate-in slide-in-from-bottom-4">
+      <div className="flex flex-col border-r border-slate-700 pr-6">
+        <span className="text-[10px] text-slate-400 font-bold uppercase">Seleccionados</span>
+        <span className="font-mono font-bold">{selectedIds.length} pedidos</span>
+      </div>
+      <div className="flex flex-col">
+        <span className="text-[10px] text-slate-400 font-bold uppercase">Suma Total</span>
+        <span className="text-xl font-black text-blue-400">{formatCurrency(sumaSeleccionados)}</span>
+      </div>
+      <Button 
+        variant="ghost" 
+        size="sm" 
+        className="text-slate-400 hover:text-white"
+        onClick={() => setSelectedIds([])}
+      >
+        Limpiar
+      </Button>
+    </div>
+  )}
       </div>
 
       {/* DIÁLOGO DE EDICIÓN RESPONSIVO (VISTA TARJETAS EN MÓVIL) */}

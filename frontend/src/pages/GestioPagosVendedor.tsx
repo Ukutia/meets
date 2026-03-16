@@ -272,7 +272,10 @@ const resumenGeneral = useMemo(() => {
                   </TableHeader>
                   <TableBody>
                     {todosPagos
-                      .filter((p:any) => p.vendedor?.toString() === vendedorId)
+                      .filter((p:any) => {
+                        const id = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
+                        return id?.toString() === vendedorId;
+                      })
                       .map((p: any) => (
                         <TableRow 
                             key={p.id} 
