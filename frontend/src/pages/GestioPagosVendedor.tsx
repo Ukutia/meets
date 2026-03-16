@@ -62,30 +62,45 @@ export default function GestionPagosVendedor() {
   }, [respPagos]);
 
   // 2. Lógica de Resumen y Totales
-  const resumenGeneral = useMemo(() => {
-    return vendedores.map(v => {
-      const vId = v.id.toString();
-      const ventas = todosPedidos
-        .filter((p: any) => (p.vendedor?.toString() === vId || p.vendedor_id?.toString() === vId))
-        .reduce((acc: number, p: any) => acc + Number(p.total || 0), 0);
-      
-      const pagosRealizados = todosPagos
-        .filter((p: any) => p.vendedor?.toString() === vId && p.tipo === 'pago')
-        .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
+const resumenGeneral = useMemo(() => {
+  return vendedores.map(v => {
+    const vId = Number(v.id); // Convertimos el ID del vendedor a número una sola vez
 
-      const adelantosAcumulados = todosPagos
-        .filter((p: any) => p.vendedor?.toString() === vId && p.tipo === 'adelanto')
-        .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
+    // 1. Filtrar ventas (Pedidos)
+    const ventas = todosPedidos
+      .filter((p: any) => {
+        // Accedemos al ID dentro del objeto vendedor
+        const idDelPedido = p.vendedor?.id || p.vendedor_id;
+        return Number(idDelPedido) === vId;
+      })
+      .reduce((acc: number, p: any) => acc + Number(p.total || 0), 0);
+    
+    // 2. Filtrar pagos realizados
+    const pagosRealizados = todosPagos
+      .filter((p: any) => {
+        // En pagos, verifica si 'vendedor' viene como objeto o ID directo
+        const idDelPago = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
+        return Number(idDelPago) === vId && p.tipo === 'pago';
+      })
+      .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
 
-      return { 
-        ...v, 
-        ventas, 
-        pagos: pagosRealizados, 
-        adelantos: adelantosAcumulados,
-        deudaNeta: ventas - pagosRealizados 
-      };
-    });
-  }, [vendedores, todosPedidos, todosPagos]);
+    // 3. Filtrar adelantos
+    const adelantosAcumulados = todosPagos
+      .filter((p: any) => {
+        const idDelPago = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
+        return Number(idDelPago) === vId && p.tipo === 'adelanto';
+      })
+      .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
+
+    return { 
+      ...v, 
+      ventas, 
+      pagos: pagosRealizados, 
+      adelantos: adelantosAcumulados,
+      deudaNeta: ventas - pagosRealizados 
+    };
+  });
+}, [vendedores, todosPedidos, todosPagos]);
 
   const totalesGlobales = useMemo(() => {
     return resumenGeneral.reduce((acc, curr) => ({

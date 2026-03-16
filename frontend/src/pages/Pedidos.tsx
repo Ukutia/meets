@@ -137,7 +137,7 @@ export default function Pedidos() {
   if (error) return <ErrorMessage message="Error al cargar pedidos" />;
 
   return (
-    <div className="max-w-[100vw] overflow-x-hidden px-2 md:px-6 space-y-4 pb-24">
+    <div className="max-w-[100vw] overflow-x-hidden px-0 md:px-6 space-y-4 pb-24">
       <div className="flex items-center justify-between mt-4">
         <h1 className="text-xl md:text-2xl font-bold">Pedidos</h1>
         <Button onClick={() => navigate('/pedidos/nuevo')} size="sm" className="rounded-full shadow-lg">
