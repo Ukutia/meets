@@ -1,22 +1,28 @@
-from rest_framework.views import APIView
+from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor
-from .serializers import ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer
+from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 from decimal import Decimal
 
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework.permissions import IsAuthenticated
 
+class MyTokenObtainPairView(TokenObtainPairView):
+    serializer_class = MyTokenObtainPairSerializer
 
 class ProductosView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         productos = Producto.objects.all()
         serializer = ProductoSerializer(productos, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 class CrearProducto(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
         nombre = data.get('nombre')
@@ -41,19 +47,39 @@ class CrearProducto(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class PedidoListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         pedidos = Pedido.objects.exclude(estado="Anulado").order_by('-fecha')
         serializer = PedidoSerializer(pedidos, many=True)
         return Response(serializer.data)
 
 class CrearPedido(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
         cliente_id = data.get('cliente')
         detalles = data.get('detalles')
 
         vendedor_id = data.get('vendedor')
-        vendedor = Vendedor.objects.get(id=vendedor_id)
+
+
+        # LÓGICA DE ASIGNACIÓN DE VENDEDOR
+        if request.user.is_staff:
+            # Si es ADMIN, usa el ID que venga del frontend. 
+            # Si no viene ninguno, podría asignárselo a sí mismo o dar error.
+            if not vendedor_id:
+                return Response({'error': 'Admin debe seleccionar un vendedor'}, status=400)
+            try:
+                vendedor = vendedor = Vendedor.objects.get(id=vendedor_id)
+            except Vendedor.DoesNotExist:
+                return Response({'error': 'Vendedor no encontrado'}, status=404)
+        else:
+            # Si es un Vendedor común, ignoramos lo que envíe el front 
+            # y buscamos SU perfil de vendedor vinculado.
+            try:
+                vendedor = request.user.vendedor_profile
+            except AttributeError:
+                raise PermissionDenied("Tu usuario no tiene un perfil de vendedor asignado.")
 
         if not cliente_id or not detalles:
             return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
@@ -168,6 +194,7 @@ class CrearPedido(APIView):
         
 
 class PedidoDetailView(APIView):
+    permission_classes = [IsAuthenticated]
     def put(self, request, pk):
         try:
             pedido = Pedido.objects.get(pk=pk)
@@ -214,6 +241,7 @@ class PedidoDetailView(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class ActualizarKilosPedido(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, pedido_id, *args, **kwargs):
         try:
             pedido = Pedido.objects.get(id=pedido_id)
@@ -242,18 +270,21 @@ class ActualizarKilosPedido(APIView):
         
 
 class VendedorListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         vendedores = Vendedor.objects.all()
         serializer = VendedorSerializer(vendedores, many=True)
         return Response(serializer.data)
 
 class ClienteListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         clientes = Cliente.objects.all()
         serializer = ClienteSerializer(clientes, many=True)
         return Response(serializer.data)
 
 class CrearCliente(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
         nombre = data.get('nombre')
@@ -281,6 +312,7 @@ class CrearCliente(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class CrearFacturaEntrada(APIView):
+    permission_classes = [IsAuthenticated]
     @transaction.atomic
     def post(self, request):
         data = request.data
@@ -340,12 +372,14 @@ class CrearFacturaEntrada(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class FacturaListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         facturas = Factura.objects.all()
         serializer = FacturaSerializer(facturas, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 class CrearPagoFactura(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
         factura_id = data.get('factura')
@@ -369,6 +403,7 @@ class CrearPagoFactura(APIView):
         return Response(PagoFacturaSerializer(pago_factura).data, status=status.HTTP_201_CREATED)
 
 class CancelarPedido(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         pedido_id = request.data.get('pedido_id')
 
@@ -440,6 +475,7 @@ class CancelarPedido(APIView):
 
 
 class ObtenerPedido(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request, pedido_id, *args, **kwargs):
         try:
             pedido = Pedido.objects.get(id=pedido_id)
@@ -456,12 +492,14 @@ from django.db.models import Sum
 from rest_framework import generics
 
 class UpdateCliente(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated]
     queryset = Cliente.objects.all()
     serializer_class = ClienteSerializer
     lookup_field = 'pk'
 
 
 class StockProductos(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request, *args, **kwargs):
         productos = Producto.objects.exclude(estado="desactivado")
         stock_data = []
@@ -526,6 +564,7 @@ from .serializers import DetalleFacturaSerializer, DetallePedidoSerializer
 # views.py
 
 class PagoVendedorView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         vendedor_id = request.query_params.get('vendedor')
         if vendedor_id:
@@ -561,6 +600,7 @@ class PagoVendedorView(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class DetalleFacturasList(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         # Optimizamos con select_related para traer nombres de productos/proveedores en una sola consulta
         detalles = DetalleFactura.objects.select_related('factura__proveedor', 'producto').all()
@@ -568,12 +608,14 @@ class DetalleFacturasList(APIView):
         return Response(serializer.data)
 
 class DetallePedidosList(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         detalles = DetallePedido.objects.select_related('pedido__cliente', 'producto').all()
         serializer = DetallePedidoSerializer(detalles, many=True)
         return Response(serializer.data)
 
 class UpdateProducto(APIView):
+    permission_classes = [IsAuthenticated]
     def put(self, request, producto_id, *args, **kwargs):
         try:
             producto = Producto.objects.get(id=producto_id)
@@ -597,6 +639,7 @@ class UpdateProducto(APIView):
         
 # Nueva vista para Proveedores
 class ProveedorListView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         proveedores = Proveedor.objects.all()
         serializer = ProveedorSerializer(proveedores, many=True)
@@ -604,6 +647,7 @@ class ProveedorListView(APIView):
 
 
 class StockProductosView(APIView):
+    permission_classes = [IsAuthenticated]
     def get(self, request):
         productos = Producto.objects.all()
         stock_data = []

@@ -1,10 +1,39 @@
 from rest_framework import serializers
 from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor
 
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+
+        # Intentamos obtener los datos del modelo Vendedor vinculado
+        try:
+            # vendedor_profile es el related_name que deberías tener en tu OneToOneField
+            # si no pusiste related_name, Django usa por defecto 'vendedor'
+            vendedor = getattr(user, 'vendedor_profile', None) or getattr(user, 'vendedor', None)
+            
+            if vendedor:
+                token['nombre'] = vendedor.nombre
+                token['sigla'] = vendedor.sigla
+            else:
+                # Si es un admin sin perfil de vendedor todavía
+                token['nombre'] = user.username
+                token['sigla'] = "ADMIN"
+        except Exception:
+            token['nombre'] = user.username
+            token['sigla'] = "N/A"
+
+        return token
+
 class VendedorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Vendedor
         fields = ['id', 'nombre', 'sigla']
+
 
 class ClienteSerializer(serializers.ModelSerializer):
     # Esto se usa para la LECTURA (GET) - devuelve el objeto completo

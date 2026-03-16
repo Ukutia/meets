@@ -9,6 +9,8 @@ https://docs.djangoproject.com/en/5.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
+from datetime import timedelta
+
 import dj_database_url
 import os
 
@@ -157,7 +159,14 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
 
-
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+}
 
 if FRONTEND_URL:
     # Si la URL no tiene el protocolo, se lo agregamos para que Django no dé error
@@ -186,6 +195,11 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Si sigues con problemas de CORS en modo prueba, puedes habilitar esto temporalmente:
 # CORS_ALLOW_ALL_ORIGINS = True
+
+SIMPLE_JWT = {
+    'AUTH_HEADER_TYPES': ('Bearer',), # <--- ESTO DEBE COINCIDIR CON TU FRONTEND
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1), # Opcional: para que no expire tan rápido en desarrollo
+}
 
 print(f"DEBUG: DATABASE_URL cargada -> {bool(os.environ.get('DATABASE_URL'))}")
 print(f"DEBUG: FRONTEND_URL -> {os.environ.get('FRONTEND_URL')}")

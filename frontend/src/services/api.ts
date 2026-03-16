@@ -9,6 +9,7 @@ import type {
   Proveedor
 } from '@/types';
 
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 const api = axios.create({
@@ -17,6 +18,36 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// --- INTERCEPTOR DE SEGURIDAD ---
+// Este código se ejecuta antes de CADA petición a la API
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    // Agrega el token de Django (SimpleJWT) a las cabeceras
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Interceptor para manejar errores 401 (Token expirado)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      // Opcional: window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+// --- AUTENTICACIÓN ---
+export const loginRequest = (credentials: { username: string; password: string }) => 
+  api.post('/token/', credentials); // El endpoint que configuramos en Django
+
+export const refreshToken = (refresh: string) => 
+  api.post('/token/refresh/', { refresh });
 
 // Productos
 export const getProveedores = () => api.get<Proveedor[]>('/proveedores/');

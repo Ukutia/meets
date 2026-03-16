@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.urls import path
-from .views import UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView,StockProductosView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList
+from rest_framework_simplejwt.views import TokenRefreshView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView,StockProductosView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -26,5 +27,7 @@ urlpatterns = [
     path('inventario/detalle-facturas/', DetalleFacturasList.as_view(), name='detalle-facturas-list'),
     path('pagos-vendedor/', PagoVendedorView.as_view(), name='pagos_vendedor'),
     path('clientes/<int:pk>/', UpdateCliente.as_view(), name='actualizar_cliente'),
+    path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 

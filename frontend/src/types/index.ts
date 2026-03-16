@@ -42,6 +42,7 @@ export interface Pedido {
   detalles: DetallePedido[];
 }
 
+
 export interface DetalleFactura {
   producto: Producto;
   cantidad_kilos: number;

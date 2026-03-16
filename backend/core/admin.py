@@ -16,3 +16,4 @@ admin.site.register(models.FacturaDetallePedido)
 admin.site.register(models.Proveedor)
 admin.site.register(models.PagoVendedor)
 
+
