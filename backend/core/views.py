@@ -447,9 +447,12 @@ class CancelarPedido(APIView):
                         else:
                             nueva_fecha = timezone.now()
 
-                        # Calcular kilos proporcionales
-                        kilos_a_devolver = (detalle.cantidad_kilos / detalle.cantidad_unidades) * relacion.cantidad_unidades
-
+                        # Calcular kilos proporcionales de forma segura
+                        if detalle.cantidad_unidades and detalle.cantidad_unidades > 0:
+                            kilos_a_devolver = (detalle.cantidad_kilos / detalle.cantidad_unidades) * relacion.cantidad_unidades
+                        else:
+                            # Si no hay unidades en el detalle del pedido, devolvemos los kilos de la relación directamente
+                            kilos_a_devolver = relacion.cantidad_kilos if hasattr(relacion, 'cantidad_kilos') else 0
                         # Crear la entrada de retorno
                         EntradaProducto.objects.create(
                             factura=factura,
