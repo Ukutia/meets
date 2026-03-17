@@ -260,6 +260,17 @@ export default function Pedidos() {
                             <CheckCircle2 className="mr-2 h-4 w-4" /> Marcar Pagado
                           </DropdownMenuItem>
                         )}
+                        {/* SECCIÓN DE ANULACIÓN */}
+                        <DropdownMenuItem 
+                          onClick={() => {
+                            if (confirm(`¿Estás seguro de anular el pedido #00${pedido.id}? El stock será devuelto.`)) {
+                              anularMutation.mutate(pedido.id);
+                            }
+                          }} 
+                          className="text-red-600 focus:text-red-600 focus:bg-red-50"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" /> Anular Pedido
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
