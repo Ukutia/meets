@@ -105,12 +105,17 @@ class CrearPedido(APIView):
 
 
                     producto = Producto.objects.get(id=producto_id)
-                    
-                    stockProducto = DetalleFactura.objects.filter(producto=producto).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
+
+                    # Stock real disponible = unidades remanentes en EntradaProducto.
+                    # DetalleFactura es el historico completo de compras y NUNCA se
+                    # decrementa al vender, asi que usarlo aca dejaba pasar ventas de
+                    # productos ya agotados (la validacion siempre veia "stock" aunque
+                    # ya no quedara ninguna EntradaProducto para cubrir el costo).
+                    stockProducto = EntradaProducto.objects.filter(producto=producto).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
 
                     if unidades > stockProducto:
                         raise ValidationError("No hay suficiente stock disponible para el producto")
-                    
+
                     if not producto_id:
                         raise ValidationError("El ID del producto es obligatorio")
 
@@ -121,50 +126,69 @@ class CrearPedido(APIView):
 
 
 
-                    # Calcular el costo del producto en base a FIFO
+                    # Calcular el costo del producto en base a FIFO, ponderando por
+                    # KILOS reales consumidos de cada lote (no por cantidad de
+                    # unidades): costo_por_kilo es un precio por kilo, y las unidades
+                    # de un mismo lote no pesan todas lo mismo, asi que multiplicarlo
+                    # por la cantidad de piezas en vez de por su peso real distorsiona
+                    # el costo apenas un pedido cruza mas de un lote de compra.
                     entradas = EntradaProducto.objects.filter(producto=producto).order_by('fecha_entrada')
                     costo_total = Decimal('0.00')
-                    cantidad_restante_unidades = unidades
+                    kilos_consumidos = Decimal('0.00')
+                    cantidad_restante_unidades = Decimal(unidades)
                     facturas_usadas = []
                     facturas_cantidades = {}
 
                     for entrada in entradas:
                         if cantidad_restante_unidades <= 0:
                             break
-                        if entrada.cantidad_unidades >= cantidad_restante_unidades:
-                            costo_total += cantidad_restante_unidades * entrada.costo_por_kilo
-                            entrada.cantidad_unidades -= cantidad_restante_unidades
-                            entrada.save()
-                            facturas_usadas.append(entrada.factura)
-                            facturas_cantidades[entrada.factura.numero_factura] = cantidad_restante_unidades
-                            cantidad_restante_unidades = Decimal('0.00')
+                        if entrada.cantidad_unidades <= 0:
+                            continue
+
+                        peso_promedio = (
+                            entrada.cantidad_kilos / entrada.cantidad_unidades
+                            if entrada.cantidad_unidades else Decimal('0.00')
+                        )
+                        unidades_a_consumir = min(Decimal(entrada.cantidad_unidades), cantidad_restante_unidades)
+                        kilos_a_consumir = unidades_a_consumir * peso_promedio
+
+                        costo_total += kilos_a_consumir * entrada.costo_por_kilo
+                        kilos_consumidos += kilos_a_consumir
+
+                        entrada.cantidad_unidades -= int(unidades_a_consumir)
+                        entrada.cantidad_kilos -= kilos_a_consumir
+                        cantidad_restante_unidades -= unidades_a_consumir
+
+                        facturas_usadas.append(entrada.factura)
+                        facturas_cantidades[entrada.factura.id] = (
+                            facturas_cantidades.get(entrada.factura.id, 0) + int(unidades_a_consumir)
+                        )
+
+                        if entrada.cantidad_unidades <= 0:
+                            entrada.delete()
                         else:
-                            costo_total += entrada.cantidad_unidades * entrada.costo_por_kilo
-                            cantidad_restante_unidades -= entrada.cantidad_unidades
-                            facturas_usadas.append(entrada.factura)
-                            facturas_cantidades[entrada.factura.numero_factura] = entrada.cantidad_unidades
-                            entrada.delete()
+                            entrada.save()
 
-                        if entrada.cantidad_unidades == 0:
-                            entrada.delete()
+                    if cantidad_restante_unidades > 0:
+                        raise ValidationError(
+                            f"No hay stock disponible suficiente de '{producto.nombre}' para cubrir el pedido"
+                        )
 
+                    costoXkilo = costo_total / kilos_consumidos if kilos_consumidos > 0 else Decimal('0.00')
 
-                    if kilos == 0: 
-                        kilos = Decimal('0.00') # Si no hay kilos, se deja en 0
-                        costo_total = Decimal('0.00')
+                    if kilos == 0:
+                        kilos = Decimal('0.00')  # Si no hay kilos, se deja en 0
                         total_venta = Decimal('0.00')
                         pedido.estado = "Reservado"
-                        costoXkilo = Decimal('0.00')
-                    else:   
-                        costoXkilo = costo_total / unidades
+                        # OJO: costoXkilo NO se pone en 0 aca. El costo ya se
+                        # comprometio de inventario via FIFO arriba aunque el pedido
+                        # quede "Reservado" sin kilos todavia; hay que conservarlo
+                        # para que, cuando se completen los kilos despues (edicion
+                        # del pedido), el costo real no se pierda.
+                    else:
                         total_venta = kilos * producto.precio_por_kilo
                         total_pedido += total_venta
                         pedido.estado = "Preparado"
-
-
-
-
-                    
 
                     detalle_pedido = DetallePedido.objects.create(
                         pedido=pedido,
