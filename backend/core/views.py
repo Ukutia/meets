@@ -1,8 +1,9 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer
+from .utils import estado_consumo_detalle
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -60,29 +61,34 @@ class CrearPedido(APIView):
         cliente_id = data.get('cliente')
         detalles = data.get('detalles')
 
-        vendedor_id = data.get('vendedor')
-
+        if not cliente_id or not detalles:
+            return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
 
         # LÓGICA DE ASIGNACIÓN DE VENDEDOR
-        if request.user.is_staff:
-            # Si es ADMIN, usa el ID que venga del frontend. 
-            # Si no viene ninguno, podría asignárselo a sí mismo o dar error.
-            if not vendedor_id:
-                return Response({'error': 'Admin debe seleccionar un vendedor'}, status=400)
+        # El vendedor del pedido se hereda SIEMPRE del vendedor dueño del cliente
+        # (Cliente.vendedor), sin importar quién esté logueado al crear el pedido.
+        # Esto evita que un vendedor "robe" (sin querer o a propósito) la autoría
+        # de una venta de otro vendedor por crear el pedido desde su sesión.
+        # Excepción explícita: un admin/staff puede reasignar manualmente pasando
+        # 'forzar_vendedor' en el payload (nunca el campo 'vendedor', que se ignora).
+        try:
+            cliente = Cliente.objects.get(id=cliente_id)
+        except Cliente.DoesNotExist:
+            return Response({'error': 'Cliente no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        forzar_vendedor_id = data.get('forzar_vendedor')
+        if request.user.is_staff and forzar_vendedor_id:
             try:
-                vendedor = vendedor = Vendedor.objects.get(id=vendedor_id)
+                vendedor = Vendedor.objects.get(id=forzar_vendedor_id)
             except Vendedor.DoesNotExist:
                 return Response({'error': 'Vendedor no encontrado'}, status=404)
         else:
-            # Si es un Vendedor común, ignoramos lo que envíe el front 
-            # y buscamos SU perfil de vendedor vinculado.
-            try:
-                vendedor = request.user.vendedor_profile
-            except AttributeError:
-                raise PermissionDenied("Tu usuario no tiene un perfil de vendedor asignado.")
-
-        if not cliente_id or not detalles:
-            return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+            vendedor = cliente.vendedor
+            if vendedor is None:
+                return Response(
+                    {'error': 'El cliente seleccionado no tiene un vendedor asignado.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         if not isinstance(detalles, list) or len(detalles) == 0:
             return Response({'error': 'Los detalles deben ser una lista no vacía'}, status=status.HTTP_400_BAD_REQUEST)
@@ -279,7 +285,7 @@ class VendedorListView(APIView):
 class ClienteListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        clientes = Cliente.objects.all()
+        clientes = Cliente.objects.all().order_by('nombre')
         serializer = ClienteSerializer(clientes, many=True)
         return Response(serializer.data)
 
@@ -378,6 +384,136 @@ class FacturaListView(APIView):
         serializer = FacturaSerializer(facturas, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+class UpdateFacturaEntrada(APIView):
+    """Edita una factura ya emitida (proveedor, fecha y sus líneas) aplicando
+    guardas de stock por línea:
+
+      - línea no consumida  -> edición libre de cantidad y costo.
+      - línea parcialmente consumida -> costo libre; la cantidad no puede bajar
+        de lo ya vendido; el stock restante se ajusta a la diferencia.
+      - línea totalmente consumida -> bloqueada para cantidad/costo (se ignora
+        cualquier cambio enviado para esa línea).
+
+    Sólo se editan líneas existentes (identificadas por ``id`` o, en su defecto,
+    por ``producto``). Cambiar el producto de una línea o agregar/quitar líneas
+    queda fuera del alcance de esta edición. Toda la reconciliación de stock
+    corre dentro de una transacción, siguiendo el patrón de ``CancelarPedido``.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, numero_factura):
+        data = request.data
+        try:
+            with transaction.atomic():
+                factura = Factura.objects.select_for_update().get(numero_factura=numero_factura)
+
+                # Metadatos no ligados a stock: siempre editables sin restricción.
+                proveedor_id = data.get('proveedor')
+                if proveedor_id:
+                    factura.proveedor = Proveedor.objects.get(id=proveedor_id)
+                if data.get('fecha'):
+                    factura.fecha = data.get('fecha')
+
+                for item in data.get('detalles', []):
+                    detalle_id = item.get('id')
+                    if detalle_id is not None:
+                        detalle = DetalleFactura.objects.get(id=detalle_id, factura=factura)
+                    else:
+                        detalle = DetalleFactura.objects.get(factura=factura, producto_id=item.get('producto'))
+
+                    info = estado_consumo_detalle(detalle)
+                    estado = info['estado']
+                    consumidas = info['consumidas']
+
+                    # Línea totalmente consumida: no se toca cantidad ni costo.
+                    if estado == 'bloqueada':
+                        continue
+
+                    nuevos_kilos = Decimal(str(item.get('cantidad_kilos', detalle.cantidad_kilos)))
+                    nuevas_unidades = int(item.get('cantidad_unidades', detalle.cantidad_unidades))
+                    nuevo_costo = Decimal(str(item.get('costo_por_kilo', detalle.costo_por_kilo)))
+
+                    # Parcialmente consumida: la cantidad no puede bajar de lo vendido.
+                    if estado == 'parcial' and nuevas_unidades < consumidas:
+                        raise ValidationError(
+                            f"El producto '{detalle.producto.nombre}' ya tiene {consumidas} "
+                            f"unidad(es) vendida(s); la cantidad no puede ser menor a ese valor."
+                        )
+
+                    # Actualizar la línea histórica (DetalleFactura).
+                    detalle.cantidad_kilos = nuevos_kilos
+                    detalle.cantidad_unidades = nuevas_unidades
+                    detalle.costo_por_kilo = nuevo_costo
+                    detalle.costo_total = nuevos_kilos * nuevo_costo
+                    detalle.save()
+
+                    # Reconciliar el stock vivo (EntradaProducto) con lo restante.
+                    self._reconciliar_entrada(detalle, consumidas, nuevos_kilos, nuevas_unidades, nuevo_costo)
+
+                # Recalcular totales igual que en creación (subtotal + IVA 19%).
+                subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
+                iva = (subtotal * Decimal('0.19')).quantize(Decimal('0.01'))
+                factura.subtotal = subtotal.quantize(Decimal('0.01'))
+                factura.iva = iva
+                factura.total = (subtotal + iva).quantize(Decimal('0.01'))
+                factura.save()
+
+            factura.refresh_from_db()
+            return Response(FacturaSerializer(factura).data, status=status.HTTP_200_OK)
+
+        except Factura.DoesNotExist:
+            return Response({'error': 'Factura no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        except DetalleFactura.DoesNotExist:
+            return Response({'error': 'Una de las líneas enviadas no pertenece a la factura'}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError as e:
+            detail = e.detail if hasattr(e, 'detail') else str(e)
+            if isinstance(detail, list) and detail:
+                detail = detail[0]
+            return Response({'error': str(detail)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"DEBUG ERROR (UpdateFacturaEntrada): {str(e)}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def _reconciliar_entrada(self, detalle, consumidas, nuevos_kilos, nuevas_unidades, nuevo_costo):
+        """Ajusta el/los EntradaProducto vivos del producto+factura para que
+        reflejen la nueva cantidad menos lo ya consumido, al nuevo costo. Se
+        actualiza in-place la fila más antigua (preservando su posición FIFO) y
+        se consolidan las demás."""
+        entradas = list(
+            EntradaProducto.objects.filter(
+                factura=detalle.factura_id, producto=detalle.producto_id
+            ).order_by('fecha_entrada')
+        )
+
+        unidades_restantes = nuevas_unidades - consumidas
+        if unidades_restantes < 0:
+            unidades_restantes = 0
+
+        if nuevas_unidades > 0:
+            kilos_restantes = (nuevos_kilos / Decimal(nuevas_unidades)) * Decimal(unidades_restantes)
+        else:
+            # Línea sin unidades (sólo kilos): el stock restante son los kilos directos.
+            kilos_restantes = nuevos_kilos
+
+        if entradas:
+            principal = entradas[0]
+            principal.cantidad_unidades = unidades_restantes
+            principal.cantidad_kilos = kilos_restantes
+            principal.costo_por_kilo = nuevo_costo
+            principal.save()
+            for extra in entradas[1:]:
+                extra.delete()
+        else:
+            # No debería ocurrir en 'libre'/'parcial' (siempre queda stock vivo),
+            # pero por robustez recreamos la entrada.
+            EntradaProducto.objects.create(
+                factura=detalle.factura,
+                producto=detalle.producto,
+                cantidad_kilos=kilos_restantes,
+                cantidad_unidades=unidades_restantes,
+                costo_por_kilo=nuevo_costo,
+            )
+
 class CrearPagoFactura(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
@@ -393,6 +529,9 @@ class CrearPagoFactura(APIView):
             factura = Factura.objects.get(numero_factura=factura_id)
         except Factura.DoesNotExist:
             return Response({'error': f'Factura con ID {factura_id} no existe'}, status=status.HTTP_404_NOT_FOUND)
+
+        if hasattr(factura, 'pago_factura'):
+            return Response({'error': 'Esta factura ya tiene un pago registrado'}, status=status.HTTP_400_BAD_REQUEST)
 
         pago_factura = PagoFactura.objects.create(
             factura=factura,
@@ -694,3 +833,319 @@ class StockProductosView(APIView):
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
+
+
+# ============================================================================
+# REPORTES FINANCIEROS (Plan 03 — Ganancias, Márgenes y Estadísticas)
+# ============================================================================
+from django.db.models import Avg, F, OuterRef, Subquery, DecimalField
+from django.db.models.functions import TruncMonth, Coalesce
+
+
+# Los costos de compra se ingresan SIN IVA (ver Facturas.tsx: subtotal/costo_por_kilo
+# son netos, el IVA se calcula aparte). El costo REAL pagado al proveedor incluye ese
+# 19%, así que toda ganancia/margen reportado debe descontar el costo CON IVA, no el
+# neto. Los campos DetallePedido.total_costo/margen quedaron persistidos con el costo
+# neto (bug de origen), por eso los reportes recalculan la ganancia en vez de confiar
+# en Sum('margen').
+IVA_RATE = Decimal('1.19')
+
+
+def _detalles_ganancia_qs(request):
+    """
+    Base de agregación de ganancias: líneas de venta (DetallePedido)
+    EXCLUYENDO pedidos Anulado (de lo contrario las ventas revertidas
+    inflarían la ganancia reportada). Acepta filtro opcional de rango de
+    fechas vía ?desde=YYYY-MM-DD & ?hasta=YYYY-MM-DD sobre DetallePedido.fecha.
+    """
+    qs = DetallePedido.objects.exclude(pedido__estado="Anulado")
+    desde = request.query_params.get('desde')
+    hasta = request.query_params.get('hasta')
+    if desde:
+        qs = qs.filter(fecha__gte=desde)
+    if hasta:
+        qs = qs.filter(fecha__lte=hasta)
+    return qs
+
+
+class ReporteGananciasView(APIView):
+    """
+    Agregación de ganancias sobre DetallePedido (pedidos NO anulados).
+    Devuelve en una sola respuesta: total general, por producto ("corte"),
+    por mes y por vendedor.
+
+    La ganancia se RECALCULA como ventas - (costo_neto * IVA_RATE) en vez de
+    usar el campo persistido DetallePedido.margen: ese campo se calculó al
+    crear el pedido usando el costo neto (sin IVA) de la compra, por lo que
+    subestima el costo real y sobreestima la ganancia.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        detalles = _detalles_ganancia_qs(request)
+
+        # --- Total general ---
+        totales = detalles.aggregate(
+            ventas=Coalesce(Sum('total_venta'), Decimal('0')),
+            costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
+            kilos=Coalesce(Sum('cantidad_kilos'), Decimal('0')),
+        )
+        costo_con_iva = totales['costo_neto'] * IVA_RATE
+        ganancia = totales['ventas'] - costo_con_iva
+        margen_pct = float(ganancia / totales['ventas'] * 100) if totales['ventas'] else 0.0
+
+        # --- Por producto / "corte" (= Producto.nombre) ---
+        por_producto_raw = list(
+            detalles.values('producto__id', 'producto__nombre')
+            .annotate(
+                ventas=Coalesce(Sum('total_venta'), Decimal('0')),
+                costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
+                kilos=Coalesce(Sum('cantidad_kilos'), Decimal('0')),
+            )
+        )
+        por_producto = []
+        for r in por_producto_raw:
+            costo = r['costo_neto'] * IVA_RATE
+            gan = r['ventas'] - costo
+            por_producto.append({
+                'producto_id': r['producto__id'],
+                'nombre': r['producto__nombre'],
+                'ganancia': gan,
+                'ventas': r['ventas'],
+                'costo': costo,
+                'kilos': r['kilos'],
+                'margen_pct': float(gan / r['ventas'] * 100) if r['ventas'] else 0.0,
+            })
+        por_producto.sort(key=lambda x: x['ganancia'], reverse=True)
+
+        # --- Por mes ---
+        por_mes_raw = list(
+            detalles.annotate(mes=TruncMonth('fecha'))
+            .values('mes')
+            .annotate(
+                ventas=Coalesce(Sum('total_venta'), Decimal('0')),
+                costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
+            )
+            .order_by('mes')
+        )
+        por_mes = []
+        for r in por_mes_raw:
+            costo = r['costo_neto'] * IVA_RATE
+            por_mes.append({
+                'mes': r['mes'].strftime('%Y-%m') if r['mes'] else None,
+                'ganancia': r['ventas'] - costo,
+                'ventas': r['ventas'],
+                'costo': costo,
+            })
+
+        # --- Por vendedor ---
+        por_vendedor_raw = list(
+            detalles.values('pedido__vendedor__id', 'pedido__vendedor__nombre')
+            .annotate(
+                ventas=Coalesce(Sum('total_venta'), Decimal('0')),
+                costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
+            )
+        )
+        por_vendedor = []
+        for r in por_vendedor_raw:
+            costo = r['costo_neto'] * IVA_RATE
+            gan = r['ventas'] - costo
+            por_vendedor.append({
+                'vendedor_id': r['pedido__vendedor__id'],
+                'nombre': r['pedido__vendedor__nombre'] or 'Sin vendedor',
+                'ganancia': gan,
+                'ventas': r['ventas'],
+                'margen_pct': float(gan / r['ventas'] * 100) if r['ventas'] else 0.0,
+            })
+        por_vendedor.sort(key=lambda x: x['ganancia'], reverse=True)
+
+        return Response({
+            'total': {
+                'ganancia': ganancia,
+                'ventas': totales['ventas'],
+                'costo': costo_con_iva,
+                'kilos': totales['kilos'],
+                'margen_pct': round(margen_pct, 2),
+            },
+            'por_producto': por_producto,
+            'por_mes': por_mes,
+            'por_vendedor': por_vendedor,
+        }, status=status.HTTP_200_OK)
+
+
+class ReportePerdidasView(APIView):
+    """
+    Pérdidas por mermas (AjusteInventario tipo 'merma').
+
+    CRITERIO DE VALORIZACIÓN (decisión de negocio):
+    AjusteInventario no tiene costo unitario propio, por lo que cada merma se
+    valoriza con el ÚLTIMO costo_por_kilo conocido de EntradaProducto para ese
+    producto (el costo de reposición más reciente), AJUSTADO por IVA_RATE ya
+    que ese costo se ingresa sin IVA y el costo real de reponer el producto lo
+    incluye. Si el producto nunca tuvo una entrada, la merma se valoriza en 0.
+    La cantidad de la merma se toma en valor absoluto (las mermas suelen
+    registrarse como cantidad negativa).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ultimo_costo_sq = EntradaProducto.objects.filter(
+            producto=OuterRef('producto')
+        ).order_by('-fecha_entrada').values('costo_por_kilo')[:1]
+
+        mermas = (
+            AjusteInventario.objects.filter(tipo='merma')
+            .annotate(costo_unit=Coalesce(
+                Subquery(ultimo_costo_sq, output_field=DecimalField(max_digits=10, decimal_places=2)),
+                Decimal('0'),
+            ))
+            .select_related('producto')
+        )
+
+        por_producto = {}
+        por_mes = {}
+        total_valor = Decimal('0')
+        total_kilos = Decimal('0')
+
+        for m in mermas:
+            kilos = abs(m.cantidad or Decimal('0'))
+            valor = kilos * m.costo_unit * IVA_RATE
+            total_valor += valor
+            total_kilos += kilos
+
+            pid = m.producto_id
+            if pid not in por_producto:
+                por_producto[pid] = {
+                    'producto_id': pid,
+                    'nombre': m.producto.nombre,
+                    'kilos': Decimal('0'),
+                    'valor': Decimal('0'),
+                }
+            por_producto[pid]['kilos'] += kilos
+            por_producto[pid]['valor'] += valor
+
+            mes = m.fecha.strftime('%Y-%m') if m.fecha else 'Sin fecha'
+            if mes not in por_mes:
+                por_mes[mes] = {'mes': mes, 'kilos': Decimal('0'), 'valor': Decimal('0')}
+            por_mes[mes]['kilos'] += kilos
+            por_mes[mes]['valor'] += valor
+
+        por_producto_list = sorted(por_producto.values(), key=lambda x: x['valor'], reverse=True)
+        por_mes_list = sorted(por_mes.values(), key=lambda x: x['mes'])
+
+        return Response({
+            'total': {'valor': total_valor, 'kilos': total_kilos},
+            'por_producto': por_producto_list,
+            'por_mes': por_mes_list,
+        }, status=status.HTTP_200_OK)
+
+
+class FluctuacionPreciosView(APIView):
+    """
+    Series temporales de precios por producto:
+    - compras: costo_por_kilo desde EntradaProducto (promedio por día).
+    - ventas: precio_venta desde DetallePedido (excluyendo pedidos Anulado).
+
+    Siempre devuelve la lista de productos (para el selector). Si se pasa
+    ?producto=<id> devuelve las dos series de ese producto.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        productos = list(Producto.objects.values('id', 'nombre').order_by('nombre'))
+        producto_id = request.query_params.get('producto')
+
+        compras = []
+        ventas = []
+        if producto_id:
+            compras_qs = (
+                EntradaProducto.objects.filter(producto_id=producto_id)
+                .annotate(dia=TruncMonth('fecha_entrada'))
+                .values('dia')
+                .annotate(costo=Avg('costo_por_kilo'))
+                .order_by('dia')
+            )
+            compras = [{
+                'fecha': r['dia'].strftime('%Y-%m') if r['dia'] else None,
+                'costo': r['costo'],
+            } for r in compras_qs]
+
+            ventas_qs = (
+                DetallePedido.objects.filter(producto_id=producto_id)
+                .exclude(pedido__estado="Anulado")
+                .annotate(dia=TruncMonth('fecha'))
+                .values('dia')
+                .annotate(precio=Avg('precio_venta'))
+                .order_by('dia')
+            )
+            ventas = [{
+                'fecha': r['dia'].strftime('%Y-%m') if r['dia'] else None,
+                'precio': r['precio'],
+            } for r in ventas_qs]
+
+        return Response({
+            'productos': productos,
+            'producto_id': int(producto_id) if producto_id else None,
+            'compras': compras,
+            'ventas': ventas,
+        }, status=status.HTTP_200_OK)
+
+
+class MargenActualProductoView(APIView):
+    """
+    Margen actual por producto, para la vista previa en vivo al crear una
+    Factura de compra. Por cada producto devuelve:
+    - precio_por_kilo: precio de venta vigente (Producto.precio_por_kilo)
+    - costo_reciente: último costo_por_kilo de EntradaProducto (SIN IVA, tal
+      como se ingresa en la Factura de compra)
+    - margen_unitario_actual / margen_pct_actual: vs. costo reciente CON IVA
+      (costo_reciente * IVA_RATE), ya que ese es el costo real pagado.
+    - margen_pct_historico: margen promedio de ventas NO anuladas, recalculado
+      como (ventas - costo_neto * IVA_RATE) / ventas del producto (no se usa
+      el campo persistido DetallePedido.margen porque se guardó sin IVA).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        productos = Producto.objects.all()
+
+        # Último costo conocido por producto (neto, sin IVA)
+        ultimo_costo = {}
+        for e in EntradaProducto.objects.order_by('producto_id', '-fecha_entrada'):
+            if e.producto_id not in ultimo_costo:
+                ultimo_costo[e.producto_id] = e.costo_por_kilo
+
+        # Margen histórico por producto (ventas no anuladas), costo con IVA
+        hist = {
+            r['producto_id']: r
+            for r in DetallePedido.objects.exclude(pedido__estado="Anulado")
+            .values('producto_id')
+            .annotate(costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
+                      ventas=Coalesce(Sum('total_venta'), Decimal('0')))
+        }
+
+        data = []
+        for p in productos:
+            costo_reciente = ultimo_costo.get(p.id)
+            costo_reciente_con_iva = (costo_reciente * IVA_RATE) if costo_reciente is not None else None
+            precio = p.precio_por_kilo or Decimal('0')
+            margen_unit = (precio - costo_reciente_con_iva) if costo_reciente_con_iva is not None else None
+            margen_pct = float(margen_unit / precio * 100) if (margen_unit is not None and precio) else None
+
+            h = hist.get(p.id)
+            margen_pct_hist = None
+            if h and h['ventas']:
+                ganancia_hist = h['ventas'] - (h['costo_neto'] * IVA_RATE)
+                margen_pct_hist = float(ganancia_hist / h['ventas'] * 100)
+
+            data.append({
+                'producto_id': p.id,
+                'nombre': p.nombre,
+                'precio_por_kilo': precio,
+                'costo_reciente': costo_reciente_con_iva,
+                'margen_unitario_actual': margen_unit,
+                'margen_pct_actual': round(margen_pct, 2) if margen_pct is not None else None,
+                'margen_pct_historico': round(margen_pct_hist, 2) if margen_pct_hist is not None else None,
+            })
+
+        return Response(data, status=status.HTTP_200_OK)

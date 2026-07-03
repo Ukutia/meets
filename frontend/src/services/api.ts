@@ -30,24 +30,73 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Interceptor para manejar errores 401 (Token expirado)
+const REFRESH_URL = '/token/refresh/';
+
+const forceLogout = () => {
+  localStorage.clear();
+  window.location.href = '/login';
+};
+
+// Comparte una única llamada de refresh entre múltiples 401 simultáneos.
+let refreshPromise: Promise<string> | null = null;
+
+export const refreshAccessToken = (): Promise<string> => {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refresh = localStorage.getItem('refreshToken');
+      if (!refresh) {
+        throw new Error('No hay refreshToken disponible');
+      }
+      const response = await axios.post(`${API_BASE_URL}${REFRESH_URL}`, { refresh });
+      const newAccess = response.data.access;
+      localStorage.setItem('token', newAccess);
+      return newAccess;
+    })().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+};
+
+// Interceptor para manejar errores 401 (Token expirado): refresca en background y reintenta.
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      // Opcional: window.location.href = '/login';
+  async (error) => {
+    const originalRequest = error.config;
+
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      !originalRequest.url?.includes(REFRESH_URL)
+    ) {
+      originalRequest._retry = true;
+      try {
+        const newAccess = await refreshAccessToken();
+        originalRequest.headers = originalRequest.headers || {};
+        originalRequest.headers.Authorization = `Bearer ${newAccess}`;
+        return api(originalRequest);
+      } catch {
+        forceLogout();
+        return new Promise(() => {}); // corta la cadena: ya estamos redirigiendo
+      }
     }
+
+    if (error.response?.status === 401 && originalRequest?.url?.includes(REFRESH_URL)) {
+      forceLogout();
+      return new Promise(() => {});
+    }
+
     return Promise.reject(error);
   }
 );
 
 // --- AUTENTICACIÓN ---
-export const loginRequest = (credentials: { username: string; password: string }) => 
+export const loginRequest = (credentials: { username: string; password: string }) =>
   api.post('/token/', credentials); // El endpoint que configuramos en Django
 
-export const refreshToken = (refresh: string) => 
-  api.post('/token/refresh/', { refresh });
+export const refreshToken = (refresh: string) =>
+  api.post(REFRESH_URL, { refresh });
 
 // Productos
 export const getProveedores = () => api.get<Proveedor[]>('/proveedores/');
@@ -91,6 +140,8 @@ export const actualizarKilosPedido = (id: number, detalles: any[]) =>
 // Facturas
 export const getFacturas = () => api.get<Factura[]>('/facturas/');
 export const createFactura = (data: any) => api.post('/facturas/crear/', data);
+export const updateFactura = (numeroFactura: string, data: any) =>
+  api.put<Factura>(`/facturas/${encodeURIComponent(numeroFactura)}/`, data);
 export const pagarFactura = (factura: string, fecha_de_pago: string, monto_del_pago: number) =>
   api.post(`/facturas/pagar/`, {
     factura,
@@ -143,5 +194,15 @@ export const getDetallePedidos = async () => {
 export const getStock = () => api.get<StockItem[]>('/stock/');
 // Vendedores
 export const getVendedores = () => api.get<Vendedor[]>('/vendedores/');
+
+// --- Reportes (Plan 03) ---
+export const getReporteGanancias = (params?: { desde?: string; hasta?: string }) =>
+  api.get('/reportes/ganancias/', { params });
+export const getReportePerdidas = () => api.get('/reportes/perdidas/');
+export const getFluctuacionPrecios = (productoId?: number | string) =>
+  api.get('/reportes/fluctuacion-precios/', {
+    params: productoId ? { producto: productoId } : undefined,
+  });
+export const getMargenProductos = () => api.get('/reportes/margen-productos/');
 
 export default api;

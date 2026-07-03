@@ -199,6 +199,7 @@ CORS_ALLOW_CREDENTIALS = True
 SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',), # <--- ESTO DEBE COINCIDIR CON TU FRONTEND
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1), # Opcional: para que no expire tan rápido en desarrollo
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7), # Sesión completa: hasta 7 días sin volver a loguearse
 }
 
 print(f"DEBUG: DATABASE_URL cargada -> {bool(os.environ.get('DATABASE_URL'))}")

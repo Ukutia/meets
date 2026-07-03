@@ -29,6 +29,7 @@ export interface DetallePedido {
   cantidad_kilos: number;
   total_venta: number;
   total_costo: number;
+  margen: number;
   facturas: number[];
 }
 
@@ -43,12 +44,21 @@ export interface Pedido {
 }
 
 
+export type EstadoEdicionLinea = 'libre' | 'parcial' | 'bloqueada';
+
 export interface DetalleFactura {
-  producto: Producto;
+  id?: number;
+  producto: number;
+  producto_nombre?: string;
   cantidad_kilos: number;
   costo_total: number;
   cantidad_unidades: number;
   costo_por_kilo: number;
+  // Guardas de stock calculadas por el backend.
+  estado_edicion?: EstadoEdicionLinea;
+  unidades_consumidas?: number;
+  unidades_vivas?: number;
+  pedidos_consumidores?: number[];
 }
 
 export interface PagoFactura {

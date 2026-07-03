@@ -33,9 +33,12 @@ class Cliente(models.Model):
     telefono = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True,null=True)
 
+    class Meta:
+        ordering = ['nombre']
+
     def __str__(self):
         return self.nombre  # Mostrar el nombre del cliente en el admin de Django
-    
+
 
 class Producto(models.Model):
     id = models.AutoField(primary_key=True)  # Campo ID automático

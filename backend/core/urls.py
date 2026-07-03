@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView,StockProductosView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView,StockProductosView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -15,6 +15,7 @@ urlpatterns = [
     path('facturas/crear/', CrearFacturaEntrada.as_view(), name='crear_factura'),
     path('facturas/', FacturaListView.as_view(), name='facturas'),
     path('facturas/pagar/', CrearPagoFactura.as_view(), name='pagar_factura'),
+    path('facturas/<str:numero_factura>/', UpdateFacturaEntrada.as_view(), name='actualizar_factura'),
     path('pedidos/cancelar/', CancelarPedido.as_view(), name='cancelar_pedido'),
     path('stock/', StockProductos.as_view(), name='stock_productos'),
     path('vendedores/', VendedorListView.as_view(), name='vendedores'),
@@ -26,6 +27,10 @@ urlpatterns = [
     path('inventario/detalle-pedidos/', DetallePedidosList.as_view(), name='detalle-pedidos-list'),
     path('inventario/detalle-facturas/', DetalleFacturasList.as_view(), name='detalle-facturas-list'),
     path('pagos-vendedor/', PagoVendedorView.as_view(), name='pagos_vendedor'),
+    path('reportes/ganancias/', ReporteGananciasView.as_view(), name='reporte_ganancias'),
+    path('reportes/perdidas/', ReportePerdidasView.as_view(), name='reporte_perdidas'),
+    path('reportes/fluctuacion-precios/', FluctuacionPreciosView.as_view(), name='reporte_fluctuacion'),
+    path('reportes/margen-productos/', MargenActualProductoView.as_view(), name='reporte_margen_productos'),
     path('clientes/<int:pk>/', UpdateCliente.as_view(), name='actualizar_cliente'),
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),

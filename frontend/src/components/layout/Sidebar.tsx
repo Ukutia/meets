@@ -9,6 +9,7 @@ import {
   Warehouse,
   LogOut,
   Feather,
+  TrendingUp,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -34,6 +35,7 @@ const menuItems = [
   { title: 'Productos', url: '/productos', icon: Package },
   { title: 'Facturas', url: '/facturas', icon: FileText },
   { title: 'Stock', url: '/stock', icon: Warehouse },
+  { title: 'Reportes', url: '/reportes', icon: TrendingUp },
   { title: 'Flujos de Inventario', url: '/flujos-de-inventario', icon: Feather },
   { title: 'Gestión de Pagos', url: '/gestion-pagos', icon: Feather },
 ];

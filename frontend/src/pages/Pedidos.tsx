@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import React from 'react';
-import { 
-  Plus, Search, MessageCircle, CheckCircle2, 
-  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2
+import {
+  Plus, Search, MessageCircle, CheckCircle2,
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +35,7 @@ export default function Pedidos() {
   const [filterEstado, setFilterEstado] = useState('Todos');
   const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
+  const [selectedPedidoGanancia, setSelectedPedidoGanancia] = useState<Pedido | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterVendedor, setFilterVendedor] = useState('Todos');
   const [selectedIds, setSelectedIds] = useState<number[]>([]); // Para la selección múltiple
@@ -73,6 +74,11 @@ export default function Pedidos() {
   // --- HELPERS ---
   const formatCurrency = (val: any) => 
     Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
+
+  const FACTOR_IVA = 1.19;
+
+  const gananciaLinea = (det: Pedido['detalles'][number]) =>
+    Number(det.total_venta) - Number(det.total_costo) * FACTOR_IVA;
 
   const getStatusColor = (estado: string) => {
     switch (estado) {
@@ -252,6 +258,9 @@ export default function Pedidos() {
                         <DropdownMenuItem onClick={() => setSelectedPedido(pedido)}>
                           <Edit2 className="mr-2 h-4 w-4" /> Editar
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setSelectedPedidoGanancia(pedido)}>
+                          <TrendingUp className="mr-2 h-4 w-4" /> Ver ganancia
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => cobrarPedido(pedido)} className="text-green-600">
                           <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
                         </DropdownMenuItem>
@@ -387,6 +396,85 @@ export default function Pedidos() {
             >
               Listo
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* DIÁLOGO DE ANÁLISIS DE COSTO Y GANANCIA (SOLO LECTURA) */}
+      <Dialog open={!!selectedPedidoGanancia} onOpenChange={() => setSelectedPedidoGanancia(null)}>
+        <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0">
+          <DialogHeader className="p-4 border-b bg-slate-50/50">
+            <DialogTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5 text-blue-600" />
+              Ganancia — Pedido <span className="text-blue-600">#{selectedPedidoGanancia?.id}</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto p-4">
+            {selectedPedidoGanancia && (() => {
+              const detalles = selectedPedidoGanancia.detalles;
+              const totalVenta = detalles.reduce((sum, d) => sum + Number(d.total_venta), 0);
+              const totalCostoConIva = detalles.reduce((sum, d) => sum + Number(d.total_costo) * FACTOR_IVA, 0);
+              const gananciaTotal = totalVenta - totalCostoConIva;
+              const margenPct = totalVenta > 0 ? (gananciaTotal / totalVenta) * 100 : 0;
+
+              return (
+                <>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="px-2">Producto</TableHead>
+                        <TableHead className="text-right px-2">Costo</TableHead>
+                        <TableHead className="text-right px-2">Venta</TableHead>
+                        <TableHead className="text-right px-2">Ganancia</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {detalles.map((det, idx) => {
+                        const costoConIva = Number(det.total_costo) * FACTOR_IVA;
+                        const ganancia = gananciaLinea(det);
+                        return (
+                          <TableRow key={idx}>
+                            <TableCell className="px-2">
+                              <div className="font-semibold text-sm">{det.producto.nombre}</div>
+                              <div className="text-[10px] text-slate-400">{det.cantidad_kilos} kg</div>
+                            </TableCell>
+                            <TableCell className="text-right px-2 text-sm">{formatCurrency(costoConIva)}</TableCell>
+                            <TableCell className="text-right px-2 text-sm">{formatCurrency(det.total_venta)}</TableCell>
+                            <TableCell className={`text-right px-2 text-sm font-bold ${ganancia >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                              {formatCurrency(ganancia)}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+
+                  <div className="mt-4 p-4 rounded-xl border bg-slate-50 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500">Costo total (con IVA)</span>
+                      <span className="font-semibold">{formatCurrency(totalCostoConIva)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500">Venta total</span>
+                      <span className="font-semibold">{formatCurrency(totalVenta)}</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-2 border-t border-dashed">
+                      <span className="text-xs font-bold uppercase text-slate-400">Ganancia total</span>
+                      <span className={`text-xl font-black ${gananciaTotal >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                        {formatCurrency(gananciaTotal)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-bold uppercase text-slate-400">Margen</span>
+                      <span className={`text-sm font-bold ${margenPct >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                        {margenPct.toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>

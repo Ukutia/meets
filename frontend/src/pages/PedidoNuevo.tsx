@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Check, Plus, Minus, XCircle } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Plus, Minus, XCircle, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -12,6 +12,8 @@ import {
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ClienteCombobox } from '@/components/shared/ClienteCombobox';
+import { ClienteFormDialog } from '@/components/shared/ClienteFormDialog';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -42,6 +44,7 @@ interface DetalleProducto {
 export default function PedidoNuevo() {
   const [step, setStep] = useState(1);
   const [clienteId, setClienteId] = useState('');
+  const [clienteDialogOpen, setClienteDialogOpen] = useState(false);
   const [observaciones, setObservaciones] = useState('');
   const [detalles, setDetalles] = useState<DetalleProducto[]>([]);
   const [productoSeleccionado, setProductoSeleccionado] = useState('');
@@ -231,19 +234,24 @@ const agregarProducto = () => {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label>Cliente</Label>
-                <Select value={clienteId} onValueChange={setClienteId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleccione un cliente" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {clientes.map((cliente) => (
-                      <SelectItem key={cliente.id} value={cliente.id.toString()}>
-                        {cliente.nombre}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <ClienteCombobox clientes={clientes} value={clienteId} onChange={setClienteId} />
+                  </div>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setClienteDialogOpen(true)}>
+                    <UserPlus className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
+              <ClienteFormDialog
+                open={clienteDialogOpen}
+                onOpenChange={setClienteDialogOpen}
+                mode="create"
+                onSuccess={(nuevoCliente) => {
+                  queryClient.invalidateQueries({ queryKey: ['clientes'] });
+                  setClienteId(nuevoCliente.id.toString());
+                }}
+              />
               {clienteSeleccionado && (
                 <div className="rounded-lg border border-border bg-muted p-4">
                   <p className="text-sm font-medium">Vendedor Asignado</p>

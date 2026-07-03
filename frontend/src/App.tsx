@@ -14,6 +14,7 @@ import PedidoNuevo from "./pages/PedidoNuevo";
 import MovimientosInventarios from "./pages/MovimientosInventario";
 import Facturas from "./pages/Facturas";
 import Stock from "./pages/Stock";
+import Reportes from "./pages/Reportes";
 import NotFound from "./pages/NotFound";
 import FormularioPedido from "./pages/FormularioPedido";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
@@ -133,6 +134,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Stock />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/reportes"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Reportes />
                   </Layout>
                 </ProtectedRoute>
               }

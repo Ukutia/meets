@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Search, ArrowUpCircle, ArrowDownCircle, Filter } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Search, ArrowUpCircle, ArrowDownCircle, Filter, FileSpreadsheet } from 'lucide-react';
 import { getDetalleFacturas, getDetallePedidos,getProductos } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -61,7 +63,6 @@ export default function MovimientosInventario() {
     const data = activeTab === 'entradas' ? (entradas || []) : (salidas || []);
     
     return data.filter((item: any) => {
-      console.log('Filtrando item:', item);
       // Normalización de valores para evitar errores si el campo no existe
       const clienteProv = (item.cliente_nombre || item.proveedor_nombre || '').toString().toLowerCase();
       const producto = (item.producto_nombre || item.producto.nombre||'').toString().toLowerCase();
@@ -82,6 +83,33 @@ export default function MovimientosInventario() {
       return matchCliente && matchProducto && matchNum && matchKilos && matchUnidades;
     });
   }, [activeTab, entradas, salidas, filter]);
+
+  const exportarExcel = () => {
+    const filas = filteredData.map((item: any) => {
+      const base: Record<string, any> = {
+        '#': item.pedido || item.factura,
+        'Cliente / Proveedor': item.cliente_nombre || item.proveedor_nombre || 'N/A',
+        'Producto': item.producto_nombre || item.producto?.nombre || 'N/A',
+        'Unidades': Number(item.cantidad_unidades || 0),
+        'Kilos': Number(item.cantidad_kilos || 0),
+        'Precio/Kg': Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
+        'Total': Number(item.cantidad_kilos) * Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
+      };
+      if (activeTab === 'salidas') {
+        base['Vendedor'] = item.vendedor_nombre || 'N/A';
+      }
+      return base;
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(filas);
+    const workbook = XLSX.utils.book_new();
+    const nombreHoja = activeTab === 'entradas' ? 'Entradas' : 'Salidas';
+    XLSX.utils.book_append_sheet(workbook, worksheet, nombreHoja);
+
+    const fecha = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, `movimientos-${activeTab}-${fecha}.xlsx`);
+  };
+
   if (loadingE || loadingS) return <LoadingSpinner />;
 
   return (
@@ -162,8 +190,20 @@ export default function MovimientosInventario() {
             </TabsTrigger>
           </TabsList>
           
-          <div className="text-sm text-muted-foreground">
-            Mostrando <b>{filteredData.length}</b> registros
+          <div className="flex items-center gap-4">
+            <div className="text-sm text-muted-foreground">
+              Mostrando <b>{filteredData.length}</b> registros
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={exportarExcel}
+              disabled={filteredData.length === 0}
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              Exportar a Excel
+            </Button>
           </div>
         </div>
 
@@ -178,6 +218,7 @@ export default function MovimientosInventario() {
                 <TableHead className="text-right">Kilos</TableHead>
                 <TableHead className="text-right">Precio/Kg</TableHead>
                 <TableHead className="text-right">Total</TableHead>
+                {activeTab === 'salidas' && <TableHead>Vendedor</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -186,7 +227,6 @@ export default function MovimientosInventario() {
                   <TableCell className="font-mono font-medium">
                     #{item.pedido || item.factura}
                   </TableCell>
-                  {console.log(item)}
                   <TableCell>{item.cliente_nombre || item.proveedor_nombre || 'N/A'}</TableCell>
                   <TableCell className="font-semibold">{item.producto_nombre || item.producto.nombre}</TableCell>
                   <TableCell className="text-right">{Number(item.cantidad_unidades).toFixed(0)}</TableCell>
@@ -199,11 +239,14 @@ export default function MovimientosInventario() {
                   <TableCell className="text-right font-bold">
                     ${(item.cantidad_kilos * (activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta)).toLocaleString('es-CL')}
                   </TableCell>
+                  {activeTab === 'salidas' && (
+                    <TableCell>{item.vendedor_nombre || 'N/A'}</TableCell>
+                  )}
                 </TableRow>
               ))}
               {filteredData.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
+                  <TableCell colSpan={activeTab === 'salidas' ? 8 : 7} className="h-32 text-center text-muted-foreground">
                     No se encontraron movimientos con los filtros aplicados.
                   </TableCell>
                 </TableRow>

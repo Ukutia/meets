@@ -222,7 +222,40 @@ const resumenGeneral = useMemo(() => {
           </div>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in duration-500">
+        <div className="space-y-6 animate-in fade-in duration-500">
+          {(() => {
+            const resumenVendedor = resumenGeneral.find((v: any) => v.id.toString() === vendedorId);
+            if (!resumenVendedor) return null;
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card className="shadow-sm">
+                  <CardContent className="pt-6 text-center">
+                    <p className="text-sm text-muted-foreground">Ventas</p>
+                    <p className="text-2xl font-bold">${resumenVendedor.ventas.toLocaleString('es-CL')}</p>
+                  </CardContent>
+                </Card>
+                <Card className="shadow-sm">
+                  <CardContent className="pt-6 text-center">
+                    <p className="text-sm text-muted-foreground">Pagado</p>
+                    <p className="text-2xl font-bold text-green-600">${resumenVendedor.pagos.toLocaleString('es-CL')}</p>
+                  </CardContent>
+                </Card>
+                <Card className="shadow-sm">
+                  <CardContent className="pt-6 text-center">
+                    <p className="text-sm text-muted-foreground">Deuda</p>
+                    <p className="text-2xl font-bold text-orange-600">${resumenVendedor.deudaNeta.toLocaleString('es-CL')}</p>
+                  </CardContent>
+                </Card>
+                <Card className="shadow-sm">
+                  <CardContent className="pt-6 text-center">
+                    <p className="text-sm text-muted-foreground">Adelantos</p>
+                    <p className="text-2xl font-bold text-blue-600">${resumenVendedor.adelantos.toLocaleString('es-CL')}</p>
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })()}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1 space-y-4">
             <Card className="shadow-md border-t-4 border-t-primary">
               <CardContent className="pt-6">
@@ -300,6 +333,7 @@ const resumenGeneral = useMemo(() => {
               </div>
             </Card>
           </div>
+        </div>
         </div>
       )}
     </div>

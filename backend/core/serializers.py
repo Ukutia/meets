@@ -59,11 +59,12 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
     producto = ProductoSerializer()
     cliente_nombre = serializers.ReadOnlyField(source='pedido.cliente.nombre')
     vendedor_nombre = serializers.ReadOnlyField(source='pedido.vendedor.nombre')
+    estado_pedido = serializers.ReadOnlyField(source='pedido.estado')
 
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo','facturas','precio_venta','total_venta','pedido','cliente_nombre','vendedor_nombre']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'precio_venta', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido']
 
 class PedidoSerializer(serializers.ModelSerializer):
     detalles = DetallePedidoSerializer(many=True)
@@ -99,10 +100,39 @@ class ProveedorSerializer(serializers.ModelSerializer):
 class DetalleFacturaSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
     proveedor_nombre = serializers.ReadOnlyField(source='factura.proveedor.nombre')
+    # Estado de edición según cuánto del lote ya se vendió (guardas de stock).
+    estado_edicion = serializers.SerializerMethodField()
+    unidades_consumidas = serializers.SerializerMethodField()
+    unidades_vivas = serializers.SerializerMethodField()
+    pedidos_consumidores = serializers.SerializerMethodField()
 
     class Meta:
         model = DetalleFactura
-        fields = ['producto', 'producto_nombre', 'cantidad_kilos', 'cantidad_unidades', 'costo_por_kilo', 'costo_total','factura','proveedor_nombre']
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad_kilos', 'cantidad_unidades', 'costo_por_kilo', 'costo_total','factura','proveedor_nombre', 'estado_edicion', 'unidades_consumidas', 'unidades_vivas', 'pedidos_consumidores']
+
+    def _info(self, obj):
+        # Cachea el cálculo por instancia para no repetir el query en cada campo.
+        cache = getattr(obj, '_estado_consumo_cache', None)
+        if cache is None:
+            from .utils import estado_consumo_detalle
+            cache = estado_consumo_detalle(obj)
+            obj._estado_consumo_cache = cache
+        return cache
+
+    def get_estado_edicion(self, obj):
+        return self._info(obj)['estado']
+
+    def get_unidades_consumidas(self, obj):
+        return self._info(obj)['consumidas']
+
+    def get_unidades_vivas(self, obj):
+        return self._info(obj)['vivas']
+
+    def get_pedidos_consumidores(self, obj):
+        if self._info(obj)['consumidas'] <= 0:
+            return []
+        from .utils import pedidos_consumidores_detalle
+        return pedidos_consumidores_detalle(obj)
 
 class FacturaSerializer(serializers.ModelSerializer):
     # Eliminamos el source porque ahora coincide con el field name

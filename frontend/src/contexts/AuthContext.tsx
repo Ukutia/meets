@@ -1,5 +1,15 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { loginRequest } from '@/services/api';
+import { loginRequest, refreshAccessToken } from '@/services/api';
+
+const isTokenExpired = (token: string): boolean => {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    if (!payload.exp) return false;
+    return Date.now() >= payload.exp * 1000;
+  } catch {
+    return true;
+  }
+};
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -17,13 +27,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState(null);
 
   useEffect(() => {
-    // Verificamos si hay un token al cargar la app
-    const token = localStorage.getItem('token');
-    if (token) {
-      setIsAuthenticated(true);
-      // Aquí podrías validar el token con el backend si quisieras
-    }
-    setIsLoading(false); // Terminamos de verificar
+    const verifySession = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setIsLoading(false);
+        return;
+      }
+
+      if (!isTokenExpired(token)) {
+        setIsAuthenticated(true);
+        setIsLoading(false);
+        return;
+      }
+
+      // El access token venció: intentamos renovarlo antes de mostrar cualquier vista protegida.
+      try {
+        await refreshAccessToken();
+        setIsAuthenticated(true);
+      } catch {
+        localStorage.clear();
+        setIsAuthenticated(false);
+      }
+      setIsLoading(false);
+    };
+
+    verifySession();
   }, []);
 
   const login = async (username: string, password: string) => {
