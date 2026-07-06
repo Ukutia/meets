@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer
-from .utils import estado_consumo_detalle
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -126,65 +126,16 @@ class CrearPedido(APIView):
 
 
 
-                    # Calcular el costo del producto en base a FIFO, ponderando por
-                    # KILOS reales consumidos de cada lote (no por cantidad de
-                    # unidades): costo_por_kilo es un precio por kilo, y las unidades
-                    # de un mismo lote no pesan todas lo mismo, asi que multiplicarlo
-                    # por la cantidad de piezas en vez de por su peso real distorsiona
-                    # el costo apenas un pedido cruza mas de un lote de compra.
-                    entradas = EntradaProducto.objects.filter(producto=producto).order_by('fecha_entrada')
-                    costo_total = Decimal('0.00')
-                    kilos_consumidos = Decimal('0.00')
-                    cantidad_restante_unidades = Decimal(unidades)
-                    facturas_usadas = []
-                    facturas_cantidades = {}
-
-                    for entrada in entradas:
-                        if cantidad_restante_unidades <= 0:
-                            break
-                        if entrada.cantidad_unidades <= 0:
-                            continue
-
-                        peso_promedio = (
-                            entrada.cantidad_kilos / entrada.cantidad_unidades
-                            if entrada.cantidad_unidades else Decimal('0.00')
-                        )
-                        unidades_a_consumir = min(Decimal(entrada.cantidad_unidades), cantidad_restante_unidades)
-                        kilos_a_consumir = unidades_a_consumir * peso_promedio
-
-                        costo_total += kilos_a_consumir * entrada.costo_por_kilo
-                        kilos_consumidos += kilos_a_consumir
-
-                        entrada.cantidad_unidades -= int(unidades_a_consumir)
-                        entrada.cantidad_kilos -= kilos_a_consumir
-                        cantidad_restante_unidades -= unidades_a_consumir
-
-                        facturas_usadas.append(entrada.factura)
-                        facturas_cantidades[entrada.factura.id] = (
-                            facturas_cantidades.get(entrada.factura.id, 0) + int(unidades_a_consumir)
-                        )
-
-                        if entrada.cantidad_unidades <= 0:
-                            entrada.delete()
-                        else:
-                            entrada.save()
-
-                    if cantidad_restante_unidades > 0:
-                        raise ValidationError(
-                            f"No hay stock disponible suficiente de '{producto.nombre}' para cubrir el pedido"
-                        )
-
-                    costoXkilo = costo_total / kilos_consumidos if kilos_consumidos > 0 else Decimal('0.00')
+                    # Descontar el stock (FIFO) por las unidades vendidas. El costo
+                    # /kg de la linea se calcula despues como promedio ponderado de
+                    # los lotes vinculados (costo_por_kilo_ponderado), coherente con
+                    # el desglose por factura que se muestra en Movimientos.
+                    _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
                     if kilos == 0:
                         kilos = Decimal('0.00')  # Si no hay kilos, se deja en 0
                         total_venta = Decimal('0.00')
                         pedido.estado = "Reservado"
-                        # OJO: costoXkilo NO se pone en 0 aca. El costo ya se
-                        # comprometio de inventario via FIFO arriba aunque el pedido
-                        # quede "Reservado" sin kilos todavia; hay que conservarlo
-                        # para que, cuando se completen los kilos despues (edicion
-                        # del pedido), el costo real no se pierda.
                     else:
                         total_venta = kilos * producto.precio_por_kilo
                         total_pedido += total_venta
@@ -195,9 +146,7 @@ class CrearPedido(APIView):
                         producto=producto,
                         cantidad_kilos=kilos,
                         cantidad_unidades=unidades,
-                        total_costo=costo_total,
                         total_venta=total_venta,
-                        costo_por_kilo=costoXkilo,
                         precio_venta=producto.precio_por_kilo
                     )
 
@@ -211,6 +160,13 @@ class CrearPedido(APIView):
                             factura_id=factura_id,
                             cantidad_unidades=cantidad
                         )
+
+                    # Ya con las facturas vinculadas, fijar el costo/kg ponderado y
+                    # re-guardar (save() deriva total_costo = costo/kg * kilos).
+                    cpk = costo_por_kilo_ponderado(detalle_pedido)
+                    if cpk is not None:
+                        detalle_pedido.costo_por_kilo = cpk
+                        detalle_pedido.save()
                 pedido.vendedor = vendedor
                 pedido.total = total_pedido
                 pedido.save()
@@ -242,18 +198,52 @@ class PedidoDetailView(APIView):
                 for det in detalles_data:
                     # Extraemos el ID del producto (manejando si viene como objeto o ID)
                     prod_id = det['producto']['id'] if isinstance(det['producto'], dict) else det['producto']
-                    
+
                     detalle_obj = DetallePedido.objects.get(pedido=pedido, producto_id=prod_id)
-                    
+
+                    unidades_anteriores = int(detalle_obj.cantidad_unidades or 0)
+
                     # Actualizamos valores
                     detalle_obj.cantidad_kilos = Decimal(str(det.get('cantidad_kilos', 0)))
                     unidades_raw = det.get('cantidad_unidades', 0)
-                    detalle_obj.cantidad_unidades = int(float(str(unidades_raw)))
-                    
+                    nuevas_unidades = int(float(str(unidades_raw)))
+                    detalle_obj.cantidad_unidades = nuevas_unidades
+
+                    delta_unidades = nuevas_unidades - unidades_anteriores
+                    if delta_unidades > 0:
+                        # Subir la cantidad de unidades tiene que consumir stock real
+                        # (FIFO) por la diferencia; si no, las unidades extra se
+                        # venden sin descontar nunca el inventario (bug de origen:
+                        # ver Pedido #34, que tenia 4 unidades vendidas pero solo 2
+                        # con factura de compra asociada).
+                        _c, _k, facturas_usadas_delta, facturas_cantidades_delta = consumir_fifo(
+                            detalle_obj.producto, delta_unidades
+                        )
+                        detalle_obj.facturas.add(*facturas_usadas_delta)
+                        for factura_id, cantidad in facturas_cantidades_delta.items():
+                            link, created = FacturaDetallePedido.objects.get_or_create(
+                                detallepedido=detalle_obj, factura_id=factura_id,
+                                defaults={'cantidad_unidades': cantidad}
+                            )
+                            if not created:
+                                link.cantidad_unidades += cantidad
+                                link.save()
+
+                        # Recalcular el costo/kg de la linea como el promedio
+                        # ponderado de los lotes vinculados (incluye los nuevos).
+                        # total_costo se deriva de costo/kg * kilos en save().
+                        nuevo_cpk = costo_por_kilo_ponderado(detalle_obj)
+                        if nuevo_cpk is not None:
+                            detalle_obj.costo_por_kilo = nuevo_cpk
+                    # OJO: bajar la cantidad de unidades NO libera stock de vuelta al
+                    # inventario (el consumo ya esta comprometido); el costo/kg se
+                    # mantiene y solo cambia el total al recalcularse con los kilos
+                    # nuevos en save().
+
                     # Recalculamos subtotal de la línea
                     detalle_obj.total_venta = detalle_obj.cantidad_kilos * detalle_obj.precio_venta
                     detalle_obj.save()
-                    
+
                     nuevo_total_pedido += detalle_obj.total_venta
                 
                 # 3. Guardar total general

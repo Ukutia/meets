@@ -189,13 +189,21 @@ class DetallePedido(models.Model):
 
 
     def save(self, *args, **kwargs):
-
-        if(self.cantidad_kilos > 0):
+        # Modelo de costo (elegido): costo_por_kilo es el costo de compra por
+        # kilo con el proveedor (promedio ponderado de los lotes que abastecieron
+        # la venta, ver costo_por_kilo_ponderado en utils.py) y total_costo se
+        # deriva como ese costo/kg * los kilos REALMENTE vendidos (bascula).
+        #
+        # Se prefirio esto sobre "costo real de compra por pieza" (peso de lote *
+        # costo/kg) porque los pesos por pieza estan corruptos en ~30% de los
+        # datos historicos (ventas que figuran pesando mas de lo comprado), lo
+        # que hacia estallar el costo reconstruido. Este modelo solo usa datos
+        # confiables: costo/kg del proveedor y kilos de bascula.
+        if self.cantidad_kilos and self.cantidad_kilos > 0:
             self.total_costo = self.cantidad_kilos * self.costo_por_kilo
-        
-        # Calcular el margen según la fórmula: (Precio de venta - Costo por kilo) × Cantidad vendida
+
         self.margen = self.total_venta - self.total_costo
-        
+
         super().save(*args, **kwargs)
 
     def __str__(self):

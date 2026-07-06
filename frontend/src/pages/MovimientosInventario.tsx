@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { Search, ArrowUpCircle, ArrowDownCircle, Filter, FileSpreadsheet } from 'lucide-react';
+import { Search, ArrowUpCircle, ArrowDownCircle, Filter, FileSpreadsheet, FileText } from 'lucide-react';
 import { getDetalleFacturas, getDetallePedidos,getProductos } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -15,6 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import {
@@ -24,6 +25,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+
+// Los costos de compra se ingresan sin IVA (ver nota en backend/core/views.py,
+// seccion Reportes Financieros); para que la ganancia mostrada aca sea
+// consistente con Pedidos.tsx y Reportes.tsx hay que descontar el costo CON IVA.
+const FACTOR_IVA = 1.19;
+
+// Redondea a pesos enteros antes de formatear: con decimales sin redondear,
+// la coma decimal de es-CL se confunde visualmente con un separador de miles
+// (ej. "$12.319,475" se lee como si fuera doce millones).
+const formatMonto = (val: number) => Math.round(val).toLocaleString('es-CL');
 
 export default function MovimientosInventario() {
   const [activeTab, setActiveTab] = useState<'entradas' | 'salidas'>('entradas');
@@ -35,6 +46,7 @@ export default function MovimientosInventario() {
     minUnidades: '',
     numDocumento: ''
   });
+  const [selectedFacturas, setSelectedFacturas] = useState<any | null>(null);
 
   // 1. Carga de datos simultánea (o podrías condicionar según la tab)
   const { data: entradas, isLoading: loadingE } = useQuery({
@@ -96,7 +108,13 @@ export default function MovimientosInventario() {
         'Total': Number(item.cantidad_kilos) * Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
       };
       if (activeTab === 'salidas') {
+        const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
+        const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
         base['Vendedor'] = item.vendedor_nombre || 'N/A';
+        base['Costo/Kg'] = costoConIva;
+        base['Costo Total'] = costoTotalConIva;
+        base['Ganancia/Kg'] = Number(item.precio_venta || 0) - costoConIva;
+        base['Ganancia Total'] = Number(item.total_venta || 0) - costoTotalConIva;
       }
       return base;
     });
@@ -219,10 +237,20 @@ export default function MovimientosInventario() {
                 <TableHead className="text-right">Precio/Kg</TableHead>
                 <TableHead className="text-right">Total</TableHead>
                 {activeTab === 'salidas' && <TableHead>Vendedor</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right">Costo/Kg</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right">Costo Total</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right">Ganancia/Kg</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right">Ganancia Total</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-center">Facturas</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredData.map((item: any, index: number) => (
+              {filteredData.map((item: any, index: number) => {
+                const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
+                const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
+                const gananciaKg = Number(item.precio_venta || 0) - costoConIva;
+                const gananciaTotal = Number(item.total_venta || 0) - costoTotalConIva;
+                return (
                 <TableRow key={`${activeTab}-${index}`}>
                   <TableCell className="font-mono font-medium">
                     #{item.pedido || item.factura}
@@ -234,19 +262,53 @@ export default function MovimientosInventario() {
                     {Number(item.cantidad_kilos).toFixed(2)} kg
                   </TableCell>
                   <TableCell className="text-right">
-                    ${Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta).toLocaleString('es-CL')}
+                    ${formatMonto(Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta))}
                   </TableCell>
                   <TableCell className="text-right font-bold">
-                    ${(item.cantidad_kilos * (activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta)).toLocaleString('es-CL')}
+                    ${formatMonto(item.cantidad_kilos * (activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta))}
                   </TableCell>
                   {activeTab === 'salidas' && (
                     <TableCell>{item.vendedor_nombre || 'N/A'}</TableCell>
                   )}
+                  {activeTab === 'salidas' && (
+                    <TableCell className="text-right">${formatMonto(costoConIva)}</TableCell>
+                  )}
+                  {activeTab === 'salidas' && (
+                    <TableCell className="text-right">${formatMonto(costoTotalConIva)}</TableCell>
+                  )}
+                  {activeTab === 'salidas' && (
+                    <TableCell className={`text-right font-semibold ${gananciaKg >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                      ${formatMonto(gananciaKg)}
+                    </TableCell>
+                  )}
+                  {activeTab === 'salidas' && (
+                    <TableCell className={`text-right font-bold ${gananciaTotal >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                      ${formatMonto(gananciaTotal)}
+                    </TableCell>
+                  )}
+                  {activeTab === 'salidas' && (
+                    <TableCell className="text-center">
+                      {item.facturas_detalle?.length > 0 ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1 h-7 px-2"
+                          onClick={() => setSelectedFacturas(item)}
+                        >
+                          <FileText className="h-3 w-3" />
+                          {item.facturas_detalle.length}
+                        </Button>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">—</span>
+                      )}
+                    </TableCell>
+                  )}
                 </TableRow>
-              ))}
+                );
+              })}
               {filteredData.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={activeTab === 'salidas' ? 8 : 7} className="h-32 text-center text-muted-foreground">
+                  <TableCell colSpan={activeTab === 'salidas' ? 12 : 7} className="h-32 text-center text-muted-foreground">
                     No se encontraron movimientos con los filtros aplicados.
                   </TableCell>
                 </TableRow>
@@ -255,6 +317,49 @@ export default function MovimientosInventario() {
           </Table>
         </Card>
       </Tabs>
+
+      {/* DIÁLOGO: DESGLOSE DE FACTURAS QUE ABASTECIERON ESTA SALIDA */}
+      <Dialog open={!!selectedFacturas} onOpenChange={() => setSelectedFacturas(null)}>
+        <DialogContent className="max-w-2xl w-[95vw]">
+          <DialogHeader>
+            <DialogTitle>
+              Facturas asociadas — Pedido #{selectedFacturas?.pedido} / {selectedFacturas?.producto_nombre || selectedFacturas?.producto?.nombre}
+            </DialogTitle>
+          </DialogHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Factura</TableHead>
+                <TableHead>Proveedor</TableHead>
+                <TableHead className="text-right">Unidades</TableHead>
+                <TableHead className="text-right">Kilos atribuidos</TableHead>
+                <TableHead className="text-right">Costo/Kg</TableHead>
+                <TableHead className="text-right">Costo atribuido</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(selectedFacturas?.facturas_detalle || []).map((f: any, i: number) => (
+                <TableRow key={i}>
+                  <TableCell className="font-mono">{f.numero_factura}</TableCell>
+                  <TableCell>{f.proveedor_nombre || 'N/A'}</TableCell>
+                  <TableCell className="text-right">{f.unidades_consumidas}</TableCell>
+                  <TableCell className="text-right">{f.kilos_atribuidos != null ? Number(f.kilos_atribuidos).toFixed(2) + ' kg' : '—'}</TableCell>
+                  <TableCell className="text-right">{f.costo_por_kilo != null ? `$${formatMonto(Number(f.costo_por_kilo))}` : '—'}</TableCell>
+                  <TableCell className="text-right font-semibold">{f.costo_atribuido != null ? `$${formatMonto(Number(f.costo_atribuido))}` : '—'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <p className="text-xs text-muted-foreground px-1">
+            "Kilos atribuidos" reparte los kilos realmente vendidos (báscula) en
+            proporción a las unidades tomadas de cada factura — por eso puede no
+            coincidir con el peso que esas piezas tenían al comprarlas (el peso
+            de una pieza varía de forma natural respecto al promedio del lote).
+            Este reparto es el que hace que el costo atribuido siempre sume
+            exacto contra el costo total de la línea.
+          </p>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
