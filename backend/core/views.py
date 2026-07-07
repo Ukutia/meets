@@ -1,8 +1,8 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario
-from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
+from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
@@ -50,7 +50,9 @@ class CrearProducto(APIView):
 class PedidoListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        pedidos = Pedido.objects.exclude(estado="Anulado").order_by('-fecha')
+        pedidos = Pedido.objects.all().order_by('-fecha')
+        if request.query_params.get('incluir_anulados') != '1':
+            pedidos = pedidos.exclude(estado="Anulado")
         serializer = PedidoSerializer(pedidos, many=True)
         return Response(serializer.data)
 
@@ -766,7 +768,9 @@ class DetalleFacturasList(APIView):
 class DetallePedidosList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        detalles = DetallePedido.objects.select_related('pedido__cliente', 'producto').all()
+        detalles = DetallePedido.objects.select_related(
+            'pedido__cliente', 'pedido__vendedor', 'producto'
+        ).prefetch_related('facturas').all()
         serializer = DetallePedidoSerializer(detalles, many=True)
         return Response(serializer.data)
 
@@ -776,7 +780,8 @@ class UpdateProducto(APIView):
         try:
             producto = Producto.objects.get(id=producto_id)
             data = request.data
-            
+            precio_anterior = producto.precio_por_kilo
+
             # Actualizamos todos los campos enviados desde el Frontend
             producto.nombre = data.get('nombre', producto.nombre)
             producto.precio_por_kilo = data.get('precio_por_kilo', producto.precio_por_kilo)
@@ -784,14 +789,32 @@ class UpdateProducto(APIView):
             producto.estado = data.get('estado', producto.estado)
             producto.categoria = data.get('categoria', producto.categoria)
             producto.descripcion = data.get('descripcion', producto.descripcion)
-            
+
             producto.save()
-            
+
+            if Decimal(precio_anterior) != Decimal(producto.precio_por_kilo):
+                HistorialPrecioProducto.objects.create(
+                    producto=producto,
+                    precio_anterior=precio_anterior,
+                    precio_nuevo=producto.precio_por_kilo,
+                    usuario=request.user,
+                )
+
             return Response(ProductoSerializer(producto).data, status=status.HTTP_200_OK)
         except Producto.DoesNotExist:
             return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class HistorialPrecioProductoView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request, producto_id, *args, **kwargs):
+        historial = HistorialPrecioProducto.objects.filter(
+            producto_id=producto_id
+        ).select_related('usuario', 'usuario__vendedor_profile').order_by('-fecha_cambio')
+        serializer = HistorialPrecioProductoSerializer(historial, many=True)
+        return Response(serializer.data)
         
 # Nueva vista para Proveedores
 class ProveedorListView(APIView):
@@ -849,11 +872,83 @@ class StockProductosView(APIView):
         return Response(stock_data, status=status.HTTP_200_OK)
 
 
+class AjusteInventarioListView(APIView):
+    """Lista los ajustes de inventario (mermas, excesos y ajustes manuales)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ajustes = AjusteInventario.objects.select_related('producto').order_by('-fecha', '-id')
+
+        producto_id = request.query_params.get('producto')
+        if producto_id:
+            ajustes = ajustes.filter(producto_id=producto_id)
+
+        tipo = request.query_params.get('tipo')
+        if tipo:
+            ajustes = ajustes.filter(tipo=tipo)
+
+        serializer = AjusteInventarioSerializer(ajustes, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class CrearAjusteInventario(APIView):
+    """
+    Registra un ajuste de inventario (merma, exceso o ajuste manual).
+
+    El usuario siempre ingresa la cantidad como un valor positivo (la
+    magnitud del ajuste); el signo con el que se guarda en `cantidad` lo
+    decide el `tipo`:
+      - merma: siempre resta stock -> se guarda en negativo.
+      - exceso: siempre suma stock -> se guarda en positivo.
+      - ajuste: corrección manual libre -> se respeta el signo enviado.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        producto_id = data.get('producto')
+        tipo = data.get('tipo')
+        cantidad = data.get('cantidad')
+        razon = data.get('razon', '')
+
+        if not producto_id or not tipo or cantidad in (None, ''):
+            return Response({'error': 'Faltan datos obligatorios (producto, tipo, cantidad)'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if tipo not in dict(AjusteInventario.TIPO_AJUSTE):
+            return Response({'error': 'Tipo de ajuste inválido'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            producto = Producto.objects.get(id=producto_id)
+        except Producto.DoesNotExist:
+            return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            cantidad = Decimal(str(cantidad))
+        except Exception:
+            return Response({'error': 'Cantidad inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if cantidad == 0:
+            return Response({'error': 'La cantidad no puede ser cero'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if tipo == 'merma':
+            cantidad = -abs(cantidad)
+        elif tipo == 'exceso':
+            cantidad = abs(cantidad)
+
+        ajuste = AjusteInventario.objects.create(
+            producto=producto,
+            cantidad=cantidad,
+            tipo=tipo,
+            razon=razon,
+        )
+        return Response(AjusteInventarioSerializer(ajuste).data, status=status.HTTP_201_CREATED)
+
+
 # ============================================================================
 # REPORTES FINANCIEROS (Plan 03 — Ganancias, Márgenes y Estadísticas)
 # ============================================================================
 from django.db.models import Avg, F, OuterRef, Subquery, DecimalField
-from django.db.models.functions import TruncMonth, Coalesce
+from django.db.models.functions import TruncMonth, TruncDate, Coalesce
 
 
 # Los costos de compra se ingresan SIN IVA (ver Facturas.tsx: subtotal/costo_por_kilo
@@ -1057,8 +1152,16 @@ class ReportePerdidasView(APIView):
 class FluctuacionPreciosView(APIView):
     """
     Series temporales de precios por producto:
-    - compras: costo_por_kilo desde EntradaProducto (promedio por día).
-    - ventas: precio_venta desde DetallePedido (excluyendo pedidos Anulado).
+    - compras: un punto POR CADA FACTURA de compra, tomado de DetalleFactura
+      (el historico COMPLETO de compras — a diferencia de EntradaProducto,
+      que es un ledger de stock que se decrementa y se BORRA por FIFO cuando
+      un lote se vende entero, ver consumir_fifo en utils.py; usarlo aquí
+      ocultaría el costo de cualquier factura ya agotada). Cada punto trae su
+      costo_por_kilo real y número de factura. Antes se promediaba por mes,
+      lo que además ocultaba el costo exacto de cada compra individual.
+    - ventas: precio_venta desde DetallePedido (excluyendo pedidos Anulado),
+      promediado por día (no por mes) para no perder resolución frente a la
+      serie de compras.
 
     Siempre devuelve la lista de productos (para el selector). Si se pasa
     ?producto=<id> devuelve las dos series de ese producto.
@@ -1073,27 +1176,26 @@ class FluctuacionPreciosView(APIView):
         ventas = []
         if producto_id:
             compras_qs = (
-                EntradaProducto.objects.filter(producto_id=producto_id)
-                .annotate(dia=TruncMonth('fecha_entrada'))
-                .values('dia')
-                .annotate(costo=Avg('costo_por_kilo'))
-                .order_by('dia')
+                DetalleFactura.objects.filter(producto_id=producto_id)
+                .select_related('factura')
+                .order_by('factura__fecha')
             )
             compras = [{
-                'fecha': r['dia'].strftime('%Y-%m') if r['dia'] else None,
-                'costo': r['costo'],
-            } for r in compras_qs]
+                'fecha': df.factura.fecha.isoformat() if df.factura.fecha else None,
+                'costo': df.costo_por_kilo,
+                'numero_factura': df.factura.numero_factura,
+            } for df in compras_qs]
 
             ventas_qs = (
                 DetallePedido.objects.filter(producto_id=producto_id)
                 .exclude(pedido__estado="Anulado")
-                .annotate(dia=TruncMonth('fecha'))
+                .annotate(dia=TruncDate('fecha'))
                 .values('dia')
                 .annotate(precio=Avg('precio_venta'))
                 .order_by('dia')
             )
             ventas = [{
-                'fecha': r['dia'].strftime('%Y-%m') if r['dia'] else None,
+                'fecha': r['dia'].isoformat() if r['dia'] else None,
                 'precio': r['precio'],
             } for r in ventas_qs]
 
@@ -1163,3 +1265,116 @@ class MargenActualProductoView(APIView):
             })
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+class RentabilidadHistoricaView(APIView):
+    """
+    Rentabilidad de un producto agrupada por PRECIO DE VENTA, desglosando
+    dentro de cada precio los distintos costos reales de factura que
+    abastecieron esas ventas (mismo criterio de atribución proporcional que
+    DetallePedidoSerializer.get_facturas_detalle: los kilos de cada línea de
+    venta se reparten entre las facturas consumidas en proporción a las
+    unidades tomadas de cada una).
+
+    Cada fila del resultado es un grupo (precio_venta, costo_por_kilo de una
+    factura) con: kilos atribuidos, venta atribuida, costo atribuido (con
+    IVA), ganancia y margen %. Si una línea de venta no tiene factura
+    vinculada (dato legado), se agrupa bajo costo_por_kilo=None usando el
+    costo ya calculado en la propia línea (DetallePedido.total_costo).
+
+    Siempre devuelve la lista de productos (para el selector). Si se pasa
+    ?producto=<id> devuelve además los grupos de ese producto, ordenados por
+    precio de venta y luego por costo de factura.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        productos = list(Producto.objects.values('id', 'nombre').order_by('nombre'))
+        producto_id = request.query_params.get('producto')
+
+        periodos = []
+        if producto_id:
+            try:
+                producto = Producto.objects.get(id=producto_id)
+            except Producto.DoesNotExist:
+                return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+            detalles = list(
+                DetallePedido.objects.filter(producto_id=producto_id).exclude(pedido__estado="Anulado")
+            )
+
+            costo_por_factura = {
+                df.factura_id: df.costo_por_kilo
+                for df in DetalleFactura.objects.filter(producto_id=producto_id)
+            }
+
+            links_por_detalle = {}
+            for link in FacturaDetallePedido.objects.filter(detallepedido__in=detalles):
+                links_por_detalle.setdefault(link.detallepedido_id, []).append(link)
+
+            # grupos: (precio_venta, costo_por_kilo|None) -> acumuladores
+            grupos = {}
+            fecha_maxima_global = None
+            for d in detalles:
+                if d.fecha and (fecha_maxima_global is None or d.fecha > fecha_maxima_global):
+                    fecha_maxima_global = d.fecha
+
+                links = links_por_detalle.get(d.id, [])
+                total_unidades = sum(l.cantidad_unidades for l in links) or 0
+                kilos_linea = Decimal(str(d.cantidad_kilos or 0))
+
+                if not links or total_unidades == 0:
+                    key = (d.precio_venta, None)
+                    g = grupos.setdefault(key, {'kilos': Decimal('0'), 'venta': Decimal('0'), 'costo_neto': Decimal('0'), 'fechas': []})
+                    g['kilos'] += kilos_linea
+                    g['venta'] += d.total_venta or Decimal('0')
+                    g['costo_neto'] += d.total_costo or Decimal('0')
+                    g['fechas'].append(d.fecha)
+                    continue
+
+                for link in links:
+                    costo_por_kilo = costo_por_factura.get(link.factura_id)
+                    kilos_atrib = kilos_linea * Decimal(link.cantidad_unidades) / Decimal(total_unidades)
+                    venta_atrib = kilos_atrib * (d.precio_venta or Decimal('0'))
+                    costo_atrib = (kilos_atrib * costo_por_kilo) if costo_por_kilo is not None else Decimal('0')
+
+                    key = (d.precio_venta, costo_por_kilo)
+                    g = grupos.setdefault(key, {'kilos': Decimal('0'), 'venta': Decimal('0'), 'costo_neto': Decimal('0'), 'fechas': []})
+                    g['kilos'] += kilos_atrib
+                    g['venta'] += venta_atrib
+                    g['costo_neto'] += costo_atrib
+                    g['fechas'].append(d.fecha)
+
+            for (precio, costo_por_kilo), g in sorted(
+                grupos.items(), key=lambda kv: (kv[0][0], kv[0][1] if kv[0][1] is not None else Decimal('0'))
+            ):
+                costo_con_iva = g['costo_neto'] * IVA_RATE
+                ganancia = g['venta'] - costo_con_iva
+                margen_pct = float(ganancia / g['venta'] * 100) if g['venta'] else None
+                costo_unitario = (costo_con_iva / g['kilos']) if g['kilos'] else None
+                ganancia_unitaria = (ganancia / g['kilos']) if g['kilos'] else None
+                fechas = [f for f in g['fechas'] if f]
+
+                periodos.append({
+                    'precio': precio,
+                    'costo_por_kilo': costo_por_kilo,
+                    # costo_unitario va CON IVA (costo_con_iva / kilos): es el costo real
+                    # comparable contra 'precio' (precio de venta), a diferencia de
+                    # costo_por_kilo que es el costo neto tal como se ingresa en la Factura.
+                    'costo_unitario': round(costo_unitario, 2) if costo_unitario is not None else None,
+                    'ganancia_unitaria': round(ganancia_unitaria, 2) if ganancia_unitaria is not None else None,
+                    'desde': min(fechas).isoformat() if fechas else None,
+                    'hasta': max(fechas).isoformat() if fechas else None,
+                    'vigente': fecha_maxima_global is not None and fecha_maxima_global in fechas,
+                    'kilos': g['kilos'],
+                    'ventas': g['venta'],
+                    'costo': costo_con_iva,
+                    'ganancia': ganancia,
+                    'margen_pct': round(margen_pct, 2) if margen_pct is not None else None,
+                })
+
+        return Response({
+            'productos': productos,
+            'producto_id': int(producto_id) if producto_id else None,
+            'periodos': periodos,
+        }, status=status.HTTP_200_OK)

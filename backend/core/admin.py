@@ -15,5 +15,7 @@ admin.site.register(models.EntradaProducto)
 admin.site.register(models.FacturaDetallePedido)
 admin.site.register(models.Proveedor)
 admin.site.register(models.PagoVendedor)
+admin.site.register(models.AjusteInventario)
+admin.site.register(models.HistorialPrecioProducto)
 
 

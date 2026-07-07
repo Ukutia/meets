@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search, Edit2, Package } from 'lucide-react';
+import { Plus, Search, Edit2, Package, History } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -29,7 +29,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createProducto, updateProducto, getProductos } from '@/services/api';
+import { createProducto, updateProducto, getProductos, getHistorialPrecio } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Producto } from '@/types';
@@ -48,7 +48,9 @@ export default function Productos() {
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingProducto, setEditingProducto] = useState<Producto | null>(null);
-  
+  const [historialDialogOpen, setHistorialDialogOpen] = useState(false);
+  const [historialProducto, setHistorialProducto] = useState<Producto | null>(null);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -121,6 +123,20 @@ export default function Productos() {
     });
     setDialogOpen(true);
   };
+
+  const handleHistorialClick = (producto: Producto) => {
+    setHistorialProducto(producto);
+    setHistorialDialogOpen(true);
+  };
+
+  const { data: historial, isLoading: historialLoading } = useQuery({
+    queryKey: ['historial-precio', historialProducto?.id],
+    queryFn: async () => {
+      const response = await getHistorialPrecio(historialProducto!.id);
+      return response.data;
+    },
+    enabled: historialDialogOpen && !!historialProducto?.id,
+  });
 
   const closeDialog = () => {
     setDialogOpen(false);
@@ -231,6 +247,54 @@ export default function Productos() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={historialDialogOpen} onOpenChange={setHistorialDialogOpen}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Historial de Precios</DialogTitle>
+            <DialogDescription>
+              {historialProducto?.nombre}
+            </DialogDescription>
+          </DialogHeader>
+
+          {historialLoading ? (
+            <LoadingSpinner />
+          ) : historial && historial.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha</TableHead>
+                  <TableHead>Usuario</TableHead>
+                  <TableHead className="text-right">Precio anterior</TableHead>
+                  <TableHead className="text-right">Precio nuevo</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {historial.map((h) => (
+                  <TableRow key={h.id}>
+                    <TableCell>{new Date(h.fecha_cambio).toLocaleString('es-CL')}</TableCell>
+                    <TableCell>{h.usuario_nombre}</TableCell>
+                    <TableCell className="text-right font-mono">
+                      ${Number(h.precio_anterior).toLocaleString('es-CL')}
+                    </TableCell>
+                    <TableCell className="text-right font-mono">
+                      ${Number(h.precio_nuevo).toLocaleString('es-CL')}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <p className="py-6 text-center text-muted-foreground">
+              Sin cambios de precio registrados
+            </p>
+          )}
+
+          <DialogFooter className="pt-4">
+            <Button variant="outline" onClick={() => setHistorialDialogOpen(false)}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="relative">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input 
@@ -284,6 +348,9 @@ export default function Productos() {
                   <TableCell className="text-center">
                     <Button variant="ghost" size="icon" onClick={() => handleEditClick(producto)}>
                       <Edit2 className="h-4 w-4 text-blue-600" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleHistorialClick(producto)}>
+                      <History className="h-4 w-4 text-muted-foreground" />
                     </Button>
                   </TableCell>
                 </TableRow>

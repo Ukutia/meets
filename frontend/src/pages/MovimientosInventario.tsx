@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { Search, ArrowUpCircle, ArrowDownCircle, Filter, FileSpreadsheet, FileText } from 'lucide-react';
-import { getDetalleFacturas, getDetallePedidos,getProductos } from '@/services/api'; // Asegúrate de tener estos servicios
+import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText } from 'lucide-react';
+import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
 import {
   Table,
   TableBody,
@@ -15,9 +18,11 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
+import { useToast } from '@/hooks/use-toast';
+import type { AjusteInventario } from '@/types';
 import {
   Select,
   SelectContent,
@@ -25,6 +30,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+
+interface AjusteForm {
+  producto: string;
+  tipo: 'merma' | 'exceso' | 'ajuste';
+  cantidad: string;
+  razon: string;
+}
 
 // Los costos de compra se ingresan sin IVA (ver nota en backend/core/views.py,
 // seccion Reportes Financieros); para que la ganancia mostrada aca sea
@@ -37,7 +49,7 @@ const FACTOR_IVA = 1.19;
 const formatMonto = (val: number) => Math.round(val).toLocaleString('es-CL');
 
 export default function MovimientosInventario() {
-  const [activeTab, setActiveTab] = useState<'entradas' | 'salidas'>('entradas');
+  const [activeTab, setActiveTab] = useState<'entradas' | 'salidas' | 'ajustes'>('entradas');
   const [filter, setFilter] = useState({
     search: '',
     cliente: '',
@@ -47,6 +59,10 @@ export default function MovimientosInventario() {
     numDocumento: ''
   });
   const [selectedFacturas, setSelectedFacturas] = useState<any | null>(null);
+  const [ajusteDialogOpen, setAjusteDialogOpen] = useState(false);
+
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   // 1. Carga de datos simultánea (o podrías condicionar según la tab)
   const { data: entradas, isLoading: loadingE } = useQuery({
@@ -59,6 +75,11 @@ export default function MovimientosInventario() {
     queryFn: async () => (await getDetallePedidos()).data
   });
 
+  const { data: ajustes, isLoading: loadingA } = useQuery({
+    queryKey: ['ajustes-inventario'],
+    queryFn: async () => (await getAjustesInventario()).data
+  });
+
   // 2. Carga de Productos para el desplegable
   const { data: productosResponse } = useQuery({
     queryKey: ['productos-lista'],
@@ -68,6 +89,45 @@ export default function MovimientosInventario() {
   const listaProductos = useMemo(() => {
     return productosResponse?.data || [];
   }, [productosResponse]);
+
+  const ajusteForm = useForm<AjusteForm>({
+    defaultValues: { producto: '', tipo: 'merma', cantidad: '', razon: '' },
+  });
+
+  const ajusteMutation = useMutation({
+    mutationFn: (values: AjusteForm) =>
+      createAjusteInventario({
+        producto: Number(values.producto),
+        tipo: values.tipo,
+        cantidad: Number(values.cantidad),
+        razon: values.razon || undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ajustes-inventario'] });
+      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      toast({ title: 'Ajuste registrado', description: 'El movimiento de inventario se guardó con éxito.' });
+      setAjusteDialogOpen(false);
+      ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', razon: '' });
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error al registrar',
+        description: err.response?.data?.error || 'Verifica los datos ingresados.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const filteredAjustes = useMemo(() => {
+    const data: AjusteInventario[] = Array.isArray(ajustes) ? ajustes : [];
+    return data.filter((a) => {
+      const matchProducto = filter.producto === 'todos' ||
+        a.producto_nombre.toLowerCase() === filter.producto.toLowerCase();
+      const matchSearch = (a.razon || '').toLowerCase().includes(filter.search.toLowerCase()) ||
+        a.producto_nombre.toLowerCase().includes(filter.search.toLowerCase());
+      return matchProducto && matchSearch;
+    });
+  }, [ajustes, filter.producto, filter.search]);
 
   // 2. Lógica de filtrado unificada
 // 2. Lógica de filtrado unificada con protección contra nulos
@@ -206,25 +266,83 @@ export default function MovimientosInventario() {
             <TabsTrigger value="salidas" className="gap-2">
               <ArrowDownCircle className="h-4 w-4 text-blue-600" /> Salidas (Pedidos)
             </TabsTrigger>
+            <TabsTrigger value="ajustes" className="gap-2">
+              <PackageMinus className="h-4 w-4 text-destructive" /> Mermas / Ajustes
+            </TabsTrigger>
           </TabsList>
-          
+
           <div className="flex items-center gap-4">
-            <div className="text-sm text-muted-foreground">
-              Mostrando <b>{filteredData.length}</b> registros
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-2"
-              onClick={exportarExcel}
-              disabled={filteredData.length === 0}
-            >
-              <FileSpreadsheet className="h-4 w-4" />
-              Exportar a Excel
-            </Button>
+            {activeTab === 'ajustes' ? (
+              <Button size="sm" className="gap-2" onClick={() => setAjusteDialogOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Registrar Merma / Ajuste
+              </Button>
+            ) : (
+              <>
+                <div className="text-sm text-muted-foreground">
+                  Mostrando <b>{filteredData.length}</b> registros
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={exportarExcel}
+                  disabled={filteredData.length === 0}
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  Exportar a Excel
+                </Button>
+              </>
+            )}
           </div>
         </div>
 
+        {activeTab === 'ajustes' ? (
+          loadingA ? (
+            <LoadingSpinner />
+          ) : (
+            <Card>
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Producto</TableHead>
+                    <TableHead className="text-center">Tipo</TableHead>
+                    <TableHead className="text-right">Cantidad (Kg)</TableHead>
+                    <TableHead>Razón</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredAjustes.map((a) => (
+                    <TableRow key={a.id}>
+                      <TableCell>{new Date(a.fecha).toLocaleDateString('es-CL')}</TableCell>
+                      <TableCell className="font-semibold">{a.producto_nombre}</TableCell>
+                      <TableCell className="text-center">
+                        <Badge
+                          variant={a.tipo === 'merma' ? 'destructive' : a.tipo === 'exceso' ? 'default' : 'secondary'}
+                          className="capitalize"
+                        >
+                          {a.tipo === 'ajuste' ? 'Ajuste manual' : a.tipo}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className={`text-right font-mono font-medium ${Number(a.cantidad) < 0 ? 'text-destructive' : 'text-green-600'}`}>
+                        {Number(a.cantidad) > 0 ? '+' : ''}{Number(a.cantidad).toFixed(2)} kg
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{a.razon || '—'}</TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredAjustes.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
+                        Sin mermas o ajustes registrados.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </Card>
+          )
+        ) : (
         <Card>
           <Table>
             <TableHeader>
@@ -316,7 +434,94 @@ export default function MovimientosInventario() {
             </TableBody>
           </Table>
         </Card>
+        )}
       </Tabs>
+
+      {/* DIÁLOGO: REGISTRAR MERMA / EXCESO / AJUSTE MANUAL */}
+      <Dialog open={ajusteDialogOpen} onOpenChange={setAjusteDialogOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle>Registrar Merma / Ajuste</DialogTitle>
+            <DialogDescription>
+              Registra una pérdida de inventario (merma), un excedente encontrado, o una corrección manual.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form
+            onSubmit={ajusteForm.handleSubmit((v) => ajusteMutation.mutate(v))}
+            className="space-y-4 py-2"
+          >
+            <div className="grid gap-2">
+              <Label htmlFor="ajuste-producto">Producto</Label>
+              <Select
+                value={ajusteForm.watch('producto')}
+                onValueChange={(v) => ajusteForm.setValue('producto', v)}
+              >
+                <SelectTrigger id="ajuste-producto">
+                  <SelectValue placeholder="Seleccione un producto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {listaProductos.map((p: any) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="ajuste-tipo">Tipo</Label>
+                <Select
+                  value={ajusteForm.watch('tipo')}
+                  onValueChange={(v: any) => ajusteForm.setValue('tipo', v)}
+                >
+                  <SelectTrigger id="ajuste-tipo"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="merma">Merma (pérdida)</SelectItem>
+                    <SelectItem value="exceso">Exceso (encontrado)</SelectItem>
+                    <SelectItem value="ajuste">Ajuste manual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ajuste-cantidad">Cantidad (Kg)</Label>
+                <Input
+                  id="ajuste-cantidad"
+                  type="number"
+                  step="any"
+                  placeholder="0.00"
+                  {...ajusteForm.register('cantidad', { required: true })}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground -mt-2">
+              {ajusteForm.watch('tipo') === 'ajuste'
+                ? 'Se guarda con el signo ingresado (negativo resta stock, positivo suma).'
+                : 'Ingresa la cantidad como un valor positivo; el signo se ajusta automáticamente según el tipo.'}
+            </p>
+
+            <div className="grid gap-2">
+              <Label htmlFor="ajuste-razon">Razón (opcional)</Label>
+              <Textarea
+                id="ajuste-razon"
+                placeholder="Ej: Producto vencido, error de conteo, etc."
+                {...ajusteForm.register('razon')}
+              />
+            </div>
+
+            <DialogFooter className="pt-2">
+              <Button type="button" variant="outline" onClick={() => setAjusteDialogOpen(false)}>
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={ajusteMutation.isPending || !ajusteForm.watch('producto')}>
+                {ajusteMutation.isPending ? 'Guardando...' : 'Registrar'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* DIÁLOGO: DESGLOSE DE FACTURAS QUE ABASTECIERON ESTA SALIDA */}
       <Dialog open={!!selectedFacturas} onOpenChange={() => setSelectedFacturas(null)}>
@@ -333,8 +538,8 @@ export default function MovimientosInventario() {
                 <TableHead>Proveedor</TableHead>
                 <TableHead className="text-right">Unidades</TableHead>
                 <TableHead className="text-right">Kilos atribuidos</TableHead>
-                <TableHead className="text-right">Costo/Kg</TableHead>
-                <TableHead className="text-right">Costo atribuido</TableHead>
+                <TableHead className="text-right">Costo/Kg (con IVA)</TableHead>
+                <TableHead className="text-right">Costo atribuido (con IVA)</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -344,8 +549,8 @@ export default function MovimientosInventario() {
                   <TableCell>{f.proveedor_nombre || 'N/A'}</TableCell>
                   <TableCell className="text-right">{f.unidades_consumidas}</TableCell>
                   <TableCell className="text-right">{f.kilos_atribuidos != null ? Number(f.kilos_atribuidos).toFixed(2) + ' kg' : '—'}</TableCell>
-                  <TableCell className="text-right">{f.costo_por_kilo != null ? `$${formatMonto(Number(f.costo_por_kilo))}` : '—'}</TableCell>
-                  <TableCell className="text-right font-semibold">{f.costo_atribuido != null ? `$${formatMonto(Number(f.costo_atribuido))}` : '—'}</TableCell>
+                  <TableCell className="text-right">{f.costo_por_kilo != null ? `$${formatMonto(Number(f.costo_por_kilo) * FACTOR_IVA)}` : '—'}</TableCell>
+                  <TableCell className="text-right font-semibold">{f.costo_atribuido != null ? `$${formatMonto(Number(f.costo_atribuido) * FACTOR_IVA)}` : '—'}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -355,8 +560,10 @@ export default function MovimientosInventario() {
             proporción a las unidades tomadas de cada factura — por eso puede no
             coincidir con el peso que esas piezas tenían al comprarlas (el peso
             de una pieza varía de forma natural respecto al promedio del lote).
-            Este reparto es el que hace que el costo atribuido siempre sume
-            exacto contra el costo total de la línea.
+            Este reparto es el que hace que el costo atribuido (neto) sume exacto
+            contra el costo neto total de la línea; los montos de esta tabla se
+            muestran con IVA para ser consistentes con la columna "Costo Total"
+            de la fila de Salidas.
           </p>
         </DialogContent>
       </Dialog>

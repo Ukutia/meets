@@ -115,6 +115,10 @@ export default function Facturas() {
   // margen proyectado debe descontar el costo CON IVA, no el neto ingresado.
   const IVA_RATE = 1.19;
 
+  // Peso promedio por pieza (kg/unidad) de una línea; null si no hay unidades para dividir.
+  const pesoPromedio = (kilos: number, unidades: number) =>
+    unidades > 0 ? kilos / unidades : null;
+
   // Margen proyectado de una línea: precio de venta vigente vs. costo real (con IVA).
   const calcMargen = (item: DetalleFacturaForm) => {
     const info = margenMap.get(String(item.producto));
@@ -353,6 +357,7 @@ export default function Facturas() {
                       <tr>
                         <th className="p-2 text-left">Producto</th>
                         <th className="p-2 text-right">Cant.</th>
+                        <th className="p-2 text-right">Peso Prom./Pieza</th>
                         <th className="p-2 text-right">Total</th>
                         <th className="p-2 text-right">Margen Proy.</th>
                         <th className="p-2 w-10"></th>
@@ -361,10 +366,12 @@ export default function Facturas() {
                     <tbody>
                       {detalles.map((item, i) => {
                         const m = calcMargen(item);
+                        const peso = pesoPromedio(item.cantidad_kilos, item.cantidad_unidades);
                         return (
                         <tr key={i} className="border-b last:border-0">
                           <td className="p-2">{item.nombre_producto}</td>
                           <td className="p-2 text-right">{item.cantidad_kilos} Kg</td>
+                          <td className="p-2 text-right text-muted-foreground">{peso != null ? `${peso.toFixed(2)} Kg` : '—'}</td>
                           <td className="p-2 text-right font-semibold">${item.costo_total.toLocaleString()}</td>
                           <td className="p-2 text-right">
                             {m.tieneInfo ? (
@@ -485,6 +492,7 @@ export default function Facturas() {
                       <tr>
                         <th className="p-3 text-left">Producto</th>
                         <th className="p-3 text-right">Cantidad</th>
+                        <th className="p-3 text-right">Peso Prom./Pieza</th>
                         <th className="p-3 text-right">Costo Unit.</th>
                         <th className="p-3 text-right">Subtotal</th>
                       </tr>
@@ -492,19 +500,23 @@ export default function Facturas() {
                     <tbody>
                       {/* Intentamos leer de 'detalles' o 'entradas' según tu modelo de Django */}
                       {(selectedFactura.detalles || []).length > 0 ? (
-                        selectedFactura.detalles?.map((d: any, i: number) => (
+                        selectedFactura.detalles?.map((d: any, i: number) => {
+                          const peso = pesoPromedio(Number(d.cantidad_kilos) || 0, Number(d.cantidad_unidades) || 0);
+                          return (
                           <tr key={i} className="border-b last:border-0 hover:bg-muted/10">
                             <td className="p-3 font-medium">{d.producto_nombre}</td>
                             <td className="p-3 text-right">{d.cantidad_kilos} Kg / {d.cantidad_unidades} Un.</td>
+                            <td className="p-3 text-right text-muted-foreground">{peso != null ? `${peso.toFixed(2)} Kg` : '—'}</td>
                             <td className="p-3 text-right">${Number(d.costo_por_kilo).toLocaleString('es-CL')}</td>
                             <td className="p-3 text-right font-bold text-primary">
                               ${Number(d.costo_total).toLocaleString('es-CL')}
                             </td>
                           </tr>
-                        ))
+                          );
+                        })
                       ) : (
                         <tr>
-                          <td colSpan={4} className="p-8 text-center text-muted-foreground italic">
+                          <td colSpan={5} className="p-8 text-center text-muted-foreground italic">
                             No hay detalles registrados para esta factura en la base de datos.
                           </td>
                         </tr>

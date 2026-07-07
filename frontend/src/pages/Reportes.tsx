@@ -42,6 +42,7 @@ import {
   getReporteGanancias,
   getReportePerdidas,
   getFluctuacionPrecios,
+  getRentabilidadHistorica,
 } from '@/services/api';
 
 const clp = (n: number | string | null | undefined) =>
@@ -90,6 +91,20 @@ interface ReportePerdidas {
   total: { valor: number; kilos: number };
   por_producto: { producto_id: number; nombre: string; kilos: number; valor: number }[];
   por_mes: { mes: string; kilos: number; valor: number }[];
+}
+interface TramoRentabilidad {
+  precio: number;
+  costo_por_kilo: number | null;
+  costo_unitario: number | null;
+  ganancia_unitaria: number | null;
+  desde: string | null;
+  hasta: string | null;
+  vigente: boolean;
+  kilos: number;
+  ventas: number;
+  costo: number;
+  ganancia: number;
+  margen_pct: number | null;
 }
 
 function KpiCard({
@@ -142,23 +157,51 @@ export default function Reportes() {
       (await getFluctuacionPrecios(productoFluct || undefined)).data as {
         productos: { id: number; nombre: string }[];
         producto_id: number | null;
-        compras: { fecha: string; costo: number }[];
+        compras: { fecha: string; costo: number; numero_factura: string }[];
         ventas: { fecha: string; precio: number }[];
       },
   });
 
-  // Serie combinada compra/venta por mes para el gráfico de fluctuación
+  // Serie combinada compra/venta para el gráfico de fluctuación. Cada compra es
+  // un punto propio (una factura real), por lo que se le da una clave única
+  // aunque comparta fecha con otra factura o con un punto de venta — así no se
+  // pisan entre sí y se ven todos los costos de factura individualmente.
   const serieFluct = useMemo(() => {
     if (!fluctuacion) return [];
-    const map = new Map<string, { fecha: string; costo?: number; precio?: number }>();
-    for (const c of fluctuacion.compras) {
-      map.set(c.fecha, { ...(map.get(c.fecha) || { fecha: c.fecha }), costo: Number(c.costo) });
-    }
+    const map = new Map<string, { fecha: string; costo?: number; precio?: number; numero_factura?: string }>();
+    fluctuacion.compras.forEach((c, i) => {
+      map.set(`compra-${i}-${c.fecha}`, {
+        fecha: c.fecha,
+        costo: Number(c.costo),
+        numero_factura: c.numero_factura,
+      });
+    });
     for (const v of fluctuacion.ventas) {
-      map.set(v.fecha, { ...(map.get(v.fecha) || { fecha: v.fecha }), precio: Number(v.precio) });
+      map.set(`venta-${v.fecha}`, { ...(map.get(`venta-${v.fecha}`) || { fecha: v.fecha }), precio: Number(v.precio) });
     }
     return Array.from(map.values()).sort((a, b) => a.fecha.localeCompare(b.fecha));
   }, [fluctuacion]);
+
+  const [productoRentabilidad, setProductoRentabilidad] = useState<string>('');
+
+  const { data: rentabilidad } = useQuery({
+    queryKey: ['rentabilidad-historica', productoRentabilidad],
+    queryFn: async () =>
+      (await getRentabilidadHistorica(productoRentabilidad || undefined)).data as {
+        productos: { id: number; nombre: string }[];
+        producto_id: number | null;
+        periodos: TramoRentabilidad[];
+      },
+  });
+
+  const tramoLabel = (t: TramoRentabilidad) =>
+    `${clp(t.precio)} / costo ${t.costo_unitario != null ? clp(t.costo_unitario) : 'N/A'}`;
+
+  const tramoRango = (t: TramoRentabilidad) => {
+    const desde = t.desde ? new Date(t.desde).toLocaleDateString('es-CL') : 'Inicio';
+    const hasta = t.hasta ? new Date(t.hasta).toLocaleDateString('es-CL') : 'Hoy';
+    return `${desde} – ${hasta}`;
+  };
 
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="Error al cargar los reportes" />;
@@ -208,6 +251,7 @@ export default function Reportes() {
           <TabsTrigger value="vendedor">Por Vendedor</TabsTrigger>
           <TabsTrigger value="perdidas">Pérdidas</TabsTrigger>
           <TabsTrigger value="fluctuacion">Fluctuación de Precios</TabsTrigger>
+          <TabsTrigger value="rentabilidad">Rentabilidad por Precio</TabsTrigger>
         </TabsList>
 
         {/* --- MENSUAL --- */}
@@ -390,22 +434,30 @@ export default function Reportes() {
             <CardContent>
               {!productoFluct ? (
                 <p className="text-center text-muted-foreground py-10">
-                  Seleccione un producto para ver la evolución de su costo de compra y precio de venta.
+                  Seleccione un producto para ver la evolución de cada costo de factura de compra frente al
+                  precio de venta.
                 </p>
               ) : serieFluct.length > 0 ? (
-                <ResponsiveContainer width="100%" height={340}>
+                <ResponsiveContainer width="100%" height={360}>
                   <LineChart data={serieFluct}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="fecha" fontSize={12} />
+                    <XAxis dataKey="fecha" fontSize={11} interval={0} angle={-30} textAnchor="end" height={70} />
                     <YAxis fontSize={12} tickFormatter={(v) => clp(v)} width={80} />
-                    <ReTooltip formatter={(v: number) => clp(v)} />
+                    <ReTooltip
+                      formatter={(value: number, name: string, entry: any) =>
+                        name === 'Costo de compra' && entry?.payload?.numero_factura
+                          ? [clp(value), `Costo de compra (Factura ${entry.payload.numero_factura})`]
+                          : [clp(value), name]
+                      }
+                    />
                     <Legend />
                     <Line
-                      type="monotone"
+                      type="stepAfter"
                       dataKey="costo"
                       name="Costo de compra"
                       stroke="hsl(var(--destructive))"
                       strokeWidth={2}
+                      dot={{ r: 3 }}
                       connectNulls
                     />
                     <Line
@@ -418,6 +470,90 @@ export default function Reportes() {
                     />
                   </LineChart>
                 </ResponsiveContainer>
+              ) : (
+                <p className="text-center text-muted-foreground py-10">Sin datos para este producto.</p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* --- RENTABILIDAD POR PRECIO --- */}
+        <TabsContent value="rentabilidad">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-4">
+              <CardTitle>Rentabilidad por Tramo de Precio</CardTitle>
+              <Select value={productoRentabilidad} onValueChange={setProductoRentabilidad}>
+                <SelectTrigger className="w-[220px]">
+                  <SelectValue placeholder="Seleccione producto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(rentabilidad?.productos ?? []).map((p) => (
+                    <SelectItem key={p.id} value={p.id.toString()}>
+                      {p.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {!productoRentabilidad ? (
+                <p className="text-center text-muted-foreground py-10">
+                  Seleccione un producto para ver, por cada precio de venta que ha tenido, con qué costo de
+                  factura se vendió y la diferencia entre ambos.
+                </p>
+              ) : rentabilidad && rentabilidad.periodos.length > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height={340}>
+                    <BarChart data={rentabilidad.periodos.map((t) => ({ ...t, label: tramoLabel(t) }))}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="label" fontSize={11} interval={0} angle={-15} textAnchor="end" height={70} />
+                      <YAxis fontSize={12} tickFormatter={(v) => clp(v)} width={80} />
+                      <ReTooltip formatter={(v: number) => clp(v)} />
+                      <Legend />
+                      <Bar dataKey="costo_unitario" name="Costo por kilo" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="precio" name="Precio de venta" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Precio de venta</TableHead>
+                        <TableHead>Costo por kilo (con IVA)</TableHead>
+                        <TableHead>Vigencia</TableHead>
+                        <TableHead className="text-right">Kilos vendidos</TableHead>
+                        <TableHead className="text-right">Ventas</TableHead>
+                        <TableHead className="text-right">Costo</TableHead>
+                        <TableHead className="text-right">Ganancia</TableHead>
+                        <TableHead className="text-right">Ganancia por kilo</TableHead>
+                        <TableHead className="text-right">Margen %</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {rentabilidad.periodos.map((t, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="font-medium">
+                            {clp(t.precio)} {t.vigente && <span className="text-xs text-muted-foreground">(vigente)</span>}
+                          </TableCell>
+                          <TableCell>{t.costo_unitario != null ? clp(t.costo_unitario) : 'N/A'}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{tramoRango(t)}</TableCell>
+                          <TableCell className="text-right">
+                            {Number(t.kilos).toLocaleString('es-CL')} kg
+                          </TableCell>
+                          <TableCell className="text-right">{clp(t.ventas)}</TableCell>
+                          <TableCell className="text-right">{clp(t.costo)}</TableCell>
+                          <TableCell className="text-right font-medium text-green-600">
+                            {clp(t.ganancia)}
+                          </TableCell>
+                          <TableCell className="text-right font-medium text-green-600">
+                            {t.ganancia_unitaria != null ? clp(t.ganancia_unitaria) : '—'}
+                          </TableCell>
+                          <TableCell className="text-right">{t.margen_pct !== null ? pct(t.margen_pct) : '—'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </>
               ) : (
                 <p className="text-center text-muted-foreground py-10">Sin datos para este producto.</p>
               )}

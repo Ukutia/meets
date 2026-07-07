@@ -108,6 +108,28 @@ class Producto(models.Model):
         return self.nombre
 
 
+class HistorialPrecioProducto(models.Model):
+    producto = models.ForeignKey(
+        Producto, on_delete=models.CASCADE, related_name='historial_precios'
+    )
+    precio_anterior = models.DecimalField(max_digits=10, decimal_places=2)
+    precio_nuevo = models.DecimalField(max_digits=10, decimal_places=2)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='cambios_precio_producto'
+    )
+    fecha_cambio = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha_cambio']
+
+    def __str__(self):
+        return f"{self.producto.nombre}: {self.precio_anterior} -> {self.precio_nuevo}"
+
+
 class AjusteInventario(models.Model):
     TIPO_AJUSTE = [
         ("merma", "Merma"),

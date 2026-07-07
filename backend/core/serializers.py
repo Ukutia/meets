@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido
+from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -57,12 +57,54 @@ class ProductoSerializer(serializers.ModelSerializer):
         model = Producto
         fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado', 'peso_minimo']
 
+class HistorialPrecioProductoSerializer(serializers.ModelSerializer):
+    usuario_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HistorialPrecioProducto
+        fields = ['id', 'precio_anterior', 'precio_nuevo', 'usuario_nombre', 'fecha_cambio']
+
+    def get_usuario_nombre(self, obj):
+        if not obj.usuario:
+            return "Sistema"
+        vendedor = getattr(obj.usuario, 'vendedor_profile', None)
+        return vendedor.nombre if vendedor else obj.usuario.username
+
+
+class AjusteInventarioSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+
+    class Meta:
+        model = AjusteInventario
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'tipo', 'razon', 'fecha']
+
+
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto = ProductoSerializer()
     cliente_nombre = serializers.ReadOnlyField(source='pedido.cliente.nombre')
     vendedor_nombre = serializers.ReadOnlyField(source='pedido.vendedor.nombre')
     estado_pedido = serializers.ReadOnlyField(source='pedido.estado')
     facturas_detalle = serializers.SerializerMethodField()
+
+    def _cache_facturas(self):
+        # Cachea en `self` (compartido por todas las filas cuando se serializa
+        # con many=True) los links de FacturaDetallePedido agrupados por pedido
+        # y los DetalleFactura indexados por (factura, producto), para evitar
+        # 1-2 queries extra POR FILA (N+1) — ver spawn_task sobre esta vista.
+        cache = getattr(self, '_facturas_cache', None)
+        if cache is None:
+            links_por_pedido = {}
+            for link in FacturaDetallePedido.objects.select_related('factura', 'factura__proveedor'):
+                links_por_pedido.setdefault(link.detallepedido_id, []).append(link)
+
+            detalle_factura_por_par = {
+                (df.factura_id, df.producto_id): df
+                for df in DetalleFactura.objects.all()
+            }
+
+            cache = {'links_por_pedido': links_por_pedido, 'detalle_factura_por_par': detalle_factura_por_par}
+            self._facturas_cache = cache
+        return cache
 
     def get_facturas_detalle(self, obj):
         # Desglose por factura de compra que abastecio esta linea de venta.
@@ -72,18 +114,14 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
         # costos atribuidos coincide EXACTA con total_costo de la linea
         # (= costo/kg ponderado * kilos vendidos), en vez de reconstruir desde el
         # peso de compra por pieza (que en historicos esta corrupto y no cuadra).
-        links = list(
-            FacturaDetallePedido.objects.filter(detallepedido=obj)
-            .select_related('factura', 'factura__proveedor')
-        )
+        cache = self._cache_facturas()
+        links = cache['links_por_pedido'].get(obj.id, [])
         total_unidades = sum(l.cantidad_unidades for l in links) or 0
         kilos_linea = Decimal(str(obj.cantidad_kilos or 0))
 
         detalle = []
         for link in links:
-            detalle_factura = DetalleFactura.objects.filter(
-                factura=link.factura_id, producto=obj.producto_id
-            ).first()
+            detalle_factura = cache['detalle_factura_por_par'].get((link.factura_id, obj.producto_id))
             costo_por_kilo = detalle_factura.costo_por_kilo if detalle_factura else None
             if total_unidades > 0:
                 kilos_atribuidos = kilos_linea * Decimal(link.cantidad_unidades) / Decimal(total_unidades)
@@ -176,6 +214,7 @@ class FacturaSerializer(serializers.ModelSerializer):
     # Eliminamos el source porque ahora coincide con el field name
     detalles = DetalleFacturaSerializer(many=True, read_only=True)
     proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre')
+    pago_factura = PagoFacturaSerializer(read_only=True)
 
     class Meta:
         model = Factura

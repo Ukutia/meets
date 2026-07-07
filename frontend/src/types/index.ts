@@ -22,6 +22,14 @@ export interface Producto {
   estado: 'disponible' | 'agotado';
 }
 
+export interface HistorialPrecio {
+  id: number;
+  precio_anterior: number;
+  precio_nuevo: number;
+  usuario_nombre: string;
+  fecha_cambio: string;
+}
+
 export interface DetallePedido {
   id: number;
   producto: Producto;
@@ -85,6 +93,16 @@ export interface StockItem {
   stock: number;
   reservas: number;
   kilos_actuales: number;
+}
+
+export interface AjusteInventario {
+  id: number;
+  producto: number;
+  producto_nombre: string;
+  cantidad: number;
+  tipo: 'merma' | 'exceso' | 'ajuste';
+  razon?: string | null;
+  fecha: string;
 }
 
 export interface KPI {

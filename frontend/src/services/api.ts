@@ -6,7 +6,9 @@ import type {
   Factura,
   StockItem,
   Vendedor,
-  Proveedor
+  Proveedor,
+  HistorialPrecio,
+  AjusteInventario
 } from '@/types';
 
 
@@ -110,6 +112,8 @@ export const createProducto = (data: {
 }) => api.post<Producto>('/productos/crear/', data);
 export const updateProducto = (id: number, data: Partial<Producto>) =>
   api.put<Producto>(`/productos/${id}/`, data);
+export const getHistorialPrecio = (id: number) =>
+  api.get<HistorialPrecio[]>(`/productos/${id}/historial-precio/`);
 
 // Clientes
 export const getClientes = () => api.get<Cliente[]>('/clientes/');
@@ -122,7 +126,8 @@ export const createCliente = (data: {
 }) => api.post<Cliente>('/clientes/crear/', data);
 
 // Pedidos
-export const getPedidos = () => api.get<Pedido[]>('/pedidos/');
+export const getPedidos = (incluirAnulados = false) =>
+  api.get<Pedido[]>('/pedidos/', { params: incluirAnulados ? { incluir_anulados: '1' } : {} });
 export const getPedido = (id: number) => api.get<Pedido>(`/pedidos/${id}/`);
 export const createPedido = (data: {
   cliente: number;
@@ -192,6 +197,16 @@ export const getDetallePedidos = async () => {
 
 // Stock
 export const getStock = () => api.get<StockItem[]>('/stock/');
+
+// Ajustes de Inventario (Mermas / Excesos / Ajustes manuales)
+export const getAjustesInventario = (params?: { producto?: number; tipo?: string }) =>
+  api.get<AjusteInventario[]>('/inventario/ajustes/', { params });
+export const createAjusteInventario = (data: {
+  producto: number;
+  tipo: 'merma' | 'exceso' | 'ajuste';
+  cantidad: number;
+  razon?: string;
+}) => api.post<AjusteInventario>('/inventario/ajustes/crear/', data);
 // Vendedores
 export const getVendedores = () => api.get<Vendedor[]>('/vendedores/');
 
@@ -204,5 +219,9 @@ export const getFluctuacionPrecios = (productoId?: number | string) =>
     params: productoId ? { producto: productoId } : undefined,
   });
 export const getMargenProductos = () => api.get('/reportes/margen-productos/');
+export const getRentabilidadHistorica = (productoId?: number | string) =>
+  api.get('/reportes/rentabilidad-historica/', {
+    params: productoId ? { producto: productoId } : undefined,
+  });
 
 export default api;

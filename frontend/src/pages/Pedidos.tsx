@@ -47,7 +47,7 @@ export default function Pedidos() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['pedidos'],
     queryFn: async () => {
-      const response = await getPedidos();
+      const response = await getPedidos(true);
       return response.data as Pedido[];
     },
   });
@@ -85,6 +85,7 @@ export default function Pedidos() {
       case 'Preparado': return 'bg-amber-100 text-amber-700 border-amber-200';
       case 'Pagado': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
       case 'Reservado': return 'bg-blue-100 text-blue-700 border-blue-200';
+      case 'Anulado': return 'bg-red-100 text-red-700 border-red-200';
       default: return 'bg-slate-100 text-slate-700';
     }
   };
@@ -112,7 +113,11 @@ export default function Pedidos() {
         p.id.toString().includes(searchLower)
       );
     }
-    if (filterEstado !== 'Todos') filtered = filtered.filter(p => p.estado === filterEstado);
+    if (filterEstado === 'Todos') {
+      filtered = filtered.filter(p => p.estado !== 'Anulado');
+    } else {
+      filtered = filtered.filter(p => p.estado === filterEstado);
+    }
     if (filterVendedor !== 'Todos') {
       filtered = filtered.filter(p => p.vendedor?.id?.toString() === filterVendedor || p.vendedor_id?.toString() === filterVendedor);
     }
@@ -185,6 +190,7 @@ export default function Pedidos() {
         <SelectItem value="Reservado">Reservados</SelectItem>
         <SelectItem value="Preparado">Preparados</SelectItem>
         <SelectItem value="Pagado">Pagados</SelectItem>
+        <SelectItem value="Anulado">Anulados</SelectItem>
       </SelectContent>
     </Select>
 
@@ -264,22 +270,24 @@ export default function Pedidos() {
                         <DropdownMenuItem onClick={() => cobrarPedido(pedido)} className="text-green-600">
                           <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
                         </DropdownMenuItem>
-                        {pedido.estado !== 'Pagado' && (
+                        {pedido.estado !== 'Pagado' && pedido.estado !== 'Anulado' && (
                           <DropdownMenuItem onClick={() => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' }})} className="text-blue-600">
                             <CheckCircle2 className="mr-2 h-4 w-4" /> Marcar Pagado
                           </DropdownMenuItem>
                         )}
                         {/* SECCIÓN DE ANULACIÓN */}
-                        <DropdownMenuItem 
-                          onClick={() => {
-                            if (confirm(`¿Estás seguro de anular el pedido #00${pedido.id}? El stock será devuelto.`)) {
-                              anularMutation.mutate(pedido.id);
-                            }
-                          }} 
-                          className="text-red-600 focus:text-red-600 focus:bg-red-50"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" /> Anular Pedido
-                        </DropdownMenuItem>
+                        {pedido.estado !== 'Anulado' && (
+                          <DropdownMenuItem
+                            onClick={() => {
+                              if (confirm(`¿Estás seguro de anular el pedido #00${pedido.id}? El stock será devuelto.`)) {
+                                anularMutation.mutate(pedido.id);
+                              }
+                            }}
+                            className="text-red-600 focus:text-red-600 focus:bg-red-50"
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" /> Anular Pedido
+                          </DropdownMenuItem>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
@@ -424,6 +432,7 @@ export default function Pedidos() {
                     <TableHeader>
                       <TableRow>
                         <TableHead className="px-2">Producto</TableHead>
+                        <TableHead className="text-right px-2">Costo/Kg</TableHead>
                         <TableHead className="text-right px-2">Costo</TableHead>
                         <TableHead className="text-right px-2">Venta</TableHead>
                         <TableHead className="text-right px-2">Ganancia</TableHead>
@@ -432,6 +441,8 @@ export default function Pedidos() {
                     <TableBody>
                       {detalles.map((det, idx) => {
                         const costoConIva = Number(det.total_costo) * FACTOR_IVA;
+                        const kilos = Number(det.cantidad_kilos);
+                        const costoPorKilo = kilos > 0 ? costoConIva / kilos : 0;
                         const ganancia = gananciaLinea(det);
                         return (
                           <TableRow key={idx}>
@@ -439,6 +450,7 @@ export default function Pedidos() {
                               <div className="font-semibold text-sm">{det.producto.nombre}</div>
                               <div className="text-[10px] text-slate-400">{det.cantidad_kilos} kg</div>
                             </TableCell>
+                            <TableCell className="text-right px-2 text-sm text-slate-500">{formatCurrency(costoPorKilo)}</TableCell>
                             <TableCell className="text-right px-2 text-sm">{formatCurrency(costoConIva)}</TableCell>
                             <TableCell className="text-right px-2 text-sm">{formatCurrency(det.total_venta)}</TableCell>
                             <TableCell className={`text-right px-2 text-sm font-bold ${ganancia >= 0 ? 'text-green-600' : 'text-destructive'}`}>
