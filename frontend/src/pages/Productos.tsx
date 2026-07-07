@@ -182,6 +182,8 @@ export default function Productos() {
   const costoRecienteEditado = margenDelEditado?.costo_reciente;
   // precioEditado y costoRecienteEditado vienen CON IVA incluido; la ganancia
   // real se calcula neta de IVA en ambos lados (ver backend/core/views.py).
+  const costoNetoEditado = costoRecienteEditado != null ? costoRecienteEditado / IVA_RATE : null;
+  const precioNetoEditado = precioEditado > 0 ? precioEditado / IVA_RATE : null;
   const ganLiveUnit = (costoRecienteEditado != null && precioEditado > 0)
     ? (precioEditado - costoRecienteEditado) / IVA_RATE
     : null;
@@ -248,15 +250,21 @@ export default function Productos() {
             </div>
 
             {editingProducto && (
-              <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm space-y-1">
                 {costoRecienteEditado != null ? (
                   <>
                     <div className="flex justify-between text-muted-foreground">
-                      <span>Costo actual con IVA /kg</span>
-                      <span className="font-mono">${Number(costoRecienteEditado).toLocaleString('es-CL')}</span>
+                      <span>Costo actual sin IVA /kg</span>
+                      <span className="font-mono">${Number(costoNetoEditado).toLocaleString('es-CL')}</span>
                     </div>
-                    <div className="flex justify-between font-medium mt-1">
-                      <span>Ganancia con este precio</span>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Precio de venta sin IVA</span>
+                      <span className="font-mono">
+                        {precioNetoEditado != null ? `$${Number(precioNetoEditado).toLocaleString('es-CL')}` : '—'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between font-medium pt-1 border-t mt-1">
+                      <span>Ganancia neta</span>
                       <span className={`font-mono ${ganLiveUnit != null && ganLiveUnit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {ganLiveUnit != null
                           ? `$${Number(ganLiveUnit).toLocaleString('es-CL')} (${ganLivePct!.toFixed(1)}%)`
