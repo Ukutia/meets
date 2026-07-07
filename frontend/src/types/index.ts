@@ -22,6 +22,16 @@ export interface Producto {
   estado: 'disponible' | 'agotado';
 }
 
+export interface MargenProducto {
+  producto_id: number;
+  nombre: string;
+  precio_por_kilo: number;
+  costo_reciente: number | null;
+  margen_unitario_actual: number | null;
+  margen_pct_actual: number | null;
+  margen_pct_historico: number | null;
+}
+
 export interface HistorialPrecio {
   id: number;
   precio_anterior: number;

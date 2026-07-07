@@ -77,8 +77,11 @@ export default function Pedidos() {
 
   const FACTOR_IVA = 1.19;
 
+  // total_venta viene CON IVA incluido (precio de boleta) y total_costo ya es
+  // neto; la ganancia real se calcula neta de IVA en ambos lados, si no queda
+  // inflada con el débito fiscal que corresponde enterar al Fisco.
   const gananciaLinea = (det: Pedido['detalles'][number]) =>
-    Number(det.total_venta) - Number(det.total_costo) * FACTOR_IVA;
+    Number(det.total_venta) / FACTOR_IVA - Number(det.total_costo);
 
   const getStatusColor = (estado: string) => {
     switch (estado) {
@@ -422,9 +425,11 @@ export default function Pedidos() {
             {selectedPedidoGanancia && (() => {
               const detalles = selectedPedidoGanancia.detalles;
               const totalVenta = detalles.reduce((sum, d) => sum + Number(d.total_venta), 0);
-              const totalCostoConIva = detalles.reduce((sum, d) => sum + Number(d.total_costo) * FACTOR_IVA, 0);
-              const gananciaTotal = totalVenta - totalCostoConIva;
-              const margenPct = totalVenta > 0 ? (gananciaTotal / totalVenta) * 100 : 0;
+              const totalVentaNeta = totalVenta / FACTOR_IVA;
+              const totalCostoNeto = detalles.reduce((sum, d) => sum + Number(d.total_costo), 0);
+              const totalCostoConIva = totalCostoNeto * FACTOR_IVA;
+              const gananciaTotal = totalVentaNeta - totalCostoNeto;
+              const margenPct = totalVentaNeta > 0 ? (gananciaTotal / totalVentaNeta) * 100 : 0;
 
               return (
                 <>

@@ -952,12 +952,35 @@ from django.db.models.functions import TruncMonth, TruncDate, Coalesce
 
 
 # Los costos de compra se ingresan SIN IVA (ver Facturas.tsx: subtotal/costo_por_kilo
-# son netos, el IVA se calcula aparte). El costo REAL pagado al proveedor incluye ese
-# 19%, así que toda ganancia/margen reportado debe descontar el costo CON IVA, no el
-# neto. Los campos DetallePedido.total_costo/margen quedaron persistidos con el costo
-# neto (bug de origen), por eso los reportes recalculan la ganancia en vez de confiar
-# en Sum('margen').
+# son netos, el IVA se calcula aparte). El precio de venta (Producto.precio_por_kilo /
+# DetallePedido.total_venta), en cambio, es el precio de boleta que paga el cliente y
+# YA INCLUYE el 19% de IVA. La ganancia contable real debe restar montos NETOS en
+# ambos lados (venta sin IVA - costo sin IVA): si se resta el costo con IVA de la venta
+# bruta (como se hacía antes), la "ganancia" queda inflada exactamente por el débito
+# fiscal que en realidad corresponde enterar al Fisco (neteado del crédito fiscal de
+# las compras). Los campos DetallePedido.total_costo/margen quedaron persistidos con el
+# costo neto (bug de origen), por eso los reportes recalculan la ganancia en vez de
+# confiar en Sum('margen').
 IVA_RATE = Decimal('1.19')
+
+
+def _desglose_iva(ventas_con_iva, costo_neto):
+    """
+    A partir de ventas CON IVA incluido (precio de boleta) y costo neto de compra
+    (tal como se ingresa en la Factura), devuelve:
+    - ventas_neto: venta sin IVA
+    - ganancia: ganancia contable real (ventas_neto - costo_neto)
+    - iva_debito: IVA recargado en la venta (a favor del Fisco)
+    - iva_credito: IVA pagado en la compra (crédito fiscal, a favor del negocio)
+    - iva_a_pagar: iva_debito - iva_credito (si es negativo, es crédito/remanente
+      a favor del negocio, no un pago)
+    """
+    ventas_neto = ventas_con_iva / IVA_RATE
+    ganancia = ventas_neto - costo_neto
+    iva_debito = ventas_con_iva - ventas_neto
+    iva_credito = costo_neto * (IVA_RATE - 1)
+    iva_a_pagar = iva_debito - iva_credito
+    return ventas_neto, ganancia, iva_debito, iva_credito, iva_a_pagar
 
 
 def _detalles_ganancia_qs(request):
@@ -983,10 +1006,14 @@ class ReporteGananciasView(APIView):
     Devuelve en una sola respuesta: total general, por producto ("corte"),
     por mes y por vendedor.
 
-    La ganancia se RECALCULA como ventas - (costo_neto * IVA_RATE) en vez de
-    usar el campo persistido DetallePedido.margen: ese campo se calculó al
-    crear el pedido usando el costo neto (sin IVA) de la compra, por lo que
-    subestima el costo real y sobreestima la ganancia.
+    La ganancia se RECALCULA netA de IVA en ambos lados (ver _desglose_iva) en
+    vez de usar el campo persistido DetallePedido.margen, que mezcla venta
+    bruta (con IVA) con costo neto y por lo tanto no representa ni la
+    ganancia contable ni el costo real.
+
+    'total' además incluye el desglose de IVA (débito de la venta, crédito de
+    la compra y el neto a enterar/-recuperar), y 'por_mes' lo repite por mes
+    porque el IVA se declara mensualmente (Formulario 29).
     """
     permission_classes = [IsAuthenticated]
 
@@ -999,9 +1026,10 @@ class ReporteGananciasView(APIView):
             costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
             kilos=Coalesce(Sum('cantidad_kilos'), Decimal('0')),
         )
-        costo_con_iva = totales['costo_neto'] * IVA_RATE
-        ganancia = totales['ventas'] - costo_con_iva
-        margen_pct = float(ganancia / totales['ventas'] * 100) if totales['ventas'] else 0.0
+        ventas_neto, ganancia, iva_debito, iva_credito, iva_a_pagar = _desglose_iva(
+            totales['ventas'], totales['costo_neto']
+        )
+        margen_pct = float(ganancia / ventas_neto * 100) if ventas_neto else 0.0
 
         # --- Por producto / "corte" (= Producto.nombre) ---
         por_producto_raw = list(
@@ -1014,20 +1042,19 @@ class ReporteGananciasView(APIView):
         )
         por_producto = []
         for r in por_producto_raw:
-            costo = r['costo_neto'] * IVA_RATE
-            gan = r['ventas'] - costo
+            ventas_n, gan, *_ = _desglose_iva(r['ventas'], r['costo_neto'])
             por_producto.append({
                 'producto_id': r['producto__id'],
                 'nombre': r['producto__nombre'],
                 'ganancia': gan,
-                'ventas': r['ventas'],
-                'costo': costo,
+                'ventas': ventas_n,
+                'costo': r['costo_neto'],
                 'kilos': r['kilos'],
-                'margen_pct': float(gan / r['ventas'] * 100) if r['ventas'] else 0.0,
+                'margen_pct': float(gan / ventas_n * 100) if ventas_n else 0.0,
             })
         por_producto.sort(key=lambda x: x['ganancia'], reverse=True)
 
-        # --- Por mes ---
+        # --- Por mes (con desglose de IVA, se declara mensualmente) ---
         por_mes_raw = list(
             detalles.annotate(mes=TruncMonth('fecha'))
             .values('mes')
@@ -1039,12 +1066,15 @@ class ReporteGananciasView(APIView):
         )
         por_mes = []
         for r in por_mes_raw:
-            costo = r['costo_neto'] * IVA_RATE
+            ventas_n, gan, debito, credito, neto = _desglose_iva(r['ventas'], r['costo_neto'])
             por_mes.append({
                 'mes': r['mes'].strftime('%Y-%m') if r['mes'] else None,
-                'ganancia': r['ventas'] - costo,
-                'ventas': r['ventas'],
-                'costo': costo,
+                'ganancia': gan,
+                'ventas': ventas_n,
+                'costo': r['costo_neto'],
+                'iva_debito': debito,
+                'iva_credito': credito,
+                'iva_a_pagar': neto,
             })
 
         # --- Por vendedor ---
@@ -1057,24 +1087,26 @@ class ReporteGananciasView(APIView):
         )
         por_vendedor = []
         for r in por_vendedor_raw:
-            costo = r['costo_neto'] * IVA_RATE
-            gan = r['ventas'] - costo
+            ventas_n, gan, *_ = _desglose_iva(r['ventas'], r['costo_neto'])
             por_vendedor.append({
                 'vendedor_id': r['pedido__vendedor__id'],
                 'nombre': r['pedido__vendedor__nombre'] or 'Sin vendedor',
                 'ganancia': gan,
-                'ventas': r['ventas'],
-                'margen_pct': float(gan / r['ventas'] * 100) if r['ventas'] else 0.0,
+                'ventas': ventas_n,
+                'margen_pct': float(gan / ventas_n * 100) if ventas_n else 0.0,
             })
         por_vendedor.sort(key=lambda x: x['ganancia'], reverse=True)
 
         return Response({
             'total': {
                 'ganancia': ganancia,
-                'ventas': totales['ventas'],
-                'costo': costo_con_iva,
+                'ventas': ventas_neto,
+                'costo': totales['costo_neto'],
                 'kilos': totales['kilos'],
                 'margen_pct': round(margen_pct, 2),
+                'iva_debito': iva_debito,
+                'iva_credito': iva_credito,
+                'iva_a_pagar': iva_a_pagar,
             },
             'por_producto': por_producto,
             'por_mes': por_mes,
@@ -1214,11 +1246,16 @@ class MargenActualProductoView(APIView):
     - precio_por_kilo: precio de venta vigente (Producto.precio_por_kilo)
     - costo_reciente: último costo_por_kilo de EntradaProducto (SIN IVA, tal
       como se ingresa en la Factura de compra)
-    - margen_unitario_actual / margen_pct_actual: vs. costo reciente CON IVA
-      (costo_reciente * IVA_RATE), ya que ese es el costo real pagado.
+    - margen_unitario_actual / margen_pct_actual: precio de venta SIN IVA
+      (precio / IVA_RATE, ya que precio_por_kilo es precio de boleta con IVA
+      incluido) vs. costo reciente NETO, para que refleje la ganancia
+      contable real y no el débito fiscal que corresponde enterar al Fisco.
     - margen_pct_historico: margen promedio de ventas NO anuladas, recalculado
-      como (ventas - costo_neto * IVA_RATE) / ventas del producto (no se usa
+      como (ventas_neto - costo_neto) / ventas_neto del producto (no se usa
       el campo persistido DetallePedido.margen porque se guardó sin IVA).
+    - costo_reciente: se sigue devolviendo CON IVA (costo real pagado en
+      efectivo al proveedor), para mostrar en pantalla cuánto costó reponer
+      el producto; el cálculo de margen internamente usa su versión neta.
     """
     permission_classes = [IsAuthenticated]
 
@@ -1231,7 +1268,7 @@ class MargenActualProductoView(APIView):
             if e.producto_id not in ultimo_costo:
                 ultimo_costo[e.producto_id] = e.costo_por_kilo
 
-        # Margen histórico por producto (ventas no anuladas), costo con IVA
+        # Margen histórico por producto (ventas no anuladas)
         hist = {
             r['producto_id']: r
             for r in DetallePedido.objects.exclude(pedido__estado="Anulado")
@@ -1245,14 +1282,16 @@ class MargenActualProductoView(APIView):
             costo_reciente = ultimo_costo.get(p.id)
             costo_reciente_con_iva = (costo_reciente * IVA_RATE) if costo_reciente is not None else None
             precio = p.precio_por_kilo or Decimal('0')
-            margen_unit = (precio - costo_reciente_con_iva) if costo_reciente_con_iva is not None else None
-            margen_pct = float(margen_unit / precio * 100) if (margen_unit is not None and precio) else None
+            precio_neto = (precio / IVA_RATE) if precio else Decimal('0')
+            margen_unit = (precio_neto - costo_reciente) if costo_reciente is not None else None
+            margen_pct = float(margen_unit / precio_neto * 100) if (margen_unit is not None and precio_neto) else None
 
             h = hist.get(p.id)
             margen_pct_hist = None
             if h and h['ventas']:
-                ganancia_hist = h['ventas'] - (h['costo_neto'] * IVA_RATE)
-                margen_pct_hist = float(ganancia_hist / h['ventas'] * 100)
+                ventas_neto_hist = h['ventas'] / IVA_RATE
+                ganancia_hist = ventas_neto_hist - h['costo_neto']
+                margen_pct_hist = float(ganancia_hist / ventas_neto_hist * 100)
 
             data.append({
                 'producto_id': p.id,
@@ -1348,9 +1387,16 @@ class RentabilidadHistoricaView(APIView):
             for (precio, costo_por_kilo), g in sorted(
                 grupos.items(), key=lambda kv: (kv[0][0], kv[0][1] if kv[0][1] is not None else Decimal('0'))
             ):
+                # 'costo'/'costo_unitario' se muestran CON IVA (costo real pagado en
+                # efectivo al proveedor), pero 'ganancia'/'margen_pct' se calculan
+                # NETOS de IVA en ambos lados (venta sin IVA - costo neto): 'venta'
+                # (g['venta']) es precio de boleta con IVA incluido, así que restarle
+                # el costo con IVA inflaría la ganancia con el débito fiscal que en
+                # realidad corresponde enterar al Fisco.
                 costo_con_iva = g['costo_neto'] * IVA_RATE
-                ganancia = g['venta'] - costo_con_iva
-                margen_pct = float(ganancia / g['venta'] * 100) if g['venta'] else None
+                venta_neta = g['venta'] / IVA_RATE
+                ganancia = venta_neta - g['costo_neto']
+                margen_pct = float(ganancia / venta_neta * 100) if venta_neta else None
                 costo_unitario = (costo_con_iva / g['kilos']) if g['kilos'] else None
                 ganancia_unitaria = (ganancia / g['kilos']) if g['kilos'] else None
                 fechas = [f for f in g['fechas'] if f]
@@ -1367,8 +1413,8 @@ class RentabilidadHistoricaView(APIView):
                     'hasta': max(fechas).isoformat() if fechas else None,
                     'vigente': fecha_maxima_global is not None and fecha_maxima_global in fechas,
                     'kilos': g['kilos'],
-                    'ventas': g['venta'],
-                    'costo': costo_con_iva,
+                    'ventas': venta_neta,
+                    'costo': g['costo_neto'],
                     'ganancia': ganancia,
                     'margen_pct': round(margen_pct, 2) if margen_pct is not None else None,
                 })

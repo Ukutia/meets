@@ -111,21 +111,23 @@ export default function Facturas() {
 
   // El costo_por_kilo ingresado en este formulario es SIN IVA (el IVA se
   // calcula aparte para el total de la factura, ver useEffect de subtotal/iva
-  // más abajo). El costo real pagado al proveedor incluye ese 19%, así que el
-  // margen proyectado debe descontar el costo CON IVA, no el neto ingresado.
+  // más abajo). precio_por_kilo, en cambio, es precio de boleta CON IVA
+  // incluido, así que el margen proyectado se calcula neto de IVA en ambos
+  // lados (precio sin IVA - costo neto), igual que en el backend.
   const IVA_RATE = 1.19;
 
   // Peso promedio por pieza (kg/unidad) de una línea; null si no hay unidades para dividir.
   const pesoPromedio = (kilos: number, unidades: number) =>
     unidades > 0 ? kilos / unidades : null;
 
-  // Margen proyectado de una línea: precio de venta vigente vs. costo real (con IVA).
+  // Margen proyectado de una línea: precio de venta vigente (sin IVA) vs. costo neto.
   const calcMargen = (item: DetalleFacturaForm) => {
     const info = margenMap.get(String(item.producto));
     const precio = Number(info?.precio_por_kilo ?? 0);
-    const costoConIva = Number(item.costo_por_kilo || 0) * IVA_RATE;
-    const margenUnit = precio - costoConIva;
-    const pct = precio ? (margenUnit / precio) * 100 : 0;
+    const precioNeto = precio / IVA_RATE;
+    const costoNeto = Number(item.costo_por_kilo || 0);
+    const margenUnit = precioNeto - costoNeto;
+    const pct = precioNeto ? (margenUnit / precioNeto) * 100 : 0;
     const hist = info?.margen_pct_historico;
     // Verde si el margen proyectado supera (o iguala) el margen histórico del
     // producto; si no hay histórico, verde cuando el margen es positivo.

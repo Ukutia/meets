@@ -29,10 +29,10 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createProducto, updateProducto, getProductos, getHistorialPrecio } from '@/services/api';
+import { createProducto, updateProducto, getProductos, getHistorialPrecio, getMargenProductos } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { Producto } from '@/types';
+import type { Producto, MargenProducto } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
 interface ProductoForm {
@@ -72,6 +72,22 @@ export default function Productos() {
       return response.data;
     },
   });
+
+  // Costo actual con IVA y ganancia vigente por producto (mismo endpoint que
+  // usa la vista previa de Facturas).
+  const { data: margenProductos } = useQuery({
+    queryKey: ['margen-productos'],
+    queryFn: async () => {
+      const response = await getMargenProductos();
+      return response.data as MargenProducto[];
+    },
+  });
+
+  const margenMap = useMemo(() => {
+    const m = new Map<number, MargenProducto>();
+    (margenProductos ?? []).forEach((r) => m.set(r.producto_id, r));
+    return m;
+  }, [margenProductos]);
 
   // Mutación CORREGIDA: Maneja explícitamente el ID para el PUT
   const mutation = useMutation({
@@ -160,6 +176,19 @@ export default function Productos() {
     );
   }, [data, search]);
 
+  const IVA_RATE = 1.19;
+  const precioEditado = Number(form.watch('precio_por_kilo'));
+  const margenDelEditado = editingProducto ? margenMap.get(editingProducto.id) : undefined;
+  const costoRecienteEditado = margenDelEditado?.costo_reciente;
+  // precioEditado y costoRecienteEditado vienen CON IVA incluido; la ganancia
+  // real se calcula neta de IVA en ambos lados (ver backend/core/views.py).
+  const ganLiveUnit = (costoRecienteEditado != null && precioEditado > 0)
+    ? (precioEditado - costoRecienteEditado) / IVA_RATE
+    : null;
+  const ganLivePct = (ganLiveUnit != null && precioEditado > 0)
+    ? (ganLiveUnit / precioEditado) * 100
+    : null;
+
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="Error al cargar productos" />;
 
@@ -217,6 +246,29 @@ export default function Productos() {
                 <Input id="peso_minimo" type="number" step="0.001" {...form.register('peso_minimo')} />
               </div>
             </div>
+
+            {editingProducto && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                {costoRecienteEditado != null ? (
+                  <>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Costo actual con IVA /kg</span>
+                      <span className="font-mono">${Number(costoRecienteEditado).toLocaleString('es-CL')}</span>
+                    </div>
+                    <div className="flex justify-between font-medium mt-1">
+                      <span>Ganancia con este precio</span>
+                      <span className={`font-mono ${ganLiveUnit != null && ganLiveUnit < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {ganLiveUnit != null
+                          ? `$${Number(ganLiveUnit).toLocaleString('es-CL')} (${ganLivePct!.toFixed(1)}%)`
+                          : '—'}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-muted-foreground">Sin costo de compra registrado para este producto.</p>
+                )}
+              </div>
+            )}
 
             <div className="grid gap-2">
               <Label htmlFor="categoria">Categoría</Label>
@@ -312,6 +364,8 @@ export default function Productos() {
               <TableHead>Producto</TableHead>
               <TableHead>Categoría</TableHead>
               <TableHead className="text-right">Precio/Kg</TableHead>
+              <TableHead className="text-right">Costo Actual/Kg (IVA)</TableHead>
+              <TableHead className="text-right">Ganancia Actual</TableHead>
               <TableHead className="text-right">Peso Mín.</TableHead>
               <TableHead className="text-center">Estado</TableHead>
               <TableHead className="w-[80px] text-center">Acciones</TableHead>
@@ -319,7 +373,9 @@ export default function Productos() {
           </TableHeader>
           <TableBody>
             {filteredProducts.length > 0 ? (
-              filteredProducts.map((producto: Producto) => (
+              filteredProducts.map((producto: Producto) => {
+                const margen = margenMap.get(producto.id);
+                return (
                 <TableRow key={producto.id} className="hover:bg-muted/30">
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-2">
@@ -331,13 +387,26 @@ export default function Productos() {
                   <TableCell className="text-right font-mono">
                     ${Number(producto.precio_por_kilo).toLocaleString('es-CL')}
                   </TableCell>
+                  <TableCell className="text-right font-mono text-muted-foreground">
+                    {margen?.costo_reciente != null
+                      ? `$${Number(margen.costo_reciente).toLocaleString('es-CL')}`
+                      : '—'}
+                  </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {margen?.margen_unitario_actual != null ? (
+                      <span className={margen.margen_unitario_actual < 0 ? 'text-red-600' : 'text-green-600'}>
+                        ${Number(margen.margen_unitario_actual).toLocaleString('es-CL')}
+                        {margen.margen_pct_actual != null && ` (${margen.margen_pct_actual.toFixed(1)}%)`}
+                      </span>
+                    ) : '—'}
+                  </TableCell>
                   <TableCell className="text-right">
                     {producto.peso_minimo ?? 0} <span className="text-xs text-muted-foreground">kg</span>
                   </TableCell>
                   <TableCell className="text-center">
-                    <Badge 
+                    <Badge
                       variant={
-                        producto.estado === 'disponible' ? 'default' : 
+                        producto.estado === 'disponible' ? 'default' :
                         producto.estado === 'agotado' ? 'secondary' : 'destructive'
                       }
                       className="capitalize"
@@ -354,10 +423,11 @@ export default function Productos() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))
+                );
+              })
             ) : (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                   No se encontraron productos.
                 </TableCell>
               </TableRow>

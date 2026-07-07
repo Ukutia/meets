@@ -6,6 +6,7 @@ import {
   Percent,
   AlertTriangle,
   ShoppingCart,
+  Landmark,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -58,6 +59,9 @@ interface GananciaTotal {
   costo: number;
   kilos: number;
   margen_pct: number;
+  iva_debito: number;
+  iva_credito: number;
+  iva_a_pagar: number;
 }
 interface FilaProducto {
   producto_id: number;
@@ -73,6 +77,9 @@ interface FilaMes {
   ganancia: number;
   ventas: number;
   costo: number;
+  iva_debito: number;
+  iva_credito: number;
+  iva_a_pagar: number;
 }
 interface FilaVendedor {
   vendedor_id: number | null;
@@ -213,26 +220,33 @@ export default function Reportes() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Reportes y Ganancias</h1>
         <p className="text-muted-foreground">
-          Rentabilidad por corte, vendedor y mes. No incluye pedidos anulados.
+          Rentabilidad por corte, vendedor y mes, neta de IVA. No incluye pedidos anulados.
         </p>
       </div>
 
       {/* TARJETAS DE RESUMEN */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
         <KpiCard
           label="Ganancia Total"
           value={clp(total?.ganancia)}
-          sub="Margen bruto histórico"
+          sub="Venta sin IVA − costo sin IVA"
           icon={TrendingUp}
           accent={Number(total?.ganancia) >= 0 ? 'text-green-600' : 'text-destructive'}
         />
-        <KpiCard label="Ventas Totales" value={clp(total?.ventas)} sub="Ingresos por ventas" icon={DollarSign} />
+        <KpiCard label="Ventas Totales" value={clp(total?.ventas)} sub="Ingresos sin IVA" icon={DollarSign} />
         <KpiCard
           label="Margen Promedio"
           value={pct(total?.margen_pct)}
           sub="Ganancia / Ventas"
           icon={Percent}
           accent="text-blue-600"
+        />
+        <KpiCard
+          label={Number(total?.iva_a_pagar) >= 0 ? 'IVA a Pagar' : 'IVA a Favor'}
+          value={clp(Math.abs(Number(total?.iva_a_pagar ?? 0)))}
+          sub="Débito de venta − crédito de compra"
+          icon={Landmark}
+          accent={Number(total?.iva_a_pagar) >= 0 ? 'text-amber-600' : 'text-blue-600'}
         />
         <KpiCard
           label="Pérdidas (Mermas)"
@@ -255,7 +269,7 @@ export default function Reportes() {
         </TabsList>
 
         {/* --- MENSUAL --- */}
-        <TabsContent value="mensual">
+        <TabsContent value="mensual" className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Ganancia por Mes</CardTitle>
@@ -276,6 +290,53 @@ export default function Reportes() {
               ) : (
                 <p className="text-center text-muted-foreground py-10">Sin datos.</p>
               )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>IVA por Mes (Formulario 29)</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Débito fiscal (IVA recargado en las ventas) menos crédito fiscal (IVA pagado en las
+                compras). Si el neto es negativo, queda como crédito/remanente a favor del negocio.
+              </p>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Mes</TableHead>
+                    <TableHead className="text-right">Débito (venta)</TableHead>
+                    <TableHead className="text-right">Crédito (compra)</TableHead>
+                    <TableHead className="text-right">Neto</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(ganancias?.por_mes ?? []).map((r) => (
+                    <TableRow key={r.mes}>
+                      <TableCell className="font-medium">{r.mes}</TableCell>
+                      <TableCell className="text-right">{clp(r.iva_debito)}</TableCell>
+                      <TableCell className="text-right">{clp(r.iva_credito)}</TableCell>
+                      <TableCell
+                        className={`text-right font-bold ${
+                          Number(r.iva_a_pagar) >= 0 ? 'text-amber-600' : 'text-blue-600'
+                        }`}
+                      >
+                        {Number(r.iva_a_pagar) >= 0
+                          ? `${clp(r.iva_a_pagar)} a pagar`
+                          : `${clp(Math.abs(Number(r.iva_a_pagar)))} a favor`}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {(ganancias?.por_mes ?? []).length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                        Sin datos.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
             </CardContent>
           </Card>
         </TabsContent>
