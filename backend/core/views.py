@@ -690,17 +690,29 @@ class StockProductos(APIView):
                 cantidad_kilos=0
             ).aggregate(u=Sum('cantidad_unidades'))['u'] or 0
 
+            # 4. AJUSTES DE INVENTARIO (mermas, excesos y ajustes manuales)
+            # Ya vienen firmados desde CrearAjusteInventario: merma en negativo,
+            # exceso en positivo. Una merma es producto que desapareció de la
+            # repisa, así que descuenta del stock físico (y por lo tanto de los
+            # disponibles) y de los kilos.
+            ajustes = AjusteInventario.objects.filter(producto=producto).aggregate(
+                u=Sum('cantidad_unidades'),
+                k=Sum('cantidad'),
+            )
+            ajustes_u = ajustes['u'] or 0
+            ajustes_k = ajustes['k'] or 0
+
             # --- CÁLCULOS FINALES ---
-            
-            # Stock Físico: Lo que entró menos lo que ya salió físicamente
+
+            # Stock Físico: Lo que entró menos lo que ya salió físicamente, más ajustes
             # (Las reservas siguen en la repisa, por eso no se restan aquí)
-            stock_fisico = entradas_u - salidas_u
-            
+            stock_fisico = entradas_u - salidas_u + ajustes_u
+
             # Disponibles: Lo que hay físicamente menos lo que ya prometí (reservas)
             disponibles = stock_fisico - unidades_reservadas
-            
-            # Kilos: Entradas menos Salidas (Las reservas no restan kilos porque valen 0)
-            kilos_actuales = entradas_k - salidas_k
+
+            # Kilos: Entradas menos Salidas más ajustes (Las reservas no restan kilos porque valen 0)
+            kilos_actuales = entradas_k - salidas_k + ajustes_k
 
             stock_data.append({
                 'id': producto.id,
@@ -850,13 +862,19 @@ class StockProductosView(APIView):
             salidas_unidades = salidas.aggregate(total=Sum('cantidad_unidades'))['total'] or 0
 
             # 3. Calcular Ajustes (Mermas o Inventario Manual)
-            ajustes = AjusteInventario.objects.filter(
+            # Los ajustes ya vienen firmados: merma en negativo, exceso en positivo.
+            ajustes_agg = AjusteInventario.objects.filter(
                 producto=producto
-            ).aggregate(total=Sum('cantidad'))['total'] or 0
+            ).aggregate(
+                total_kilos=Sum('cantidad'),
+                total_unidades=Sum('cantidad_unidades'),
+            )
+            ajustes_kilos = ajustes_agg['total_kilos'] or 0
+            ajustes_unidades = ajustes_agg['total_unidades'] or 0
 
             # 4. Cálculo Final
-            stock_kilos = (entradas_kilos - salidas_kilos) + ajustes
-            stock_unidades = entradas_unidades - salidas_unidades
+            stock_kilos = (entradas_kilos - salidas_kilos) + ajustes_kilos
+            stock_unidades = (entradas_unidades - salidas_unidades) + ajustes_unidades
 
             stock_data.append({
                 'id': producto.id,
@@ -895,9 +913,11 @@ class CrearAjusteInventario(APIView):
     """
     Registra un ajuste de inventario (merma, exceso o ajuste manual).
 
-    El usuario siempre ingresa la cantidad como un valor positivo (la
-    magnitud del ajuste); el signo con el que se guarda en `cantidad` lo
-    decide el `tipo`:
+    El ajuste se registra en kilos (`cantidad`) y/o en unidades
+    (`cantidad_unidades`); basta con que uno de los dos sea distinto de cero.
+
+    El usuario siempre ingresa la magnitud como un valor positivo; el signo con
+    el que se guarda lo decide el `tipo`:
       - merma: siempre resta stock -> se guarda en negativo.
       - exceso: siempre suma stock -> se guarda en positivo.
       - ajuste: corrección manual libre -> se respeta el signo enviado.
@@ -909,10 +929,11 @@ class CrearAjusteInventario(APIView):
         producto_id = data.get('producto')
         tipo = data.get('tipo')
         cantidad = data.get('cantidad')
+        cantidad_unidades = data.get('cantidad_unidades')
         razon = data.get('razon', '')
 
-        if not producto_id or not tipo or cantidad in (None, ''):
-            return Response({'error': 'Faltan datos obligatorios (producto, tipo, cantidad)'}, status=status.HTTP_400_BAD_REQUEST)
+        if not producto_id or not tipo:
+            return Response({'error': 'Faltan datos obligatorios (producto, tipo)'}, status=status.HTTP_400_BAD_REQUEST)
 
         if tipo not in dict(AjusteInventario.TIPO_AJUSTE):
             return Response({'error': 'Tipo de ajuste inválido'}, status=status.HTTP_400_BAD_REQUEST)
@@ -923,21 +944,32 @@ class CrearAjusteInventario(APIView):
             return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            cantidad = Decimal(str(cantidad))
+            cantidad = Decimal(str(cantidad)) if cantidad not in (None, '') else Decimal('0')
         except Exception:
-            return Response({'error': 'Cantidad inválida'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Cantidad en kilos inválida'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if cantidad == 0:
-            return Response({'error': 'La cantidad no puede ser cero'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            cantidad_unidades = int(cantidad_unidades) if cantidad_unidades not in (None, '') else 0
+        except Exception:
+            return Response({'error': 'Cantidad de unidades inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if cantidad == 0 and cantidad_unidades == 0:
+            return Response(
+                {'error': 'Debes ingresar una cantidad en kilos o en unidades distinta de cero'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if tipo == 'merma':
             cantidad = -abs(cantidad)
+            cantidad_unidades = -abs(cantidad_unidades)
         elif tipo == 'exceso':
             cantidad = abs(cantidad)
+            cantidad_unidades = abs(cantidad_unidades)
 
         ajuste = AjusteInventario.objects.create(
             producto=producto,
             cantidad=cantidad,
+            cantidad_unidades=cantidad_unidades,
             tipo=tipo,
             razon=razon,
         )

@@ -205,6 +205,7 @@ export const createAjusteInventario = (data: {
   producto: number;
   tipo: 'merma' | 'exceso' | 'ajuste';
   cantidad: number;
+  cantidad_unidades: number;
   razon?: string;
 }) => api.post<AjusteInventario>('/inventario/ajustes/crear/', data);
 // Vendedores

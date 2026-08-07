@@ -1,6 +1,6 @@
 # Planes de Desarrollo — Meets
 
-11 planes organizados por área. Cada archivo detalla objetivo, contexto, funcionalidades requeridas, pasos y complejidad.
+12 planes organizados por área. Cada archivo detalla objetivo, contexto, funcionalidades requeridas, pasos y complejidad.
 
 > Nota: los Planes 01, 02 y 03 ya están implementados en el working tree (sin commitear al momento de escribir los Planes 04-10) — se dejan documentados como referencia histórica y porque los planes nuevos citan su código.
 
@@ -24,6 +24,7 @@ Cada plan tiene una columna **Estado** en las tablas de abajo: `⬜ Pendiente` o
 | 05 | [Dialog de Detalle de Costo y Ganancia por Pedido](05-pedidos-detalle-costo-ganancia.md) | Baja | ⬜ Pendiente |
 | 06 | [Combobox Solo-Nombre y Vendedor Correcto al Crear Pedido](06-pedidos-combobox-vendedor-cliente.md) | Media | ⬜ Pendiente |
 | 08 | [Crear Cliente Rápido desde el Wizard de Nuevo Pedido](08-pedidos-crear-cliente-rapido.md) | Baja-Media | ⬜ Pendiente |
+| 12 | [Notificación Push y Anulación Automática de Reservas Vencidas](12-pedidos-notificacion-anulacion-reserva.md) | Alta | ⬜ Pendiente |
 
 ## Facturas
 
@@ -73,6 +74,7 @@ Cada plan tiene una columna **Estado** en las tablas de abajo: `⬜ Pendiente` o
 | 09 | [Columna Vendedor en Salidas y Exportación a Excel](09-inventario-vendedor-excel.md) | Baja-Media | Ninguno específico | Sonnet | Integración de librería estándar sobre datos que el backend ya expone | ⬜ Pendiente |
 | 10 | [Marcar como Pagada](10-facturas-marcar-pagada.md) | Baja | `/impeccable` | Sonnet | Backend y frontend ya tienen casi todo listo, solo falta conectar la UI | ⬜ Pendiente |
 | 11 | [Historial/Auditoría de Cambios de Precio](11-productos-historial-precio.md) | Baja-Media | `/impeccable` | Sonnet | Modelo y endpoint nuevos pero acotados, UI reutiliza el patrón Dialog+Table ya existente | ✅ Completado |
+| 12 | [Notificación Push y Anulación Automática de Reservas Vencidas](12-pedidos-notificacion-anulacion-reserva.md) | Alta | Ninguno específico | Opus 4.8 | Infraestructura nueva de cron, Web Push y PWA que debe encajar con la reversión de stock ya existente | ⬜ Pendiente |
 
 ---
 
@@ -89,5 +91,6 @@ Cada plan tiene una columna **Estado** en las tablas de abajo: `⬜ Pendiente` o
 9. [**Plan 02** — Facturas: edición post-creación con guardas de stock](02-facturas-edicion.md) *(ya implementado)*
 10. [**Plan 03** — Reportes: ganancias, márgenes y estadísticas](03-reportes-ganancias.md) *(ya implementado)*
 11. [**Plan 11** — Productos: historial/auditoría de cambios de precio](11-productos-historial-precio.md) — sin dependencias, cierre rápido.
+12. [**Plan 12** — Pedidos: notificación push y anulación automática de reservas vencidas](12-pedidos-notificacion-anulacion-reserva.md) — infraestructura nueva (cron, Web Push, PWA), más lenta de cerrar que el resto, priorizar según cuánto duela hoy que las reservas vencidas no se limpien solas.
 
-> Los planes son mayormente independientes entre sí — pueden ejecutarse en paralelo si distintas personas los toman. Excepciones: el Plan 08 reutiliza el mismo formulario de cliente que toca el Plan 06 (revisar coherencia si ambos se implementan a la vez); y si el Plan 02 se implementa antes que el Plan 03, conviene que el endpoint de fluctuación de precios de 03 lea costos ya reconciliados (ver "Dependencias" en el Plan 03).
+> Los planes son mayormente independientes entre sí — pueden ejecutarse en paralelo si distintas personas los toman. Excepciones: el Plan 08 reutiliza el mismo formulario de cliente que toca el Plan 06 (revisar coherencia si ambos se implementan a la vez); si el Plan 02 se implementa antes que el Plan 03, conviene que el endpoint de fluctuación de precios de 03 lea costos ya reconciliados (ver "Dependencias" en el Plan 03); y el Plan 12 extrae a una función compartida la lógica de reversión de stock de `CancelarPedido` que el Plan 02 también referencia como patrón (ver "Contexto" del Plan 02) — revisar que ambos sigan alineados si se tocan en paralelo.

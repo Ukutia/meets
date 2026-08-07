@@ -76,7 +76,7 @@ class AjusteInventarioSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AjusteInventario
-        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'tipo', 'razon', 'fecha']
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'cantidad_unidades', 'tipo', 'razon', 'fecha']
 
 
 class DetallePedidoSerializer(serializers.ModelSerializer):

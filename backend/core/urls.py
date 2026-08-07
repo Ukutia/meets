@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView,StockProductosView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, CrearAjusteInventario, RentabilidadHistoricaView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, CrearAjusteInventario, RentabilidadHistoricaView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -23,7 +23,6 @@ urlpatterns = [
     path('proveedores/', ProveedorListView.as_view(), name='proveedores'), # Nueva ruta
     path('facturas/crear/', CrearFacturaEntrada.as_view(), name='crear_factura'),
     path('facturas/', FacturaListView.as_view(), name='facturas'),
-    path('stock/', StockProductosView.as_view(), name='ver_stock'),
     path('pedidos/<int:pk>/', PedidoDetailView.as_view(), name='pedido-detail'),
     path('inventario/detalle-pedidos/', DetallePedidosList.as_view(), name='detalle-pedidos-list'),
     path('inventario/detalle-facturas/', DetalleFacturasList.as_view(), name='detalle-facturas-list'),

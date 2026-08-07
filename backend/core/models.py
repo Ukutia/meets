@@ -141,14 +141,19 @@ class AjusteInventario(models.Model):
     cantidad = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        verbose_name="Cantidad ajustada (puede ser positiva o negativa)"
+        default=0,
+        verbose_name="Kilos ajustados (puede ser positiva o negativa)"
+    )
+    cantidad_unidades = models.IntegerField(
+        default=0,
+        verbose_name="Unidades ajustadas (puede ser positiva o negativa)"
     )
     tipo = models.CharField(max_length=20, choices=TIPO_AJUSTE, verbose_name="Tipo de ajuste")
     razon = models.TextField(blank=True, null=True, verbose_name="Razón del ajuste")
     fecha = models.DateField(auto_now_add=True, verbose_name="Fecha del ajuste")
 
     def __str__(self):
-        return f"Ajuste de {self.producto.nombre} - {self.cantidad} ({self.tipo})"
+        return f"Ajuste de {self.producto.nombre} - {self.cantidad} kg / {self.cantidad_unidades} un ({self.tipo})"
 
 
     

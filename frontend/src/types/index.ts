@@ -110,6 +110,7 @@ export interface AjusteInventario {
   producto: number;
   producto_nombre: string;
   cantidad: number;
+  cantidad_unidades: number;
   tipo: 'merma' | 'exceso' | 'ajuste';
   razon?: string | null;
   fecha: string;

@@ -75,6 +75,13 @@ export default function Pedidos() {
   const formatCurrency = (val: any) => 
     Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
 
+  const formatDate = (val?: string) => {
+    if (!val) return '';
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  };
+
   const FACTOR_IVA = 1.19;
 
   // total_venta viene CON IVA incluido (precio de boleta) y total_costo ya es
@@ -253,7 +260,10 @@ export default function Pedidos() {
                   <TableCell className="px-1 font-mono text-xs font-bold text-blue-600">#{pedido.id}</TableCell>
                   <TableCell className="px-2 py-3">
                     <div className="font-semibold text-sm line-clamp-1">{pedido.cliente.nombre}</div>
-                    <Badge className={`text-[9px] px-1 py-0 h-4 mt-0.5 border-none ${getStatusColor(pedido.estado)}`}>{pedido.estado}</Badge>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <Badge className={`text-[9px] px-1 py-0 h-4 border-none ${getStatusColor(pedido.estado)}`}>{pedido.estado}</Badge>
+                      <span className="text-[10px] text-slate-400 font-medium">{formatDate(pedido.fecha)}</span>
+                    </div>
                   </TableCell>
                   <TableCell className="px-2 text-right font-bold text-sm">{formatCurrency(pedido.total)}</TableCell>
                   <TableCell className="px-2" onClick={(e) => e.stopPropagation()}>
@@ -349,6 +359,9 @@ export default function Pedidos() {
           <DialogHeader className="p-4 border-b bg-slate-50/50">
             <DialogTitle className="flex items-center gap-2">
               Pedido <span className="text-blue-600">#{selectedPedido?.id}</span>
+              {selectedPedido?.fecha && (
+                <span className="text-xs font-normal text-slate-400">{formatDate(selectedPedido.fecha)}</span>
+              )}
             </DialogTitle>
           </DialogHeader>
 

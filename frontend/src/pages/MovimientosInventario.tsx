@@ -35,6 +35,7 @@ interface AjusteForm {
   producto: string;
   tipo: 'merma' | 'exceso' | 'ajuste';
   cantidad: string;
+  cantidad_unidades: string;
   razon: string;
 }
 
@@ -91,7 +92,7 @@ export default function MovimientosInventario() {
   }, [productosResponse]);
 
   const ajusteForm = useForm<AjusteForm>({
-    defaultValues: { producto: '', tipo: 'merma', cantidad: '', razon: '' },
+    defaultValues: { producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' },
   });
 
   const ajusteMutation = useMutation({
@@ -99,7 +100,8 @@ export default function MovimientosInventario() {
       createAjusteInventario({
         producto: Number(values.producto),
         tipo: values.tipo,
-        cantidad: Number(values.cantidad),
+        cantidad: Number(values.cantidad || 0),
+        cantidad_unidades: Number(values.cantidad_unidades || 0),
         razon: values.razon || undefined,
       }),
     onSuccess: () => {
@@ -107,7 +109,7 @@ export default function MovimientosInventario() {
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       toast({ title: 'Ajuste registrado', description: 'El movimiento de inventario se guardó con éxito.' });
       setAjusteDialogOpen(false);
-      ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', razon: '' });
+      ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' });
     },
     onError: (err: any) => {
       toast({
@@ -308,7 +310,8 @@ export default function MovimientosInventario() {
                     <TableHead>Fecha</TableHead>
                     <TableHead>Producto</TableHead>
                     <TableHead className="text-center">Tipo</TableHead>
-                    <TableHead className="text-right">Cantidad (Kg)</TableHead>
+                    <TableHead className="text-right">Kilos</TableHead>
+                    <TableHead className="text-right">Unidades</TableHead>
                     <TableHead>Razón</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -328,12 +331,15 @@ export default function MovimientosInventario() {
                       <TableCell className={`text-right font-mono font-medium ${Number(a.cantidad) < 0 ? 'text-destructive' : 'text-green-600'}`}>
                         {Number(a.cantidad) > 0 ? '+' : ''}{Number(a.cantidad).toFixed(2)} kg
                       </TableCell>
+                      <TableCell className={`text-right font-mono font-medium ${Number(a.cantidad_unidades) < 0 ? 'text-destructive' : Number(a.cantidad_unidades) > 0 ? 'text-green-600' : 'text-muted-foreground'}`}>
+                        {Number(a.cantidad_unidades) > 0 ? '+' : ''}{Number(a.cantidad_unidades || 0)} un
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{a.razon || '—'}</TableCell>
                     </TableRow>
                   ))}
                   {filteredAjustes.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
+                      <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
                         Sin mermas o ajustes registrados.
                       </TableCell>
                     </TableRow>
@@ -470,36 +476,47 @@ export default function MovimientosInventario() {
               </Select>
             </div>
 
+            <div className="grid gap-2">
+              <Label htmlFor="ajuste-tipo">Tipo</Label>
+              <Select
+                value={ajusteForm.watch('tipo')}
+                onValueChange={(v: any) => ajusteForm.setValue('tipo', v)}
+              >
+                <SelectTrigger id="ajuste-tipo"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="merma">Merma (pérdida)</SelectItem>
+                  <SelectItem value="exceso">Exceso (encontrado)</SelectItem>
+                  <SelectItem value="ajuste">Ajuste manual</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="ajuste-tipo">Tipo</Label>
-                <Select
-                  value={ajusteForm.watch('tipo')}
-                  onValueChange={(v: any) => ajusteForm.setValue('tipo', v)}
-                >
-                  <SelectTrigger id="ajuste-tipo"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="merma">Merma (pérdida)</SelectItem>
-                    <SelectItem value="exceso">Exceso (encontrado)</SelectItem>
-                    <SelectItem value="ajuste">Ajuste manual</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="ajuste-cantidad">Cantidad (Kg)</Label>
+                <Label htmlFor="ajuste-cantidad">Kilos</Label>
                 <Input
                   id="ajuste-cantidad"
                   type="number"
                   step="any"
                   placeholder="0.00"
-                  {...ajusteForm.register('cantidad', { required: true })}
+                  {...ajusteForm.register('cantidad')}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ajuste-unidades">Unidades</Label>
+                <Input
+                  id="ajuste-unidades"
+                  type="number"
+                  step="1"
+                  placeholder="0"
+                  {...ajusteForm.register('cantidad_unidades')}
                 />
               </div>
             </div>
             <p className="text-xs text-muted-foreground -mt-2">
               {ajusteForm.watch('tipo') === 'ajuste'
-                ? 'Se guarda con el signo ingresado (negativo resta stock, positivo suma).'
-                : 'Ingresa la cantidad como un valor positivo; el signo se ajusta automáticamente según el tipo.'}
+                ? 'Se guarda con el signo ingresado (negativo resta stock, positivo suma). Completa kilos, unidades o ambos.'
+                : 'Ingresa las cantidades como valores positivos; el signo se ajusta automáticamente según el tipo. Completa kilos, unidades o ambos.'}
             </p>
 
             <div className="grid gap-2">
@@ -515,7 +532,14 @@ export default function MovimientosInventario() {
               <Button type="button" variant="outline" onClick={() => setAjusteDialogOpen(false)}>
                 Cancelar
               </Button>
-              <Button type="submit" disabled={ajusteMutation.isPending || !ajusteForm.watch('producto')}>
+              <Button
+                type="submit"
+                disabled={
+                  ajusteMutation.isPending ||
+                  !ajusteForm.watch('producto') ||
+                  (!Number(ajusteForm.watch('cantidad') || 0) && !Number(ajusteForm.watch('cantidad_unidades') || 0))
+                }
+              >
                 {ajusteMutation.isPending ? 'Guardando...' : 'Registrar'}
               </Button>
             </DialogFooter>
