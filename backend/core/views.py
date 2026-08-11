@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -142,6 +142,11 @@ class CrearPedido(APIView):
                         total_venta = kilos * producto.precio_por_kilo
                         total_pedido += total_venta
                         pedido.estado = "Preparado"
+                        # El pedido viene pesado: los kilos REALES salen ahora
+                        # del ledger. Si viene sin pesar (Reservado) no se
+                        # descuenta nada todavia — lo hara ActualizarKilosPedido
+                        # cuando se registre la bascula.
+                        descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
 
                     detalle_pedido = DetallePedido.objects.create(
                         pedido=pedido,
@@ -204,9 +209,19 @@ class PedidoDetailView(APIView):
                     detalle_obj = DetallePedido.objects.get(pedido=pedido, producto_id=prod_id)
 
                     unidades_anteriores = int(detalle_obj.cantidad_unidades or 0)
+                    kilos_anteriores = Decimal(str(detalle_obj.cantidad_kilos or 0))
 
                     # Actualizamos valores
                     detalle_obj.cantidad_kilos = Decimal(str(det.get('cantidad_kilos', 0)))
+
+                    # Los kilos del ledger siguen al peso real de la linea: solo
+                    # se mueve la diferencia contra lo que ya estaba registrado.
+                    delta_kilos = detalle_obj.cantidad_kilos - kilos_anteriores
+                    if delta_kilos > 0:
+                        descontar_kilos_fifo(
+                            detalle_obj.producto, delta_kilos, permitir_faltante=True)
+                    elif delta_kilos < 0:
+                        restituir_kilos_fifo(detalle_obj.producto, -delta_kilos)
                     unidades_raw = det.get('cantidad_unidades', 0)
                     nuevas_unidades = int(float(str(unidades_raw)))
                     detalle_obj.cantidad_unidades = nuevas_unidades
@@ -263,6 +278,14 @@ class PedidoDetailView(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class ActualizarKilosPedido(APIView):
+    """Registra el peso real (bascula) de un pedido, tipicamente uno Reservado.
+
+    Ademas de guardar los kilos en la linea, MUEVE EL LEDGER: los kilos del
+    stock bajan solo aca y en CrearPedido (cuando el pedido ya viene pesado),
+    siempre con peso real. Antes este endpoint solo escribia
+    detalle.cantidad_kilos y nunca tocaba EntradaProducto, asi que la carne
+    salia de la camara y el dashboard seguia mostrando los mismos kilos.
+    """
     permission_classes = [IsAuthenticated]
     def post(self, request, pedido_id, *args, **kwargs):
         try:
@@ -275,8 +298,21 @@ class ActualizarKilosPedido(APIView):
                     cantidad_kilos = detalle_data.get('cantidad_kilos')
 
                     detalle = DetallePedido.objects.get(pedido=pedido, producto_id=producto_id)
+
+                    kilos_anteriores = Decimal(str(detalle.cantidad_kilos or 0))
+                    kilos_nuevos = Decimal(str(cantidad_kilos or 0))
+                    delta = kilos_nuevos - kilos_anteriores
+
                     detalle.cantidad_kilos = cantidad_kilos
                     detalle.save()
+
+                    # Solo la DIFERENCIA toca el stock, para que repesar una
+                    # linea no descuente dos veces. Un delta negativo (correccion
+                    # a la baja) devuelve los kilos que nunca salieron.
+                    if delta > 0:
+                        descontar_kilos_fifo(detalle.producto, delta, permitir_faltante=True)
+                    elif delta < 0:
+                        restituir_kilos_fifo(detalle.producto, -delta)
 
                     total_pedido += detalle.total_venta
                 pedido.total = total_pedido
@@ -940,16 +976,17 @@ class CrearAjusteInventario(APIView):
     Antes esta vista solo dejaba el registro contable en AjusteInventario y el
     stock no se movia: se registraba una merma y el dashboard seguia igual.
 
-    Criterio cuando el ajuste trae kilos Y unidades: mandan las UNIDADES. Se
-    consumen esas unidades por FIFO y con ellas se van sus kilos reales de lote
-    (peso promedio del lote), que es la misma mecanica de una venta. Los kilos
-    escritos en el formulario quedan como el valor declarado del ajuste y los
-    usa la valorizacion de perdidas (ReportePerdidasView), pero no se descuentan
-    aparte: hacerlo restaria dos veces el mismo producto.
+    Kilos y unidades se descuentan por separado, porque en el ledger son dos
+    magnitudes independientes: las unidades bajan por FIFO (consumir_fifo) y los
+    kilos por su propio FIFO (descontar_kilos_fifo). Los dos valores que escribe
+    el usuario son cantidades REALES declaradas, asi que ambos se aplican tal
+    cual — no se estima uno a partir del otro.
 
-    Si el ajuste trae SOLO kilos (unidades = 0) se descuentan esos kilos del
-    ledger sin tocar unidades — es la merma de peso, donde la pieza sigue en la
-    repisa pero pesa menos.
+    Eso permite las tres formas de merma:
+      - kilos y unidades: se fue una pieza entera y se sabe cuanto pesaba.
+      - solo unidades: desaparecio una pieza sin pesar.
+      - solo kilos: merma de peso (goteo, recorte); la pieza sigue en la repisa
+        pero pesa menos.
     """
     permission_classes = [IsAuthenticated]
 
@@ -1009,11 +1046,8 @@ class CrearAjusteInventario(APIView):
                 # ledger; los positivos (exceso) siguen siendo solo registro —
                 # ver nota al final del docstring de la clase.
                 if cantidad_unidades < 0:
-                    # Las unidades mandan: se consumen por FIFO y arrastran los
-                    # kilos reales de cada lote, igual que una venta.
                     consumir_fifo(producto, abs(cantidad_unidades))
-                elif cantidad < 0:
-                    # Merma solo de peso: bajan los kilos, las unidades quedan.
+                if cantidad < 0:
                     descontar_kilos_fifo(producto, abs(cantidad))
 
         except ValidationError as e:
@@ -1200,19 +1234,27 @@ class ReportePerdidasView(APIView):
 
     CRITERIO DE VALORIZACIÓN (decisión de negocio):
     AjusteInventario no tiene costo unitario propio, por lo que cada merma se
-    valoriza con el ÚLTIMO costo_por_kilo conocido de EntradaProducto para ese
-    producto (el costo de reposición más reciente), AJUSTADO por IVA_RATE ya
-    que ese costo se ingresa sin IVA y el costo real de reponer el producto lo
-    incluye. Si el producto nunca tuvo una entrada, la merma se valoriza en 0.
-    La cantidad de la merma se toma en valor absoluto (las mermas suelen
-    registrarse como cantidad negativa).
+    valoriza con el costo_por_kilo de la ÚLTIMA FACTURA de compra del producto
+    (el costo de reposición más reciente), AJUSTADO por IVA_RATE ya que ese
+    costo se ingresa sin IVA y el costo real de reponer el producto lo incluye.
+
+    El costo sale de DetalleFactura, NO de EntradaProducto: EntradaProducto es
+    un ledger de stock que se decrementa y se BORRA por FIFO cuando un lote se
+    consume entero (ver consumir_fifo en utils.py), asi que un producto sin
+    lotes vivos no tiene ninguna entrada y sus mermas se valorizaban en 0
+    aunque tuviera facturas de compra. DetalleFactura es el historico completo
+    de compras y nunca se borra.
+
+    Si el producto nunca se compro, la merma se valoriza en 0. La cantidad de
+    la merma se toma en valor absoluto (las mermas suelen registrarse como
+    cantidad negativa).
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ultimo_costo_sq = EntradaProducto.objects.filter(
+        ultimo_costo_sq = DetalleFactura.objects.filter(
             producto=OuterRef('producto')
-        ).order_by('-fecha_entrada').values('costo_por_kilo')[:1]
+        ).order_by('-factura__fecha', '-id').values('costo_por_kilo')[:1]
 
         mermas = (
             AjusteInventario.objects.filter(tipo='merma')
