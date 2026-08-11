@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework import settings
 from django.conf import settings
 # Create your models here.
@@ -353,7 +354,15 @@ class EntradaProducto(models.Model):
     cantidad_kilos = models.DecimalField(max_digits=10, decimal_places=2)
     cantidad_unidades = models.IntegerField(default=0)
     costo_por_kilo = models.DecimalField(max_digits=10, decimal_places=2)
-    fecha_entrada = models.DateTimeField(auto_now_add=True)
+    # OJO: NO usar auto_now_add. Este campo es la clave de orden del FIFO
+    # (consumir_fifo ordena por fecha_entrada), y auto_now_add IGNORA en el
+    # INSERT cualquier fecha que se le pase. Eso hacia que CancelarPedido
+    # calculara una fecha retrodatada para devolver el stock a su posicion FIFO
+    # original (ver views.py) y Django la descartara en silencio: las
+    # devoluciones quedaban como los lotes MAS NUEVOS y se consumian al final.
+    # Con default=timezone.now se mantiene el mismo comportamiento al crear sin
+    # fecha, pero la fecha explicita si se respeta.
+    fecha_entrada = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         return f"{self.producto.nombre} - {self.cantidad_kilos} kg - {self.costo_por_kilo} por kilo"

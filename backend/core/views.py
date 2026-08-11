@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -578,45 +578,73 @@ class CancelarPedido(APIView):
                     # Buscamos las relaciones en la tabla intermedia
                     relaciones = FacturaDetallePedido.objects.filter(detallepedido=detalle)
 
+                    # TOPE DE DEVOLUCION: nunca devolver mas unidades de las que la
+                    # linea de venta declara. Antes se devolvia la suma de
+                    # relacion.cantidad_unidades sin tope, y cuando los links de
+                    # FacturaDetallePedido no cuadran con el DetallePedido (pasa en
+                    # pedidos editados: ver pedidos 12 y 17, con cantidad_unidades=0
+                    # pero links por 2 y 1 unidades) la anulacion INVENTABA stock que
+                    # nunca habia salido, inflando el dashboard.
+                    #
+                    # El tope tambien es correcto en el sentido contrario: si los
+                    # links suman MENOS que la venta, solo esos fueron descontados
+                    # del ledger, asi que solo esos se devuelven.
+                    unidades_vendidas = int(detalle.cantidad_unidades or 0)
+                    restante = unidades_vendidas
+
                     for relacion in relaciones:
+                        if restante <= 0:
+                            break
+
                         factura = relacion.factura
-                        
+                        unidades_a_devolver = min(int(relacion.cantidad_unidades or 0), restante)
+                        if unidades_a_devolver <= 0:
+                            continue
+
                         # BUSCAR EL COSTO ORIGINAL DE ESTE PRODUCTO EN ESTA FACTURA
                         try:
                             detalle_factura_original = DetalleFactura.objects.get(
-                                factura=factura, 
+                                factura=factura,
                                 producto=detalle.producto
                             )
                             costo_unitario_compra = detalle_factura_original.costo_por_kilo
                         except DetalleFactura.DoesNotExist:
-                            # Por si acaso no se encuentra, usamos el costo que guardamos en la relación
-                            costo_unitario_compra = relacion.costo_por_kilo 
+                            # FacturaDetallePedido NO tiene costo_por_kilo (ver models.py):
+                            # el fallback anterior reventaba con AttributeError. Si la
+                            # factura no tiene linea de compra de este producto, no hay
+                            # costo que recuperar y devolvemos el lote a costo 0 antes
+                            # que perder el stock.
+                            costo_unitario_compra = Decimal('0')
 
                         # Buscar fecha para mantener FIFO
                         entrada_ref = EntradaProducto.objects.filter(
                             producto=detalle.producto
                         ).order_by('fecha_entrada').first()
-                        
+
                         if entrada_ref:
                             nueva_fecha = entrada_ref.fecha_entrada - timezone.timedelta(seconds=1)
                         else:
                             nueva_fecha = timezone.now()
 
-                        # Calcular kilos proporcionales de forma segura
-                        if detalle.cantidad_unidades and detalle.cantidad_unidades > 0:
-                            kilos_a_devolver = (detalle.cantidad_kilos / detalle.cantidad_unidades) * relacion.cantidad_unidades
+                        # Kilos proporcionales a las unidades que si devolvemos.
+                        if unidades_vendidas > 0:
+                            kilos_a_devolver = (
+                                Decimal(str(detalle.cantidad_kilos or 0)) / unidades_vendidas
+                            ) * unidades_a_devolver
                         else:
-                            # Si no hay unidades en el detalle del pedido, devolvemos los kilos de la relación directamente
-                            kilos_a_devolver = relacion.cantidad_kilos if hasattr(relacion, 'cantidad_kilos') else 0
+                            kilos_a_devolver = Decimal('0')
+
                         # Crear la entrada de retorno
                         EntradaProducto.objects.create(
                             factura=factura,
                             producto=detalle.producto,
                             cantidad_kilos=kilos_a_devolver,
-                            cantidad_unidades=relacion.cantidad_unidades,
+                            cantidad_unidades=unidades_a_devolver,
                             costo_por_kilo=costo_unitario_compra, # <--- COSTO RECUPERADO
                             fecha_entrada=nueva_fecha
                         )
+
+                        restante -= unidades_a_devolver
 
                 # 2. IMPORTANTE: NO borres los detalles. 
                 # Si los borras, pierdes el historial de qué se vendió. 
@@ -663,65 +691,42 @@ class StockProductos(APIView):
         stock_data = []
 
         for producto in productos:
-            # 1. ENTRADAS (Totales)
-            entradas = DetalleFactura.objects.filter(producto=producto).aggregate(
-                u=Sum('cantidad_unidades'), 
-                k=Sum('cantidad_kilos')
-            )
-            entradas_u = entradas['u'] or 0
-            entradas_k = entradas['k'] or 0
-
-            # 2. FILTRAR PEDIDOS VÁLIDOS (No anulados)
-            pedidos_validos = DetallePedido.objects.filter(
-                producto=producto
-            ).exclude(pedido__estado="Anulado")
-
-            # 3. DIFERENCIAR SALIDAS REALES VS RESERVAS
-            # Salidas Reales: Tienen kilos (ya se pesaron/despacharon)
-            salidas_reales = pedidos_validos.filter(cantidad_kilos__gt=0).aggregate(
+            # DISPONIBLES: se calcula EXACTAMENTE igual que el chequeo de stock
+            # de CrearPedido (Sum de EntradaProducto), que es el ledger real que
+            # se descuenta con cada venta/reserva (consumir_fifo) y se restaura
+            # al anular un pedido (CancelarPedido). Antes esto se recalculaba
+            # de forma independiente a partir de DetalleFactura/DetallePedido/
+            # AjusteInventario, y con el tiempo esa cuenta paralela se
+            # desincronizaba del ledger real: la pantalla mostraba stock que
+            # CrearPedido igual rechazaba por "No hay suficiente stock".
+            # Usar la misma fuente que el chequeo real hace que ambos numeros
+            # NUNCA puedan divergir.
+            reales = EntradaProducto.objects.filter(producto=producto).aggregate(
                 u=Sum('cantidad_unidades'),
-                k=Sum('cantidad_kilos')
+                k=Sum('cantidad_kilos'),
             )
-            salidas_u = salidas_reales['u'] or 0
-            salidas_k = salidas_reales['k'] or 0
+            disponibles = reales['u'] or 0
+            kilos_actuales = reales['k'] or 0
 
-            # Reservas: No tienen kilos (están en bodega esperando)
-            unidades_reservadas = pedidos_validos.filter(
-                cantidad_kilos=0
-            ).aggregate(u=Sum('cantidad_unidades'))['u'] or 0
+            # Reservas: pedidos no anulados sin kilos (ya descontaron unidades
+            # del ledger real, pero siguen fisicamente en bodega esperando).
+            unidades_reservadas = DetallePedido.objects.filter(
+                producto=producto, cantidad_kilos=0
+            ).exclude(pedido__estado="Anulado").aggregate(
+                u=Sum('cantidad_unidades')
+            )['u'] or 0
 
-            # 4. AJUSTES DE INVENTARIO (mermas, excesos y ajustes manuales)
-            # Ya vienen firmados desde CrearAjusteInventario: merma en negativo,
-            # exceso en positivo. Una merma es producto que desapareció de la
-            # repisa, así que descuenta del stock físico (y por lo tanto de los
-            # disponibles) y de los kilos.
-            ajustes = AjusteInventario.objects.filter(producto=producto).aggregate(
-                u=Sum('cantidad_unidades'),
-                k=Sum('cantidad'),
-            )
-            ajustes_u = ajustes['u'] or 0
-            ajustes_k = ajustes['k'] or 0
-
-            # --- CÁLCULOS FINALES ---
-
-            # Stock Físico: Lo que entró menos lo que ya salió físicamente, más ajustes
-            # (Las reservas siguen en la repisa, por eso no se restan aquí)
-            stock_fisico = entradas_u - salidas_u + ajustes_u
-
-            # Disponibles: Lo que hay físicamente menos lo que ya prometí (reservas)
-            disponibles = stock_fisico - unidades_reservadas
-
-            # Kilos: Entradas menos Salidas más ajustes (Las reservas no restan kilos porque valen 0)
-            kilos_actuales = entradas_k - salidas_k + ajustes_k
+            # Stock físico = disponibles + lo reservado (que sigue en la repisa).
+            stock_fisico = disponibles + unidades_reservadas
 
             stock_data.append({
                 'id': producto.id,
                 'producto': producto.nombre,
                 'precio_por_kilo': producto.precio_por_kilo,
-                'disponibles': disponibles, # Debería dar 6
+                'disponibles': disponibles,
                 'estado': producto.estado,
-                'stock': stock_fisico,       # Debería dar 17
-                'reservas': unidades_reservadas, # Debería dar 11
+                'stock': stock_fisico,
+                'reservas': unidades_reservadas,
                 'kilos_actuales': round(kilos_actuales, 2)
             })
 
@@ -780,9 +785,15 @@ class DetalleFacturasList(APIView):
 class DetallePedidosList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
+        # Excluimos los pedidos Anulados: al anular, CancelarPedido devuelve las
+        # unidades al ledger (EntradaProducto) pero a proposito NO borra el
+        # DetallePedido (se conserva el historial de que se vendio). Si esta
+        # lista los siguiera devolviendo, la pantalla de Movimientos y su export
+        # a Excel restarian una salida que el stock ya revirtio, y la cuenta
+        # manual "entradas - salidas" nunca cuadraria con el dashboard.
         detalles = DetallePedido.objects.select_related(
             'pedido__cliente', 'pedido__vendedor', 'producto'
-        ).prefetch_related('facturas').all()
+        ).prefetch_related('facturas').exclude(pedido__estado="Anulado")
         serializer = DetallePedidoSerializer(detalles, many=True)
         return Response(serializer.data)
 
@@ -921,6 +932,24 @@ class CrearAjusteInventario(APIView):
       - merma: siempre resta stock -> se guarda en negativo.
       - exceso: siempre suma stock -> se guarda en positivo.
       - ajuste: corrección manual libre -> se respeta el signo enviado.
+
+    EFECTO SOBRE EL STOCK
+    Un ajuste NEGATIVO (merma, o ajuste manual con signo negativo) descuenta de
+    verdad el ledger `EntradaProducto`, que es la unica fuente del stock que
+    muestra el dashboard (StockProductos) y contra la que valida CrearPedido.
+    Antes esta vista solo dejaba el registro contable en AjusteInventario y el
+    stock no se movia: se registraba una merma y el dashboard seguia igual.
+
+    Criterio cuando el ajuste trae kilos Y unidades: mandan las UNIDADES. Se
+    consumen esas unidades por FIFO y con ellas se van sus kilos reales de lote
+    (peso promedio del lote), que es la misma mecanica de una venta. Los kilos
+    escritos en el formulario quedan como el valor declarado del ajuste y los
+    usa la valorizacion de perdidas (ReportePerdidasView), pero no se descuentan
+    aparte: hacerlo restaria dos veces el mismo producto.
+
+    Si el ajuste trae SOLO kilos (unidades = 0) se descuentan esos kilos del
+    ledger sin tocar unidades — es la merma de peso, donde la pieza sigue en la
+    repisa pero pesa menos.
     """
     permission_classes = [IsAuthenticated]
 
@@ -966,13 +995,32 @@ class CrearAjusteInventario(APIView):
             cantidad = abs(cantidad)
             cantidad_unidades = abs(cantidad_unidades)
 
-        ajuste = AjusteInventario.objects.create(
-            producto=producto,
-            cantidad=cantidad,
-            cantidad_unidades=cantidad_unidades,
-            tipo=tipo,
-            razon=razon,
-        )
+        try:
+            with transaction.atomic():
+                ajuste = AjusteInventario.objects.create(
+                    producto=producto,
+                    cantidad=cantidad,
+                    cantidad_unidades=cantidad_unidades,
+                    tipo=tipo,
+                    razon=razon,
+                )
+
+                # Impacto real en el stock. Solo los ajustes negativos mueven el
+                # ledger; los positivos (exceso) siguen siendo solo registro —
+                # ver nota al final del docstring de la clase.
+                if cantidad_unidades < 0:
+                    # Las unidades mandan: se consumen por FIFO y arrastran los
+                    # kilos reales de cada lote, igual que una venta.
+                    consumir_fifo(producto, abs(cantidad_unidades))
+                elif cantidad < 0:
+                    # Merma solo de peso: bajan los kilos, las unidades quedan.
+                    descontar_kilos_fifo(producto, abs(cantidad))
+
+        except ValidationError as e:
+            detail = e.detail if hasattr(e, 'detail') else str(e)
+            mensaje = detail[0] if isinstance(detail, list) and detail else detail
+            return Response({'error': str(mensaje)}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(AjusteInventarioSerializer(ajuste).data, status=status.HTTP_201_CREATED)
 
 

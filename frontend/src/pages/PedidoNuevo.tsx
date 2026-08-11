@@ -35,6 +35,7 @@ interface DetalleProducto {
   producto_id: number;
   producto_nombre: string;
   kilos: number;
+  kilosTexto: string;
   unidades: number;
   precio_unitario: number;
   stock_disponible: number;
@@ -136,6 +137,7 @@ const agregarProducto = () => {
         producto_id: producto.id,
         producto_nombre: producto.nombre,
         kilos: 0, // Empezamos en 0 para obligar a pesar
+        kilosTexto: '',
         unidades: stockDisponible > 0 ? 1 : 0,
         precio_unitario: precio,
         stock_disponible: stockDisponible,

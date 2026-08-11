@@ -96,6 +96,47 @@ def consumir_fifo(producto, unidades_a_consumir):
     return costo_total, kilos_consumidos, facturas_usadas, facturas_cantidades
 
 
+def descontar_kilos_fifo(producto, kilos_a_descontar):
+    """Descuenta SOLO kilos de ``EntradaProducto`` (FIFO por fecha_entrada) sin
+    tocar las unidades.
+
+    Se usa para mermas declaradas unicamente en kilos (merma de peso: goteo,
+    recorte de grasa, deshidratado). En esos casos la pieza sigue en la repisa
+    — las unidades no cambian — pero pesa menos, asi que el lote no se borra
+    aunque llegue a 0 kilos: borrarlo eliminaria unidades que si existen.
+
+    Devuelve los kilos efectivamente descontados. Lanza ValidationError si el
+    producto no tiene kilos suficientes en el ledger.
+    """
+    kilos_a_descontar = Decimal(str(kilos_a_descontar))
+    if kilos_a_descontar <= 0:
+        return Decimal('0.00')
+
+    entradas = list(
+        EntradaProducto.objects.filter(producto=producto).order_by('fecha_entrada')
+    )
+    disponibles = sum((e.cantidad_kilos for e in entradas), Decimal('0.00'))
+    if disponibles < kilos_a_descontar:
+        raise ValidationError(
+            f"No hay kilos suficientes de '{producto.nombre}' para descontar la "
+            f"merma: hay {disponibles} kg en stock y se intentan descontar "
+            f"{kilos_a_descontar} kg"
+        )
+
+    restante = kilos_a_descontar
+    for entrada in entradas:
+        if restante <= 0:
+            break
+        if entrada.cantidad_kilos <= 0:
+            continue
+        tomados = min(entrada.cantidad_kilos, restante)
+        entrada.cantidad_kilos -= tomados
+        restante -= tomados
+        entrada.save()
+
+    return kilos_a_descontar
+
+
 def estado_consumo_detalle(detalle):
     """Para una línea de factura (``DetalleFactura``) determina cuánto de su
     stock (``EntradaProducto``) sigue vivo frente a lo originalmente registrado

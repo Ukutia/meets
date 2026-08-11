@@ -238,6 +238,9 @@ export default function Pedidos() {
               <TableHead className="w-8 px-2"></TableHead>
               <TableHead className="w-12 px-1">N°</TableHead>
               <TableHead className="px-2">Cliente</TableHead>
+              <TableHead className="px-2 hidden lg:table-cell">Vendedor</TableHead>
+              <TableHead className="px-2 hidden lg:table-cell">Estado</TableHead>
+              <TableHead className="px-2 hidden lg:table-cell">Fecha</TableHead>
               <TableHead className="text-right px-2">Total</TableHead>
               <TableHead className="w-10 px-2"></TableHead>
             </TableRow>
@@ -260,11 +263,16 @@ export default function Pedidos() {
                   <TableCell className="px-1 font-mono text-xs font-bold text-blue-600">#{pedido.id}</TableCell>
                   <TableCell className="px-2 py-3">
                     <div className="font-semibold text-sm line-clamp-1">{pedido.cliente.nombre}</div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className="flex items-center gap-1.5 mt-0.5 lg:hidden">
                       <Badge className={`text-[9px] px-1 py-0 h-4 border-none ${getStatusColor(pedido.estado)}`}>{pedido.estado}</Badge>
                       <span className="text-[10px] text-slate-400 font-medium">{formatDate(pedido.fecha)}</span>
                     </div>
                   </TableCell>
+                  <TableCell className="px-2 hidden lg:table-cell text-sm text-slate-600">{pedido.vendedor?.nombre ?? '—'}</TableCell>
+                  <TableCell className="px-2 hidden lg:table-cell">
+                    <Badge className={`text-[10px] px-2 py-0.5 h-5 border-none ${getStatusColor(pedido.estado)}`}>{pedido.estado}</Badge>
+                  </TableCell>
+                  <TableCell className="px-2 hidden lg:table-cell text-sm text-slate-500">{formatDate(pedido.fecha)}</TableCell>
                   <TableCell className="px-2 text-right font-bold text-sm">{formatCurrency(pedido.total)}</TableCell>
                   <TableCell className="px-2" onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
@@ -308,8 +316,8 @@ export default function Pedidos() {
 
                 {expandedId === pedido.id && (
                   <TableRow className="bg-slate-50/80">
-                    <TableCell colSpan={5} className="p-2">
-                      <div className="grid grid-cols-1 gap-1.5 w-full">
+                    <TableCell colSpan={8} className="p-2">
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-1.5 w-full">
                         {pedido.detalles.map((det, idx) => (
                           <div key={idx} className="flex justify-between items-center p-2.5 bg-white rounded-lg border border-slate-200 shadow-xs mx-1">
                             <div className="flex flex-col">
