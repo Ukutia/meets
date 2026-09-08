@@ -33,8 +33,12 @@ interface ClienteForm {
 }
 
 export const formatSimplePhone = (value: string) => {
-  const digits = value.replace(/\D/g, '');
+  let digits = value.replace(/\D/g, '');
   if (!digits) return '';
+  // Si viene con código de país (+56), lo quitamos para no perder dígitos del número.
+  if (digits.startsWith('56') && digits.length > 9) {
+    digits = digits.substring(2);
+  }
   let formatted = '9';
   const rest = digits.startsWith('9') ? digits.substring(1) : digits;
   if (rest.length > 0) formatted += ' ' + rest.substring(0, 4);
