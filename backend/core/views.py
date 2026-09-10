@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, revertir_stock_detalle
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -208,6 +208,12 @@ class PedidoDetailView(APIView):
 
                     detalle_obj = DetallePedido.objects.get(pedido=pedido, producto_id=prod_id)
 
+                    # Una línea Cancelada ya devolvió su stock/costo al ledger
+                    # (ver CancelarProductoPedido) y no participa del total del
+                    # pedido: no se toca su stock ni se re-incluye su venta.
+                    if detalle_obj.estado == "Cancelado":
+                        continue
+
                     unidades_anteriores = int(detalle_obj.cantidad_unidades or 0)
                     kilos_anteriores = Decimal(str(detalle_obj.cantidad_kilos or 0))
 
@@ -298,6 +304,11 @@ class ActualizarKilosPedido(APIView):
                     cantidad_kilos = detalle_data.get('cantidad_kilos')
 
                     detalle = DetallePedido.objects.get(pedido=pedido, producto_id=producto_id)
+
+                    # Una línea Cancelada ya devolvió su stock al ledger y no
+                    # participa del total del pedido: no se le registra pesaje.
+                    if detalle.estado == "Cancelado":
+                        continue
 
                     kilos_anteriores = Decimal(str(detalle.cantidad_kilos or 0))
                     kilos_nuevos = Decimal(str(cantidad_kilos or 0))
@@ -492,6 +503,8 @@ class UpdateFacturaEntrada(APIView):
                             f"unidad(es) vendida(s); la cantidad no puede ser menor a ese valor."
                         )
 
+                    kilos_originales = detalle.cantidad_kilos
+
                     # Actualizar la línea histórica (DetalleFactura).
                     detalle.cantidad_kilos = nuevos_kilos
                     detalle.cantidad_unidades = nuevas_unidades
@@ -500,7 +513,9 @@ class UpdateFacturaEntrada(APIView):
                     detalle.save()
 
                     # Reconciliar el stock vivo (EntradaProducto) con lo restante.
-                    self._reconciliar_entrada(detalle, consumidas, nuevos_kilos, nuevas_unidades, nuevo_costo)
+                    self._reconciliar_entrada(
+                        detalle, consumidas, kilos_originales, nuevos_kilos, nuevas_unidades, nuevo_costo
+                    )
 
                 # Recalcular totales igual que en creación (subtotal + IVA 19%).
                 subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
@@ -526,11 +541,21 @@ class UpdateFacturaEntrada(APIView):
             print(f"DEBUG ERROR (UpdateFacturaEntrada): {str(e)}")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-    def _reconciliar_entrada(self, detalle, consumidas, nuevos_kilos, nuevas_unidades, nuevo_costo):
+    def _reconciliar_entrada(self, detalle, consumidas, kilos_originales, nuevos_kilos, nuevas_unidades, nuevo_costo):
         """Ajusta el/los EntradaProducto vivos del producto+factura para que
         reflejen la nueva cantidad menos lo ya consumido, al nuevo costo. Se
         actualiza in-place la fila más antigua (preservando su posición FIFO) y
-        se consolidan las demás."""
+        se consolidan las demás.
+
+        Los kilos vivos NO se recalculan como "peso promedio x unidades
+        restantes": ese promedio ignora que los kilos reales solo bajan
+        cuando se pesa una venta (ver descontar_kilos_fifo en utils.py), asi
+        que unidades reservadas y no pesadas todavia pueden dejar mas o menos
+        kilos vivos que el promedio del lote. En vez de eso, se parte de los
+        kilos vivos actuales (el valor real) y se les aplica solo el delta de
+        la edicion (nuevos_kilos - kilos_originales), que es lo unico que de
+        verdad cambio en la factura.
+        """
         entradas = list(
             EntradaProducto.objects.filter(
                 factura=detalle.factura_id, producto=detalle.producto_id
@@ -541,11 +566,11 @@ class UpdateFacturaEntrada(APIView):
         if unidades_restantes < 0:
             unidades_restantes = 0
 
-        if nuevas_unidades > 0:
-            kilos_restantes = (nuevos_kilos / Decimal(nuevas_unidades)) * Decimal(unidades_restantes)
-        else:
-            # Línea sin unidades (sólo kilos): el stock restante son los kilos directos.
-            kilos_restantes = nuevos_kilos
+        kilos_vivos_actuales = sum((e.cantidad_kilos for e in entradas), Decimal('0.00'))
+        delta_kilos = nuevos_kilos - kilos_originales
+        kilos_restantes = kilos_vivos_actuales + delta_kilos
+        if kilos_restantes < 0:
+            kilos_restantes = Decimal('0.00')
 
         if entradas:
             principal = entradas[0]
@@ -609,81 +634,15 @@ class CancelarPedido(APIView):
                 if pedido.estado == "Anulado":
                     return Response({'error': 'El pedido ya está Anulado'}, status=status.HTTP_400_BAD_REQUEST)
 
-                # 1. Revertir stock a las entradas originales
-                for detalle in pedido.detalles.all():
-                    # Buscamos las relaciones en la tabla intermedia
-                    relaciones = FacturaDetallePedido.objects.filter(detallepedido=detalle)
+                # 1. Revertir stock a las entradas originales (misma lógica que
+                # CancelarProductoPedido usa por línea, ver utils.revertir_stock_detalle).
+                # Las líneas ya canceladas individualmente saltan esta reversión:
+                # su stock ya volvió al ledger cuando se cancelaron.
+                for detalle in pedido.detalles.exclude(estado="Cancelado"):
+                    revertir_stock_detalle(detalle)
 
-                    # TOPE DE DEVOLUCION: nunca devolver mas unidades de las que la
-                    # linea de venta declara. Antes se devolvia la suma de
-                    # relacion.cantidad_unidades sin tope, y cuando los links de
-                    # FacturaDetallePedido no cuadran con el DetallePedido (pasa en
-                    # pedidos editados: ver pedidos 12 y 17, con cantidad_unidades=0
-                    # pero links por 2 y 1 unidades) la anulacion INVENTABA stock que
-                    # nunca habia salido, inflando el dashboard.
-                    #
-                    # El tope tambien es correcto en el sentido contrario: si los
-                    # links suman MENOS que la venta, solo esos fueron descontados
-                    # del ledger, asi que solo esos se devuelven.
-                    unidades_vendidas = int(detalle.cantidad_unidades or 0)
-                    restante = unidades_vendidas
-
-                    for relacion in relaciones:
-                        if restante <= 0:
-                            break
-
-                        factura = relacion.factura
-                        unidades_a_devolver = min(int(relacion.cantidad_unidades or 0), restante)
-                        if unidades_a_devolver <= 0:
-                            continue
-
-                        # BUSCAR EL COSTO ORIGINAL DE ESTE PRODUCTO EN ESTA FACTURA
-                        try:
-                            detalle_factura_original = DetalleFactura.objects.get(
-                                factura=factura,
-                                producto=detalle.producto
-                            )
-                            costo_unitario_compra = detalle_factura_original.costo_por_kilo
-                        except DetalleFactura.DoesNotExist:
-                            # FacturaDetallePedido NO tiene costo_por_kilo (ver models.py):
-                            # el fallback anterior reventaba con AttributeError. Si la
-                            # factura no tiene linea de compra de este producto, no hay
-                            # costo que recuperar y devolvemos el lote a costo 0 antes
-                            # que perder el stock.
-                            costo_unitario_compra = Decimal('0')
-
-                        # Buscar fecha para mantener FIFO
-                        entrada_ref = EntradaProducto.objects.filter(
-                            producto=detalle.producto
-                        ).order_by('fecha_entrada').first()
-
-                        if entrada_ref:
-                            nueva_fecha = entrada_ref.fecha_entrada - timezone.timedelta(seconds=1)
-                        else:
-                            nueva_fecha = timezone.now()
-
-                        # Kilos proporcionales a las unidades que si devolvemos.
-                        if unidades_vendidas > 0:
-                            kilos_a_devolver = (
-                                Decimal(str(detalle.cantidad_kilos or 0)) / unidades_vendidas
-                            ) * unidades_a_devolver
-                        else:
-                            kilos_a_devolver = Decimal('0')
-
-                        # Crear la entrada de retorno
-                        EntradaProducto.objects.create(
-                            factura=factura,
-                            producto=detalle.producto,
-                            cantidad_kilos=kilos_a_devolver,
-                            cantidad_unidades=unidades_a_devolver,
-                            costo_por_kilo=costo_unitario_compra, # <--- COSTO RECUPERADO
-                            fecha_entrada=nueva_fecha
-                        )
-
-                        restante -= unidades_a_devolver
-
-                # 2. IMPORTANTE: NO borres los detalles. 
-                # Si los borras, pierdes el historial de qué se vendió. 
+                # 2. IMPORTANTE: NO borres los detalles.
+                # Si los borras, pierdes el historial de qué se vendió.
                 # Solo cambia el estado del pedido.
                 pedido.estado = "Anulado"
                 pedido.save()
@@ -693,7 +652,80 @@ class CancelarPedido(APIView):
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)     
+            return Response({'error': f'Error: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CancelarProductoPedido(APIView):
+    """Cancela UNA línea (producto) de un pedido sin anular el pedido entero.
+
+    Revierte el stock/costo de esa línea exactamente igual que ``CancelarPedido``
+    (misma función, ``revertir_stock_detalle``): crea de vuelta la(s)
+    ``EntradaProducto`` con el costo_por_kilo original recuperado desde la(s)
+    factura(s) que abastecieron la línea, en la posición FIFO más antigua.
+
+    La línea NO se borra (se conserva el historial de qué se vendió); se marca
+    ``estado='Cancelado'`` y se excluye del total del pedido y de todos los
+    reportes que ya excluían pedidos Anulado (ver DetallePedido.estado en
+    models.py y los querysets que ahora también excluyen estado='Cancelado').
+
+    Si al cancelar la línea no queda ninguna línea activa en el pedido, el
+    pedido completo se marca 'Anulado' (no tiene sentido un pedido "vivo" sin
+    ningún producto).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        pedido_id = request.data.get('pedido_id')
+        detalle_id = request.data.get('detalle_id')
+
+        if not pedido_id or not detalle_id:
+            return Response(
+                {'error': 'pedido_id y detalle_id son obligatorios'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with transaction.atomic():
+                pedido = Pedido.objects.select_for_update().get(id=pedido_id)
+
+                if pedido.estado == "Anulado":
+                    return Response({'error': 'El pedido ya está Anulado'}, status=status.HTTP_400_BAD_REQUEST)
+
+                try:
+                    detalle = pedido.detalles.get(id=detalle_id)
+                except DetallePedido.DoesNotExist:
+                    return Response(
+                        {'error': 'Esa línea no pertenece a este pedido'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+                if detalle.estado == "Cancelado":
+                    return Response({'error': 'Ese producto ya fue cancelado'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # Revertir stock+costo de esta línea al ledger.
+                revertir_stock_detalle(detalle)
+
+                detalle.estado = "Cancelado"
+                detalle.save()
+
+                # Recalcular el total del pedido con las líneas que siguen activas.
+                lineas_activas = pedido.detalles.exclude(estado="Cancelado")
+                pedido.total = lineas_activas.aggregate(
+                    total=Sum('total_venta')
+                )['total'] or Decimal('0.00')
+
+                if not lineas_activas.exists():
+                    # No queda nada vivo en el pedido: se anula completo.
+                    pedido.estado = "Anulado"
+
+                pedido.save()
+
+                return Response(PedidoSerializer(pedido).data, status=status.HTTP_200_OK)
+
+        except Pedido.DoesNotExist:
+            return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': f'Error: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ObtenerPedido(APIView):
@@ -748,7 +780,7 @@ class StockProductos(APIView):
             # del ledger real, pero siguen fisicamente en bodega esperando).
             unidades_reservadas = DetallePedido.objects.filter(
                 producto=producto, cantidad_kilos=0
-            ).exclude(pedido__estado="Anulado").aggregate(
+            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado").aggregate(
                 u=Sum('cantidad_unidades')
             )['u'] or 0
 
@@ -814,22 +846,23 @@ class DetalleFacturasList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
         # Optimizamos con select_related para traer nombres de productos/proveedores en una sola consulta
-        detalles = DetalleFactura.objects.select_related('factura__proveedor', 'producto').all()
+        detalles = DetalleFactura.objects.select_related('factura__proveedor', 'producto').order_by('-factura__fecha', '-factura__numero_factura')
         serializer = DetalleFacturaSerializer(detalles, many=True)
         return Response(serializer.data)
 
 class DetallePedidosList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        # Excluimos los pedidos Anulados: al anular, CancelarPedido devuelve las
-        # unidades al ledger (EntradaProducto) pero a proposito NO borra el
-        # DetallePedido (se conserva el historial de que se vendio). Si esta
-        # lista los siguiera devolviendo, la pantalla de Movimientos y su export
-        # a Excel restarian una salida que el stock ya revirtio, y la cuenta
-        # manual "entradas - salidas" nunca cuadraria con el dashboard.
+        # Excluimos los pedidos Anulados y las lineas Canceladas: al anular o al
+        # cancelar una linea, se devuelven las unidades al ledger
+        # (EntradaProducto) pero a proposito NO se borra el DetallePedido (se
+        # conserva el historial de que se vendio). Si esta lista los siguiera
+        # devolviendo, la pantalla de Movimientos y su export a Excel restarian
+        # una salida que el stock ya revirtio, y la cuenta manual "entradas -
+        # salidas" nunca cuadraria con el dashboard.
         detalles = DetallePedido.objects.select_related(
             'pedido__cliente', 'pedido__vendedor', 'producto'
-        ).prefetch_related('facturas').exclude(pedido__estado="Anulado")
+        ).prefetch_related('facturas').exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
         serializer = DetallePedidoSerializer(detalles, many=True)
         return Response(serializer.data)
 
@@ -903,7 +936,7 @@ class StockProductosView(APIView):
             # 2. Calcular Salidas (Ventas - Solo pedidos no anulados)
             salidas = DetallePedido.objects.filter(
                 producto=producto
-            ).exclude(pedido__estado="Anulado")
+            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
             
             salidas_kilos = salidas.aggregate(total=Sum('cantidad_kilos'))['total'] or 0
             salidas_unidades = salidas.aggregate(total=Sum('cantidad_unidades'))['total'] or 0
@@ -1100,11 +1133,12 @@ def _desglose_iva(ventas_con_iva, costo_neto):
 def _detalles_ganancia_qs(request):
     """
     Base de agregación de ganancias: líneas de venta (DetallePedido)
-    EXCLUYENDO pedidos Anulado (de lo contrario las ventas revertidas
-    inflarían la ganancia reportada). Acepta filtro opcional de rango de
-    fechas vía ?desde=YYYY-MM-DD & ?hasta=YYYY-MM-DD sobre DetallePedido.fecha.
+    EXCLUYENDO pedidos Anulado y líneas Cancelado (de lo contrario las ventas
+    revertidas inflarían la ganancia reportada). Acepta filtro opcional de
+    rango de fechas vía ?desde=YYYY-MM-DD & ?hasta=YYYY-MM-DD sobre
+    DetallePedido.fecha.
     """
-    qs = DetallePedido.objects.exclude(pedido__estado="Anulado")
+    qs = DetallePedido.objects.exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
     desde = request.query_params.get('desde')
     hasta = request.query_params.get('hasta')
     if desde:
@@ -1343,6 +1377,7 @@ class FluctuacionPreciosView(APIView):
             ventas_qs = (
                 DetallePedido.objects.filter(producto_id=producto_id)
                 .exclude(pedido__estado="Anulado")
+                .exclude(estado="Cancelado")
                 .annotate(dia=TruncDate('fecha'))
                 .values('dia')
                 .annotate(precio=Avg('precio_venta'))
@@ -1390,10 +1425,10 @@ class MargenActualProductoView(APIView):
             if e.producto_id not in ultimo_costo:
                 ultimo_costo[e.producto_id] = e.costo_por_kilo
 
-        # Margen histórico por producto (ventas no anuladas)
+        # Margen histórico por producto (ventas no anuladas, líneas no canceladas)
         hist = {
             r['producto_id']: r
-            for r in DetallePedido.objects.exclude(pedido__estado="Anulado")
+            for r in DetallePedido.objects.exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
             .values('producto_id')
             .annotate(costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
                       ventas=Coalesce(Sum('total_venta'), Decimal('0')))
@@ -1461,7 +1496,8 @@ class RentabilidadHistoricaView(APIView):
                 return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
             detalles = list(
-                DetallePedido.objects.filter(producto_id=producto_id).exclude(pedido__estado="Anulado")
+                DetallePedido.objects.filter(producto_id=producto_id)
+                .exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
             )
 
             costo_por_factura = {

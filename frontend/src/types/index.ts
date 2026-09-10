@@ -49,6 +49,7 @@ export interface DetallePedido {
   total_costo: number;
   margen: number;
   facturas: number[];
+  estado: 'Activo' | 'Cancelado';
 }
 
 export interface Pedido {

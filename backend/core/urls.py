@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, CrearAjusteInventario, RentabilidadHistoricaView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, CrearAjusteInventario, RentabilidadHistoricaView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -18,6 +18,7 @@ urlpatterns = [
     path('facturas/pagar/', CrearPagoFactura.as_view(), name='pagar_factura'),
     path('facturas/<str:numero_factura>/', UpdateFacturaEntrada.as_view(), name='actualizar_factura'),
     path('pedidos/cancelar/', CancelarPedido.as_view(), name='cancelar_pedido'),
+    path('pedidos/cancelar-producto/', CancelarProductoPedido.as_view(), name='cancelar_producto_pedido'),
     path('stock/', StockProductos.as_view(), name='stock_productos'),
     path('vendedores/', VendedorListView.as_view(), name='vendedores'),
     path('proveedores/', ProveedorListView.as_view(), name='proveedores'), # Nueva ruta

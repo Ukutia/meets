@@ -140,7 +140,7 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
 
 class PedidoSerializer(serializers.ModelSerializer):
     detalles = DetallePedidoSerializer(many=True)

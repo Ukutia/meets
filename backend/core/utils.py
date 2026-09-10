@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db.models import Sum
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura
@@ -229,6 +230,80 @@ def estado_consumo_detalle(detalle):
         'vivas': vivas,
         'consumidas': consumidas,
     }
+
+
+def revertir_stock_detalle(detalle):
+    """Devuelve al ledger (``EntradaProducto``) el stock+costo que una línea de
+    venta (``DetallePedido``) consumió, lote por lote, vía sus
+    ``FacturaDetallePedido``. Es el mismo procedimiento que ``CancelarPedido``
+    aplicaba inline por cada línea del pedido; se extrajo aquí para que tanto
+    anular un pedido completo como cancelar un solo producto de un pedido
+    reviertan el inventario exactamente de la misma forma (misma factura,
+    mismo costo_por_kilo recuperado, mismo orden FIFO).
+
+    No toca ``detalle`` ni ``pedido``: solo mueve stock. El llamador decide qué
+    hacer con el estado de la línea/pedido y con el total.
+    """
+    relaciones = FacturaDetallePedido.objects.filter(detallepedido=detalle)
+
+    # TOPE DE DEVOLUCION: nunca devolver mas unidades de las que la linea de
+    # venta declara (ver nota historica en CancelarPedido sobre pedidos con
+    # links de FacturaDetallePedido que no cuadran con cantidad_unidades).
+    unidades_vendidas = int(detalle.cantidad_unidades or 0)
+    restante = unidades_vendidas
+
+    for relacion in relaciones:
+        if restante <= 0:
+            break
+
+        factura = relacion.factura
+        unidades_a_devolver = min(int(relacion.cantidad_unidades or 0), restante)
+        if unidades_a_devolver <= 0:
+            continue
+
+        # BUSCAR EL COSTO ORIGINAL DE ESTE PRODUCTO EN ESTA FACTURA
+        try:
+            detalle_factura_original = DetalleFactura.objects.get(
+                factura=factura,
+                producto=detalle.producto
+            )
+            costo_unitario_compra = detalle_factura_original.costo_por_kilo
+        except DetalleFactura.DoesNotExist:
+            # FacturaDetallePedido NO tiene costo_por_kilo (ver models.py): si
+            # la factura no tiene linea de compra de este producto, no hay
+            # costo que recuperar y devolvemos el lote a costo 0 antes que
+            # perder el stock.
+            costo_unitario_compra = Decimal('0')
+
+        # Buscar fecha para mantener FIFO
+        entrada_ref = EntradaProducto.objects.filter(
+            producto=detalle.producto
+        ).order_by('fecha_entrada').first()
+
+        if entrada_ref:
+            nueva_fecha = entrada_ref.fecha_entrada - timezone.timedelta(seconds=1)
+        else:
+            nueva_fecha = timezone.now()
+
+        # Kilos proporcionales a las unidades que si devolvemos.
+        if unidades_vendidas > 0:
+            kilos_a_devolver = (
+                Decimal(str(detalle.cantidad_kilos or 0)) / unidades_vendidas
+            ) * unidades_a_devolver
+        else:
+            kilos_a_devolver = Decimal('0')
+
+        # Crear la entrada de retorno
+        EntradaProducto.objects.create(
+            factura=factura,
+            producto=detalle.producto,
+            cantidad_kilos=kilos_a_devolver,
+            cantidad_unidades=unidades_a_devolver,
+            costo_por_kilo=costo_unitario_compra,  # <--- COSTO RECUPERADO
+            fecha_entrada=nueva_fecha
+        )
+
+        restante -= unidades_a_devolver
 
 
 def pedidos_consumidores_detalle(detalle):

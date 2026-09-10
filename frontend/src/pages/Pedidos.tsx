@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import React from 'react';
 import {
   Plus, Search, MessageCircle, CheckCircle2,
-  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getPedidos, updatePedido, cancelarPedido } from '@/services/api';
+import { getPedidos, updatePedido, cancelarPedido, cancelarProductoPedido } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Pedido } from '@/types';
@@ -68,6 +68,19 @@ export default function Pedidos() {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
       toast({ title: "Anulado", description: "El pedido fue anulado." });
       setSelectedPedido(null);
+    },
+  });
+
+  const cancelarProductoMutation = useMutation({
+    mutationFn: (payload: { pedidoId: number, detalleId: number }) =>
+      cancelarProductoPedido(payload.pedidoId, payload.detalleId),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      // Refrescamos el pedido abierto en el dialog con la respuesta del backend
+      // (stock revertido, total recalculado, y posiblemente el pedido entero
+      // Anulado si esa era la última línea activa).
+      setSelectedPedido(response.data);
+      toast({ title: "Producto cancelado", description: "El stock fue devuelto al inventario." });
     },
   });
 
@@ -147,11 +160,13 @@ export default function Pedidos() {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
   const todosPesados = useMemo(() => {
-    return selectedPedido?.detalles.every(det => Number(det.cantidad_kilos) > 0);
+    const activos = selectedPedido?.detalles.filter(det => det.estado !== 'Cancelado') ?? [];
+    return activos.length > 0 && activos.every(det => Number(det.cantidad_kilos) > 0);
   }, [selectedPedido?.detalles]);
 
   const handleEditLocal = (index: number, field: string, value: any) => {
     if (!selectedPedido) return;
+    if (selectedPedido.detalles[index]?.estado === 'Cancelado') return;
     const valAsNum = typeof value === 'string' ? (value === '' ? 0 : parseFloat(value)) : value;
     const nuevosDetalles = selectedPedido.detalles.map((det, i) => {
       if (i !== index) return det;
@@ -164,7 +179,11 @@ export default function Pedidos() {
       }
       return { ...det, [field]: valAsNum };
     });
-    const nuevoTotal = nuevosDetalles.reduce((sum, d) => sum + (Number(d.total_venta) || 0), 0);
+    // Las líneas Canceladas ya no cuentan para el total: su stock/costo fue
+    // revertido al inventario y solo se conservan como historial.
+    const nuevoTotal = nuevosDetalles
+      .filter(d => d.estado !== 'Cancelado')
+      .reduce((sum, d) => sum + (Number(d.total_venta) || 0), 0);
     setSelectedPedido({ ...selectedPedido, detalles: nuevosDetalles, total: nuevoTotal });
   };
 
@@ -319,10 +338,12 @@ export default function Pedidos() {
                     <TableCell colSpan={8} className="p-2">
                       <div className="grid grid-cols-1 lg:grid-cols-3 gap-1.5 w-full">
                         {pedido.detalles.map((det, idx) => (
-                          <div key={idx} className="flex justify-between items-center p-2.5 bg-white rounded-lg border border-slate-200 shadow-xs mx-1">
+                          <div key={idx} className={`flex justify-between items-center p-2.5 bg-white rounded-lg border border-slate-200 shadow-xs mx-1 ${det.estado === 'Cancelado' ? 'opacity-50' : ''}`}>
                             <div className="flex flex-col">
-                              <span className="text-xs font-bold text-slate-700">{det.producto.nombre}</span>
-                              <span className="text-[10px] text-slate-400 font-medium">{det.cantidad_unidades} un.</span>
+                              <span className={`text-xs font-bold text-slate-700 ${det.estado === 'Cancelado' ? 'line-through' : ''}`}>{det.producto.nombre}</span>
+                              <span className="text-[10px] text-slate-400 font-medium">
+                                {det.estado === 'Cancelado' ? 'Cancelado' : `${det.cantidad_unidades} un.`}
+                              </span>
                             </div>
                             <div className="text-right">
                               <span className="text-xs font-bold text-blue-600 block">{det.cantidad_kilos} kg</span>
@@ -374,41 +395,69 @@ export default function Pedidos() {
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {selectedPedido?.detalles.map((det, idx) => (
-              <div key={idx} className="p-4 border rounded-xl bg-white shadow-sm space-y-4">
-                <div className="flex justify-between items-start">
-                  <h3 className="font-bold text-slate-900">{det.producto.nombre}</h3>
-                  <Badge variant="outline" className="text-[10px]">{formatCurrency(det.producto.precio_por_kilo)}/kg</Badge>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
-                    <Input 
-                      type="number" 
-                      className="h-12 text-center text-lg font-bold bg-slate-50"
-                      value={det.cantidad_unidades || ''} 
-                      onChange={(e) => handleEditLocal(idx, 'cantidad_unidades', e.target.value)}
-                    />
+            {selectedPedido?.detalles.map((det, idx) => {
+              const cancelado = det.estado === 'Cancelado';
+              return (
+                <div key={idx} className={`p-4 border rounded-xl bg-white shadow-sm space-y-4 ${cancelado ? 'opacity-60' : ''}`}>
+                  <div className="flex justify-between items-start">
+                    <h3 className={`font-bold text-slate-900 ${cancelado ? 'line-through' : ''}`}>{det.producto.nombre}</h3>
+                    <div className="flex items-center gap-1.5">
+                      {cancelado ? (
+                        <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">{formatCurrency(det.producto.precio_por_kilo)}/kg</Badge>
+                      )}
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
-                    <Input 
-                      type="number" 
-                      step="0.01"
-                      className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
-                      value={det.cantidad_kilos || ''} 
-                      onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)} 
-                    />
-                  </div>
-                </div>
 
-                <div className="pt-2 border-t border-dashed flex justify-between items-center">
-                  <span className="text-xs font-bold text-slate-400">SUBTOTAL</span>
-                  <span className="font-black text-blue-600">{formatCurrency(det.total_venta)}</span>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
+                      <Input
+                        type="number"
+                        disabled={cancelado}
+                        className="h-12 text-center text-lg font-bold bg-slate-50"
+                        value={det.cantidad_unidades || ''}
+                        onChange={(e) => handleEditLocal(idx, 'cantidad_unidades', e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        disabled={cancelado}
+                        className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
+                        value={det.cantidad_kilos || ''}
+                        onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-dashed flex justify-between items-center">
+                    <span className="text-xs font-bold text-slate-400">SUBTOTAL</span>
+                    <span className="font-black text-blue-600">{formatCurrency(det.total_venta)}</span>
+                  </div>
+
+                  {!cancelado && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                      disabled={cancelarProductoMutation.isPending}
+                      onClick={() => {
+                        if (!selectedPedido) return;
+                        if (confirm(`¿Cancelar "${det.producto.nombre}" de este pedido? El stock será devuelto.`)) {
+                          cancelarProductoMutation.mutate({ pedidoId: selectedPedido.id, detalleId: det.id });
+                        }
+                      }}
+                    >
+                      <XCircle className="mr-2 h-4 w-4" /> Cancelar producto
+                    </Button>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="p-4 bg-slate-900 text-white flex justify-between items-center">

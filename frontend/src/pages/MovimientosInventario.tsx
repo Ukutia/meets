@@ -131,20 +131,18 @@ export default function MovimientosInventario() {
     });
   }, [ajustes, filter.producto, filter.search]);
 
-  // 2. Lógica de filtrado unificada
-// 2. Lógica de filtrado unificada con protección contra nulos
-  const filteredData = useMemo(() => {
-    const data = activeTab === 'entradas' ? (entradas || []) : (salidas || []);
-    
-    return data.filter((item: any) => {
+  // 2. Lógica de filtrado unificada (misma lógica para entradas y salidas,
+  // reutilizable tanto para lo que se ve en pantalla como para el export)
+  const filtrarEntradasSalidas = (data: any[]) => {
+    return (data || []).filter((item: any) => {
       // Normalización de valores para evitar errores si el campo no existe
       const clienteProv = (item.cliente_nombre || item.proveedor_nombre || '').toString().toLowerCase();
-      const producto = (item.producto_nombre || item.producto.nombre||'').toString().toLowerCase();
+      const producto = (item.producto_nombre || item.producto?.nombre || '').toString().toLowerCase();
       const numDoc = (item.pedido || item.factura || '').toString().toLowerCase();
-      
+
       // Filtros
       const matchCliente = clienteProv.includes(filter.cliente.toLowerCase());
-      const matchProducto = filter.producto === 'todos' || 
+      const matchProducto = filter.producto === 'todos' ||
                             producto === filter.producto.toLowerCase();
       const matchNum = numDoc.includes(filter.numDocumento.toLowerCase());
 
@@ -156,38 +154,58 @@ export default function MovimientosInventario() {
 
       return matchCliente && matchProducto && matchNum && matchKilos && matchUnidades;
     });
-  }, [activeTab, entradas, salidas, filter]);
+  };
 
+  const filteredEntradas = useMemo(() => filtrarEntradasSalidas(entradas || []), [entradas, filter]);
+  const filteredSalidas = useMemo(() => filtrarEntradasSalidas(salidas || []), [salidas, filter]);
+  const filteredData = activeTab === 'entradas' ? filteredEntradas : filteredSalidas;
+
+  const filaEntradaSalida = (item: any, tab: 'entradas' | 'salidas') => {
+    const base: Record<string, any> = {
+      '#': item.pedido || item.factura,
+      'Cliente / Proveedor': item.cliente_nombre || item.proveedor_nombre || 'N/A',
+      'Producto': item.producto_nombre || item.producto?.nombre || 'N/A',
+      'Unidades': Number(item.cantidad_unidades || 0),
+      'Kilos': Number(item.cantidad_kilos || 0),
+      'Precio/Kg': Number(tab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
+      'Total': Number(item.cantidad_kilos) * Number(tab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
+    };
+    if (tab === 'salidas') {
+      const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
+      const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
+      base['Vendedor'] = item.vendedor_nombre || 'N/A';
+      base['Costo/Kg'] = costoConIva;
+      base['Costo Total'] = costoTotalConIva;
+      base['Ganancia/Kg'] = Number(item.precio_venta || 0) - costoConIva;
+      base['Ganancia Total'] = Number(item.total_venta || 0) - costoTotalConIva;
+    }
+    return base;
+  };
+
+  // El export siempre incluye Entradas, Salidas y Ajustes juntos (mismos
+  // filtros aplicados a cada una) para que la planilla se pueda reconciliar
+  // contra Stock: Stock = Entradas - Salidas +/- Ajustes. Los pedidos
+  // Anulados ya vienen excluidos desde el backend (DetallePedidosList), así
+  // que nunca se descargan como salida.
   const exportarExcel = () => {
-    const filas = filteredData.map((item: any) => {
-      const base: Record<string, any> = {
-        '#': item.pedido || item.factura,
-        'Cliente / Proveedor': item.cliente_nombre || item.proveedor_nombre || 'N/A',
-        'Producto': item.producto_nombre || item.producto?.nombre || 'N/A',
-        'Unidades': Number(item.cantidad_unidades || 0),
-        'Kilos': Number(item.cantidad_kilos || 0),
-        'Precio/Kg': Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
-        'Total': Number(item.cantidad_kilos) * Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta) || 0,
-      };
-      if (activeTab === 'salidas') {
-        const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
-        const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
-        base['Vendedor'] = item.vendedor_nombre || 'N/A';
-        base['Costo/Kg'] = costoConIva;
-        base['Costo Total'] = costoTotalConIva;
-        base['Ganancia/Kg'] = Number(item.precio_venta || 0) - costoConIva;
-        base['Ganancia Total'] = Number(item.total_venta || 0) - costoTotalConIva;
-      }
-      return base;
-    });
+    const filasEntradas = filteredEntradas.map((item: any) => filaEntradaSalida(item, 'entradas'));
+    const filasSalidas = filteredSalidas.map((item: any) => filaEntradaSalida(item, 'salidas'));
+    const filasAjustes = filteredAjustes.map((a) => ({
+      'Fecha': new Date(a.fecha).toLocaleDateString('es-CL'),
+      'Producto': a.producto_nombre,
+      'Tipo': a.tipo === 'ajuste' ? 'Ajuste manual' : a.tipo,
+      'Kilos': Number(a.cantidad || 0),
+      'Unidades': Number(a.cantidad_unidades || 0),
+      'Razón': a.razon || '',
+    }));
 
-    const worksheet = XLSX.utils.json_to_sheet(filas);
     const workbook = XLSX.utils.book_new();
-    const nombreHoja = activeTab === 'entradas' ? 'Entradas' : 'Salidas';
-    XLSX.utils.book_append_sheet(workbook, worksheet, nombreHoja);
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasEntradas), 'Entradas');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasSalidas), 'Salidas');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasAjustes), 'Ajustes');
 
     const fecha = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(workbook, `movimientos-${activeTab}-${fecha}.xlsx`);
+    XLSX.writeFile(workbook, `movimientos-inventario-${fecha}.xlsx`);
   };
 
   if (loadingE || loadingS) return <LoadingSpinner />;
@@ -274,28 +292,28 @@ export default function MovimientosInventario() {
           </TabsList>
 
           <div className="flex items-center gap-4">
-            {activeTab === 'ajustes' ? (
+            {activeTab === 'ajustes' && (
               <Button size="sm" className="gap-2" onClick={() => setAjusteDialogOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Registrar Merma / Ajuste
               </Button>
-            ) : (
-              <>
-                <div className="text-sm text-muted-foreground">
-                  Mostrando <b>{filteredData.length}</b> registros
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                  onClick={exportarExcel}
-                  disabled={filteredData.length === 0}
-                >
-                  <FileSpreadsheet className="h-4 w-4" />
-                  Exportar a Excel
-                </Button>
-              </>
             )}
+            {activeTab !== 'ajustes' && (
+              <div className="text-sm text-muted-foreground">
+                Mostrando <b>{filteredData.length}</b> registros
+              </div>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={exportarExcel}
+              disabled={filteredEntradas.length === 0 && filteredSalidas.length === 0 && filteredAjustes.length === 0}
+              title="Descarga entradas, salidas y ajustes en un solo Excel (con los filtros aplicados)"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              Exportar a Excel
+            </Button>
           </div>
         </div>
 

@@ -214,6 +214,13 @@ class DetallePedido(models.Model):
     margen = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Margen", default=0)
     fecha = models.DateField(auto_now_add=True, verbose_name="Fecha de venta")
     facturas = models.ManyToManyField('Factura', related_name='detalles_pedido', verbose_name="Facturas",default=0)
+    estado = models.CharField(
+        max_length=20,
+        choices=[("Activo", "Activo"), ("Cancelado", "Cancelado")],
+        default="Activo",
+        verbose_name="Estado de la línea",
+        help_text="Cancelado = el producto fue quitado del pedido y su stock/costo ya fue revertido"
+    )
 
 
     def save(self, *args, **kwargs):
