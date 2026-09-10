@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText } from 'lucide-react';
-import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario } from '@/services/api'; // Asegúrate de tener estos servicios
+import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario, getStock } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -79,6 +79,11 @@ export default function MovimientosInventario() {
   const { data: ajustes, isLoading: loadingA } = useQuery({
     queryKey: ['ajustes-inventario'],
     queryFn: async () => (await getAjustesInventario()).data
+  });
+
+  const { data: stock } = useQuery({
+    queryKey: ['stock'],
+    queryFn: async () => (await getStock()).data
   });
 
   // 2. Carga de Productos para el desplegable
@@ -182,11 +187,75 @@ export default function MovimientosInventario() {
     return base;
   };
 
-  // El export siempre incluye Entradas, Salidas y Ajustes juntos (mismos
-  // filtros aplicados a cada una) para que la planilla se pueda reconciliar
-  // contra Stock: Stock = Entradas - Salidas +/- Ajustes. Los pedidos
-  // Anulados ya vienen excluidos desde el backend (DetallePedidosList), así
-  // que nunca se descargan como salida.
+  // Hoja "Stock" (cuadre): reconstruye, por producto, el mismo Sum que
+  // Stock real usa (EntradaProducto, ver backend/core/views.py StockProductos)
+  // pero partiendo de las hojas Entradas/Salidas/Ajustes: Calculado = Entradas
+  // - Salidas +/- Ajustes. Usa el histórico COMPLETO (sin los filtros de
+  // pantalla) porque el cuadre es por producto a nivel global, no por lo que
+  // esté filtrado en ese momento. Si "Diferencia" no da 0, ahí está el punto
+  // exacto (producto) que hay que revisar.
+  const filasStockCalculado = () => {
+    type Acc = { entradasKg: number; entradasUn: number; salidasKg: number; salidasUn: number; ajustesKg: number; ajustesUn: number };
+    const porProducto = new Map<string, Acc>();
+    const vacio = (): Acc => ({ entradasKg: 0, entradasUn: 0, salidasKg: 0, salidasUn: 0, ajustesKg: 0, ajustesUn: 0 });
+    const get = (nombre: string) => {
+      if (!porProducto.has(nombre)) porProducto.set(nombre, vacio());
+      return porProducto.get(nombre)!;
+    };
+
+    (entradas || []).forEach((item: any) => {
+      const nombre = item.producto_nombre || item.producto?.nombre || 'N/A';
+      const acc = get(nombre);
+      acc.entradasKg += Number(item.cantidad_kilos || 0);
+      acc.entradasUn += Number(item.cantidad_unidades || 0);
+    });
+    (salidas || []).forEach((item: any) => {
+      const nombre = item.producto_nombre || item.producto?.nombre || 'N/A';
+      const acc = get(nombre);
+      acc.salidasKg += Number(item.cantidad_kilos || 0);
+      acc.salidasUn += Number(item.cantidad_unidades || 0);
+    });
+    (Array.isArray(ajustes) ? ajustes : []).forEach((a: AjusteInventario) => {
+      const acc = get(a.producto_nombre);
+      // a.cantidad / a.cantidad_unidades ya vienen con signo (merma resta, exceso suma).
+      acc.ajustesKg += Number(a.cantidad || 0);
+      acc.ajustesUn += Number(a.cantidad_unidades || 0);
+    });
+
+    const stockPorProducto = new Map((stock || []).map((s) => [s.producto, s]));
+
+    return Array.from(porProducto.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([producto, acc]) => {
+        const calculadoKg = acc.entradasKg - acc.salidasKg + acc.ajustesKg;
+        const calculadoUn = acc.entradasUn - acc.salidasUn + acc.ajustesUn;
+        const real = stockPorProducto.get(producto);
+        const realKg = real ? Number(real.kilos_actuales) : null;
+        const realUn = real ? Number(real.disponibles) : null;
+        return {
+          'Producto': producto,
+          'Entradas (kg)': Number(acc.entradasKg.toFixed(2)),
+          'Entradas (un)': acc.entradasUn,
+          'Salidas (kg)': Number(acc.salidasKg.toFixed(2)),
+          'Salidas (un)': acc.salidasUn,
+          'Ajustes (kg)': Number(acc.ajustesKg.toFixed(2)),
+          'Ajustes (un)': acc.ajustesUn,
+          'Stock Calculado (kg)': Number(calculadoKg.toFixed(2)),
+          'Stock Calculado (un)': calculadoUn,
+          'Stock Real (kg)': realKg !== null ? Number(realKg.toFixed(2)) : 'N/A',
+          'Stock Real (un)': realUn !== null ? realUn : 'N/A',
+          'Diferencia (kg)': realKg !== null ? Number((realKg - calculadoKg).toFixed(2)) : 'N/A',
+          'Diferencia (un)': realUn !== null ? realUn - calculadoUn : 'N/A',
+        };
+      });
+  };
+
+  // El export siempre incluye Entradas, Salidas y Ajustes (con los filtros
+  // aplicados a cada una) más una hoja Stock con el cuadre por producto,
+  // para que la planilla se pueda reconciliar contra Stock:
+  // Stock = Entradas - Salidas +/- Ajustes. Los pedidos Anulados ya vienen
+  // excluidos desde el backend (DetallePedidosList), así que nunca se
+  // descargan como salida.
   const exportarExcel = () => {
     const filasEntradas = filteredEntradas.map((item: any) => filaEntradaSalida(item, 'entradas'));
     const filasSalidas = filteredSalidas.map((item: any) => filaEntradaSalida(item, 'salidas'));
@@ -203,6 +272,7 @@ export default function MovimientosInventario() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasEntradas), 'Entradas');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasSalidas), 'Salidas');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasAjustes), 'Ajustes');
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasStockCalculado()), 'Stock');
 
     const fecha = new Date().toISOString().slice(0, 10);
     XLSX.writeFile(workbook, `movimientos-inventario-${fecha}.xlsx`);
