@@ -141,6 +141,11 @@ export const createPedido = (data: {
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
 export const cancelarProductoPedido = (pedidoId: number, detalleId: number) =>
   api.post<Pedido>(`/pedidos/cancelar-producto/`, { pedido_id: pedidoId, detalle_id: detalleId });
+export const agregarProductoPedido = (pedidoId: number, data: {
+  producto_id: number;
+  cantidad_kilos: number;
+  cantidad_unidades: number;
+}) => api.post<Pedido>(`/pedidos/agregar-producto/`, { pedido_id: pedidoId, ...data });
 export const actualizarKilosPedido = (id: number, detalles: any[]) =>
   api.post(`/pedidos/actualizar_kilos/${id}/`, { detalles });
 

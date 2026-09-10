@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, revertir_stock_detalle
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, revertir_stock_detalle, agregar_exceso_fifo
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -728,6 +728,97 @@ class CancelarProductoPedido(APIView):
             return Response({'error': f'Error: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class AgregarProductoPedido(APIView):
+    """Agrega una línea de producto NUEVA a un pedido ya creado.
+
+    Sigue la misma lógica de consumo de stock que CrearPedido (consumir_fifo
+    para las facturas/costo, descontar_kilos_fifo si ya viene pesado), para
+    que la línea agregada quede idéntica a una creada junto con el pedido.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        pedido_id = request.data.get('pedido_id')
+        producto_id = request.data.get('producto_id')
+
+        if not pedido_id or not producto_id:
+            return Response(
+                {'error': 'pedido_id y producto_id son obligatorios'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with transaction.atomic():
+                pedido = Pedido.objects.select_for_update().get(id=pedido_id)
+
+                if pedido.estado == "Anulado":
+                    return Response({'error': 'El pedido está Anulado'}, status=status.HTTP_400_BAD_REQUEST)
+
+                try:
+                    producto = Producto.objects.get(id=producto_id)
+                except Producto.DoesNotExist:
+                    return Response({'error': f"Producto con ID {producto_id} no existe"}, status=status.HTTP_404_NOT_FOUND)
+
+                kilos = Decimal(str(request.data.get('cantidad_kilos', 0)))
+                unidades = int(float(str(request.data.get('cantidad_unidades', 0))))
+
+                stock_producto = EntradaProducto.objects.filter(producto=producto).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
+                if unidades > stock_producto:
+                    raise ValidationError("No hay suficiente stock disponible para el producto")
+
+                _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
+
+                if kilos > 0:
+                    total_venta = kilos * producto.precio_por_kilo
+                    descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
+                else:
+                    kilos = Decimal('0.00')
+                    total_venta = Decimal('0.00')
+
+                detalle_pedido = DetallePedido.objects.create(
+                    pedido=pedido,
+                    producto=producto,
+                    cantidad_kilos=kilos,
+                    cantidad_unidades=unidades,
+                    total_venta=total_venta,
+                    precio_venta=producto.precio_por_kilo
+                )
+
+                detalle_pedido.facturas.set(facturas_usadas)
+                for factura_id, cantidad in facturas_cantidades.items():
+                    FacturaDetallePedido.objects.create(
+                        detallepedido=detalle_pedido,
+                        factura_id=factura_id,
+                        cantidad_unidades=cantidad
+                    )
+
+                cpk = costo_por_kilo_ponderado(detalle_pedido)
+                if cpk is not None:
+                    detalle_pedido.costo_por_kilo = cpk
+                    detalle_pedido.save()
+
+                # Recalcular el total del pedido con las líneas activas.
+                lineas_activas = pedido.detalles.exclude(estado="Cancelado")
+                pedido.total = lineas_activas.aggregate(total=Sum('total_venta'))['total'] or Decimal('0.00')
+
+                # Si el pedido ya estaba Preparado/Pagado y la línea nueva viene
+                # sin pesar, no lo degradamos; si estaba Reservado y esta línea
+                # trae peso, sigue el mismo criterio que CrearPedido.
+                if pedido.estado == "Reservado" and kilos > 0:
+                    pedido.estado = "Preparado"
+
+                pedido.save()
+
+                return Response(PedidoSerializer(pedido).data, status=status.HTTP_201_CREATED)
+
+        except Pedido.DoesNotExist:
+            return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': f'Error al agregar el producto: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class ObtenerPedido(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request, pedido_id, *args, **kwargs):
@@ -1003,11 +1094,17 @@ class CrearAjusteInventario(APIView):
       - ajuste: corrección manual libre -> se respeta el signo enviado.
 
     EFECTO SOBRE EL STOCK
-    Un ajuste NEGATIVO (merma, o ajuste manual con signo negativo) descuenta de
-    verdad el ledger `EntradaProducto`, que es la unica fuente del stock que
-    muestra el dashboard (StockProductos) y contra la que valida CrearPedido.
-    Antes esta vista solo dejaba el registro contable en AjusteInventario y el
-    stock no se movia: se registraba una merma y el dashboard seguia igual.
+    Todo ajuste (negativo o positivo) mueve de verdad el ledger
+    `EntradaProducto`, que es la unica fuente del stock que muestra el
+    dashboard (StockProductos) y contra la que valida CrearPedido. Antes esta
+    vista solo dejaba el registro contable en AjusteInventario y el stock no
+    se movia: se registraba una merma o un exceso y el dashboard seguia igual.
+
+    Un exceso (o un ajuste manual con signo positivo) suma al lote MAS
+    ANTIGUO del producto via `agregar_exceso_fifo` (no tiene factura ni costo
+    propio, asi que no se puede crear un lote nuevo con esos datos). Si el
+    producto no tiene ningun lote todavia, el ajuste se rechaza: registra
+    primero una compra (EntradaProducto) para ese producto.
 
     Kilos y unidades se descuentan por separado, porque en el ledger son dos
     magnitudes independientes: las unidades bajan por FIFO (consumir_fifo) y los
@@ -1075,13 +1172,19 @@ class CrearAjusteInventario(APIView):
                     razon=razon,
                 )
 
-                # Impacto real en el stock. Solo los ajustes negativos mueven el
-                # ledger; los positivos (exceso) siguen siendo solo registro —
-                # ver nota al final del docstring de la clase.
+                # Impacto real en el stock. Los ajustes negativos descuentan del
+                # ledger; los positivos (exceso, o ajuste manual en positivo) suman
+                # al lote mas antiguo — ver docstring de la clase.
                 if cantidad_unidades < 0:
                     consumir_fifo(producto, abs(cantidad_unidades))
                 if cantidad < 0:
                     descontar_kilos_fifo(producto, abs(cantidad))
+                if cantidad_unidades > 0 or cantidad > 0:
+                    agregar_exceso_fifo(
+                        producto,
+                        cantidad_unidades if cantidad_unidades > 0 else 0,
+                        cantidad if cantidad > 0 else Decimal('0'),
+                    )
 
         except ValidationError as e:
             detail = e.detail if hasattr(e, 'detail') else str(e)

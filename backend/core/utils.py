@@ -190,6 +190,37 @@ def restituir_kilos_fifo(producto, kilos_a_devolver):
     return kilos_a_devolver
 
 
+def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar):
+    """Suma al ledger (``EntradaProducto``) unidades y/o kilos encontrados en
+    un conteo físico que superó al stock del sistema (ajuste tipo "exceso").
+
+    A diferencia de una compra, un exceso no tiene factura ni costo propio:
+    se suma al lote vivo MAS ANTIGUO del producto (mismo criterio que
+    ``restituir_kilos_fifo``), para no inventar un lote con costo ficticio.
+    Si el producto no tiene ningun lote todavia, no hay donde sumarlo.
+    """
+    unidades_a_agregar = int(unidades_a_agregar)
+    kilos_a_agregar = Decimal(str(kilos_a_agregar))
+    if unidades_a_agregar <= 0 and kilos_a_agregar <= 0:
+        return
+
+    entrada = (
+        EntradaProducto.objects.filter(producto=producto)
+        .order_by('fecha_entrada')
+        .first()
+    )
+    if entrada is None:
+        raise ValidationError(
+            f"No hay ningun lote de '{producto.nombre}' donde sumar el exceso"
+        )
+
+    if unidades_a_agregar > 0:
+        entrada.cantidad_unidades = int(entrada.cantidad_unidades) + unidades_a_agregar
+    if kilos_a_agregar > 0:
+        entrada.cantidad_kilos = Decimal(str(entrada.cantidad_kilos)) + kilos_a_agregar
+    entrada.save()
+
+
 def estado_consumo_detalle(detalle):
     """Para una línea de factura (``DetalleFactura``) determina cuánto de su
     stock (``EntradaProducto``) sigue vivo frente a lo originalmente registrado

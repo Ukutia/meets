@@ -11,10 +11,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getPedidos, updatePedido, cancelarPedido, cancelarProductoPedido } from '@/services/api';
+import { getPedidos, updatePedido, cancelarPedido, cancelarProductoPedido, agregarProductoPedido, getProductos } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { Pedido } from '@/types';
+import type { Pedido, Producto } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Select, 
@@ -39,7 +39,10 @@ export default function Pedidos() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterVendedor, setFilterVendedor] = useState('Todos');
   const [selectedIds, setSelectedIds] = useState<number[]>([]); // Para la selección múltiple
-  
+  const [nuevoProductoId, setNuevoProductoId] = useState('');
+  const [nuevoProductoKilos, setNuevoProductoKilos] = useState('');
+  const [nuevoProductoUnidades, setNuevoProductoUnidades] = useState('');
+
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -49,6 +52,14 @@ export default function Pedidos() {
     queryFn: async () => {
       const response = await getPedidos(true);
       return response.data as Pedido[];
+    },
+  });
+
+  const { data: productosData } = useQuery({
+    queryKey: ['productos'],
+    queryFn: async () => {
+      const response = await getProductos();
+      return response.data as Producto[];
     },
   });
 
@@ -81,6 +92,30 @@ export default function Pedidos() {
       // Anulado si esa era la última línea activa).
       setSelectedPedido(response.data);
       toast({ title: "Producto cancelado", description: "El stock fue devuelto al inventario." });
+    },
+  });
+
+  const agregarProductoMutation = useMutation({
+    mutationFn: (payload: { pedidoId: number, producto_id: number, cantidad_kilos: number, cantidad_unidades: number }) =>
+      agregarProductoPedido(payload.pedidoId, {
+        producto_id: payload.producto_id,
+        cantidad_kilos: payload.cantidad_kilos,
+        cantidad_unidades: payload.cantidad_unidades,
+      }),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      setSelectedPedido(response.data);
+      setNuevoProductoId('');
+      setNuevoProductoKilos('');
+      setNuevoProductoUnidades('');
+      toast({ title: "Producto agregado", description: "Se agregó el producto al pedido." });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "No se pudo agregar",
+        description: err?.response?.data?.error ?? 'Error al agregar el producto',
+        variant: "destructive",
+      });
     },
   });
 
@@ -159,6 +194,16 @@ export default function Pedidos() {
   const toggleSelect = (id: number) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
+  const productosDisponiblesParaAgregar = useMemo(() => {
+    const productos = productosData ?? [];
+    const idsEnPedido = new Set(
+      (selectedPedido?.detalles ?? [])
+        .filter(d => d.estado !== 'Cancelado')
+        .map(d => d.producto.id)
+    );
+    return productos.filter(p => !idsEnPedido.has(p.id));
+  }, [productosData, selectedPedido]);
+
   const todosPesados = useMemo(() => {
     const activos = selectedPedido?.detalles.filter(det => det.estado !== 'Cancelado') ?? [];
     return activos.length > 0 && activos.every(det => Number(det.cantidad_kilos) > 0);
@@ -458,6 +503,58 @@ export default function Pedidos() {
                 </div>
               );
             })}
+
+            {selectedPedido && selectedPedido.estado !== 'Anulado' && (
+              <div className="p-4 border rounded-xl bg-slate-50 space-y-3">
+                <h3 className="text-xs font-black uppercase text-slate-400">Agregar producto</h3>
+                <Select value={nuevoProductoId} onValueChange={setNuevoProductoId}>
+                  <SelectTrigger className="h-12 bg-white">
+                    <SelectValue placeholder="Selecciona un producto" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {productosDisponiblesParaAgregar.map((p) => (
+                      <SelectItem key={p.id} value={p.id.toString()}>{p.nombre}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
+                    <Input
+                      type="number"
+                      className="h-12 text-center text-lg font-bold bg-white"
+                      value={nuevoProductoUnidades}
+                      onChange={(e) => setNuevoProductoUnidades(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      className="h-12 text-center text-lg font-bold bg-white"
+                      value={nuevoProductoKilos}
+                      onChange={(e) => setNuevoProductoKilos(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <Button
+                  className="w-full"
+                  disabled={!nuevoProductoId || agregarProductoMutation.isPending}
+                  onClick={() => {
+                    if (!selectedPedido || !nuevoProductoId) return;
+                    agregarProductoMutation.mutate({
+                      pedidoId: selectedPedido.id,
+                      producto_id: parseInt(nuevoProductoId, 10),
+                      cantidad_kilos: nuevoProductoKilos ? parseFloat(nuevoProductoKilos) : 0,
+                      cantidad_unidades: nuevoProductoUnidades ? parseInt(nuevoProductoUnidades, 10) : 0,
+                    });
+                  }}
+                >
+                  <Plus className="mr-2 h-4 w-4" /> Agregar al pedido
+                </Button>
+              </div>
+            )}
           </div>
 
           <div className="p-4 bg-slate-900 text-white flex justify-between items-center">
