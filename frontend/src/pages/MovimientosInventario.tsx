@@ -553,7 +553,7 @@ export default function MovimientosInventario() {
                     #{item.pedido || item.factura}
                   </TableCell>
                   <TableCell>{item.cliente_nombre || item.proveedor_nombre || 'N/A'}</TableCell>
-                  <TableCell className="font-semibold">{item.producto_nombre || item.producto.nombre}</TableCell>
+                  <TableCell className="font-semibold">{item.producto_nombre || item.producto?.nombre || 'N/A'}</TableCell>
                   <TableCell className="text-right">{Number(item.cantidad_unidades).toFixed(0)}</TableCell>
                   <TableCell className="text-right font-medium text-blue-600">
                     {Number(item.cantidad_kilos).toFixed(2)} kg
@@ -605,7 +605,7 @@ export default function MovimientosInventario() {
               })}
               {filteredData.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={activeTab === 'salidas' ? 12 : 7} className="h-32 text-center text-muted-foreground">
+                  <TableCell colSpan={activeTab === 'salidas' ? 13 : 7} className="h-32 text-center text-muted-foreground">
                     No se encontraron movimientos con los filtros aplicados.
                   </TableCell>
                 </TableRow>
