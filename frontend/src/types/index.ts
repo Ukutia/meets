@@ -46,6 +46,10 @@ export interface DetallePedido {
   cantidad_unidades: number;
   cantidad_kilos: number;
   precio_venta: number;
+  // Descuento por kilo aplicado SOLO a este producto del pedido.
+  // precio_venta ya viene con el descuento restado, así que el precio de lista
+  // con el que se vendió es precio_venta + descuento_por_kilo.
+  descuento_por_kilo: number;
   total_venta: number;
   total_costo: number;
   margen: number;
@@ -60,6 +64,8 @@ export interface Pedido {
   fecha: string;
   estado: 'Reservado' | 'Preparado' | 'Anulado' | 'Pagado';
   total: number;
+  // Solo compatibilidad: valor por defecto para las líneas que no traen su
+  // propio descuento. El descuento real vive en cada DetallePedido.
   descuento_por_kilo: number;
   detalles: DetallePedido[];
 }

@@ -15,6 +15,37 @@ from rest_framework.permissions import IsAuthenticated
 class MyTokenObtainPairView(TokenObtainPairView):
     serializer_class = MyTokenObtainPairSerializer
 
+
+def mensaje_validacion(exc):
+    """Texto plano de un ValidationError de DRF (evita el repr con ErrorDetail)."""
+    detalle = getattr(exc, 'detail', None)
+    if isinstance(detalle, list) and detalle:
+        return str(detalle[0])
+    return str(detalle) if detalle else str(exc)
+
+
+def normalizar_descuento_por_kilo(valor, etiqueta="El descuento por kilo"):
+    """Valida un descuento por kilo recibido del front y lo deja como Decimal.
+
+    El descuento se aplica POR PRODUCTO (por linea del pedido), no al pedido
+    completo: cada detalle puede traer el suyo y las demas lineas quedan a
+    precio de lista.
+    """
+    if valor in (None, ''):
+        return Decimal('0')
+    try:
+        descuento = Decimal(str(valor))
+    except (InvalidOperation, ValueError):
+        raise ValidationError(f'{etiqueta} no es válido')
+    if descuento < 0:
+        raise ValidationError(f'{etiqueta} no puede ser negativo')
+    return descuento
+
+
+def precio_con_descuento(precio_lista, descuento):
+    """Precio/kg efectivo de una linea: nunca baja de 0 por un descuento grande."""
+    return max(precio_lista - descuento, Decimal('0.00'))
+
 class ProductosView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
@@ -95,25 +126,41 @@ class CrearPedido(APIView):
         if not isinstance(detalles, list) or len(detalles) == 0:
             return Response({'error': 'Los detalles deben ser una lista no vacía'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Descuento por kilo: opcional, se aplica solo a este pedido puntual
-        # (no es un descuento global de producto), restando del precio por
-        # kilo vigente al momento de crear cada linea.
+        # Descuento por kilo: opcional y POR PRODUCTO. Cada detalle puede traer
+        # su propio 'descuento_por_kilo', que se resta del precio por kilo
+        # vigente de ESE producto al crear la linea; los productos sin descuento
+        # quedan a precio de lista. No es un descuento global del producto ni
+        # del pedido completo.
+        #
+        # 'descuento_por_kilo' a nivel de pedido se sigue aceptando solo como
+        # valor por defecto para las lineas que no traen el suyo (clientes
+        # antiguos que aplicaban el descuento a todo el pedido).
         try:
-            descuento_por_kilo = Decimal(str(data.get('descuento_por_kilo', 0) or 0))
-        except (InvalidOperation, ValueError):
-            return Response({'error': 'El descuento por kilo no es válido'}, status=status.HTTP_400_BAD_REQUEST)
-        if descuento_por_kilo < 0:
-            return Response({'error': 'El descuento por kilo no puede ser negativo'}, status=status.HTTP_400_BAD_REQUEST)
+            descuento_pedido = normalizar_descuento_por_kilo(
+                data.get('descuento_por_kilo'), 'El descuento por kilo del pedido'
+            )
+        except ValidationError as e:
+            return Response({'error': mensaje_validacion(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             with transaction.atomic():
-                pedido = Pedido.objects.create(cliente_id=cliente_id, descuento_por_kilo=descuento_por_kilo)
+                pedido = Pedido.objects.create(cliente_id=cliente_id, descuento_por_kilo=descuento_pedido)
                 total_pedido = Decimal('0.00')
 
                 for detalle in detalles:
                     producto_id = detalle.get('producto')
                     kilos = Decimal(str(detalle.get('cantidad_kilos', 0)))
                     unidades = int(detalle.get('cantidad_unidades', 0))
+
+                    # Descuento de ESTA linea: el que venga en el producto y, si
+                    # no viene ninguno, el default del pedido (compatibilidad).
+                    if detalle.get('descuento_por_kilo') in (None, ''):
+                        descuento_linea = descuento_pedido
+                    else:
+                        descuento_linea = normalizar_descuento_por_kilo(
+                            detalle.get('descuento_por_kilo'),
+                            'El descuento por kilo del producto',
+                        )
 
 
                     producto = Producto.objects.get(id=producto_id)
@@ -144,7 +191,7 @@ class CrearPedido(APIView):
                     # el desglose por factura que se muestra en Movimientos.
                     _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
-                    precio_venta = max(producto.precio_por_kilo - descuento_por_kilo, Decimal('0.00'))
+                    precio_venta = precio_con_descuento(producto.precio_por_kilo, descuento_linea)
 
                     if kilos == 0:
                         kilos = Decimal('0.00')  # Si no hay kilos, se deja en 0
@@ -166,7 +213,8 @@ class CrearPedido(APIView):
                         cantidad_kilos=kilos,
                         cantidad_unidades=unidades,
                         total_venta=total_venta,
-                        precio_venta=precio_venta
+                        precio_venta=precio_venta,
+                        descuento_por_kilo=descuento_linea
                     )
 
                     # Agregar las facturas usadas al detalle del pedido
@@ -193,7 +241,7 @@ class CrearPedido(APIView):
                 return Response(PedidoSerializer(pedido).data, status=status.HTTP_201_CREATED)
 
         except ValidationError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': mensaje_validacion(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f'Error al crear el pedido o detalles: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -278,6 +326,19 @@ class PedidoDetailView(APIView):
                         # total al recalcularse con los kilos nuevos abajo.
                         restituir_unidades_fifo(detalle_obj.producto, -delta_unidades)
 
+                    # Descuento por kilo de ESTA línea (por producto). El precio
+                    # de lista con el que se vendió no se relee de Producto (pudo
+                    # cambiar después): se reconstruye como el precio efectivo
+                    # actual + el descuento que ya tenía aplicado la línea.
+                    if det.get('descuento_por_kilo') not in (None, ''):
+                        nuevo_descuento = normalizar_descuento_por_kilo(
+                            det.get('descuento_por_kilo'),
+                            'El descuento por kilo del producto',
+                        )
+                        precio_lista = detalle_obj.precio_venta + detalle_obj.descuento_por_kilo
+                        detalle_obj.descuento_por_kilo = nuevo_descuento
+                        detalle_obj.precio_venta = precio_con_descuento(precio_lista, nuevo_descuento)
+
                     # Recalculamos subtotal de la línea
                     detalle_obj.total_venta = detalle_obj.cantidad_kilos * detalle_obj.precio_venta
                     detalle_obj.save()
@@ -295,6 +356,8 @@ class PedidoDetailView(APIView):
             
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return Response({'error': mensaje_validacion(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -783,9 +846,17 @@ class AgregarProductoPedido(APIView):
 
                 _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
-                # Igual que en CrearPedido: si el pedido tiene un descuento por
-                # kilo asignado, la línea nueva hereda ese mismo precio efectivo.
-                precio_venta = max(producto.precio_por_kilo - pedido.descuento_por_kilo, Decimal('0.00'))
+                # Igual que en CrearPedido, el descuento es POR PRODUCTO: la
+                # línea nueva usa el descuento que venga en el payload y, si no
+                # viene ninguno, el default del pedido (0 si nunca se usó).
+                if request.data.get('descuento_por_kilo') in (None, ''):
+                    descuento_linea = pedido.descuento_por_kilo
+                else:
+                    descuento_linea = normalizar_descuento_por_kilo(
+                        request.data.get('descuento_por_kilo'),
+                        'El descuento por kilo del producto',
+                    )
+                precio_venta = precio_con_descuento(producto.precio_por_kilo, descuento_linea)
 
                 if kilos > 0:
                     total_venta = kilos * precio_venta
@@ -800,7 +871,8 @@ class AgregarProductoPedido(APIView):
                     cantidad_kilos=kilos,
                     cantidad_unidades=unidades,
                     total_venta=total_venta,
-                    precio_venta=precio_venta
+                    precio_venta=precio_venta,
+                    descuento_por_kilo=descuento_linea
                 )
 
                 detalle_pedido.facturas.set(facturas_usadas)
@@ -833,7 +905,7 @@ class AgregarProductoPedido(APIView):
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except ValidationError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': mensaje_validacion(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f'Error al agregar el producto: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 

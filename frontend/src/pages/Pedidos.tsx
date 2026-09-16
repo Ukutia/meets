@@ -42,6 +42,7 @@ export default function Pedidos() {
   const [nuevoProductoId, setNuevoProductoId] = useState('');
   const [nuevoProductoKilos, setNuevoProductoKilos] = useState('');
   const [nuevoProductoUnidades, setNuevoProductoUnidades] = useState('');
+  const [nuevoProductoDescuento, setNuevoProductoDescuento] = useState('');
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -96,11 +97,13 @@ export default function Pedidos() {
   });
 
   const agregarProductoMutation = useMutation({
-    mutationFn: (payload: { pedidoId: number, producto_id: number, cantidad_kilos: number, cantidad_unidades: number }) =>
+    mutationFn: (payload: { pedidoId: number, producto_id: number, cantidad_kilos: number, cantidad_unidades: number, descuento_por_kilo: number }) =>
       agregarProductoPedido(payload.pedidoId, {
         producto_id: payload.producto_id,
         cantidad_kilos: payload.cantidad_kilos,
         cantidad_unidades: payload.cantidad_unidades,
+        // Descuento propio del producto que se agrega (0 = precio de lista).
+        descuento_por_kilo: payload.descuento_por_kilo,
       }),
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
@@ -108,6 +111,7 @@ export default function Pedidos() {
       setNuevoProductoId('');
       setNuevoProductoKilos('');
       setNuevoProductoUnidades('');
+      setNuevoProductoDescuento('');
       toast({ title: "Producto agregado", description: "Se agregó el producto al pedido." });
     },
     onError: (err: any) => {
@@ -218,9 +222,24 @@ export default function Pedidos() {
       if (field === 'cantidad_kilos') {
         const kilos = valAsNum;
         // Usamos el precio_venta ya guardado en la línea (no producto.precio_por_kilo):
-        // si el pedido tiene un descuento por kilo aplicado, precio_venta ya lo refleja,
+        // si esa línea tiene un descuento por kilo aplicado, precio_venta ya lo refleja,
         // y el backend recalcula el total de la misma forma al guardar (kilos * precio_venta).
         return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.precio_venta) };
+      }
+      if (field === 'descuento_por_kilo') {
+        // El descuento es de ESTE producto. El precio de lista con el que se
+        // vendió se reconstruye desde la línea (precio efectivo + descuento
+        // actual), igual que en el backend, para no releer el precio vigente
+        // del producto (que pudo cambiar después del pedido).
+        const precioLista = Number(det.precio_venta) + Number(det.descuento_por_kilo || 0);
+        const descuento = Math.min(precioLista, Math.max(0, valAsNum));
+        const precioVenta = precioLista - descuento;
+        return {
+          ...det,
+          descuento_por_kilo: descuento,
+          precio_venta: precioVenta,
+          total_venta: Number(det.cantidad_kilos || 0) * precioVenta,
+        };
       }
       if (field === 'cantidad_unidades') {
         return { ...det, cantidad_unidades: Math.trunc(valAsNum) };
@@ -453,7 +472,14 @@ export default function Pedidos() {
                       {cancelado ? (
                         <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px]">{formatCurrency(det.precio_venta)}/kg</Badge>
+                        <>
+                          {Number(det.descuento_por_kilo) > 0 && (
+                            <Badge className="text-[10px] bg-emerald-100 text-emerald-700 border-none">
+                              -{formatCurrency(det.descuento_por_kilo)}/kg
+                            </Badge>
+                          )}
+                          <Badge variant="outline" className="text-[10px]">{formatCurrency(det.precio_venta)}/kg</Badge>
+                        </>
                       )}
                     </div>
                   </div>
@@ -480,6 +506,28 @@ export default function Pedidos() {
                         onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)}
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 ml-1">
+                      Descuento por kilo (solo este producto)
+                    </label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      placeholder="0"
+                      disabled={cancelado}
+                      className="h-12 text-center text-lg font-bold bg-slate-50"
+                      value={Number(det.descuento_por_kilo) || ''}
+                      onChange={(e) => handleEditLocal(idx, 'descuento_por_kilo', e.target.value)}
+                    />
+                    {Number(det.descuento_por_kilo) > 0 && (
+                      <p className="text-[10px] text-slate-400 ml-1">
+                        Precio de lista {formatCurrency(Number(det.precio_venta) + Number(det.descuento_por_kilo))}/kg
+                        → se cobra {formatCurrency(det.precio_venta)}/kg
+                      </p>
+                    )}
                   </div>
 
                   <div className="pt-2 border-t border-dashed flex justify-between items-center">
@@ -541,6 +589,20 @@ export default function Pedidos() {
                     />
                   </div>
                 </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 ml-1">
+                    Descuento por kilo (solo este producto)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    placeholder="0"
+                    className="h-12 text-center text-lg font-bold bg-white"
+                    value={nuevoProductoDescuento}
+                    onChange={(e) => setNuevoProductoDescuento(e.target.value)}
+                  />
+                </div>
                 <Button
                   className="w-full"
                   disabled={!nuevoProductoId || agregarProductoMutation.isPending}
@@ -551,6 +613,7 @@ export default function Pedidos() {
                       producto_id: parseInt(nuevoProductoId, 10),
                       cantidad_kilos: nuevoProductoKilos ? parseFloat(nuevoProductoKilos) : 0,
                       cantidad_unidades: nuevoProductoUnidades ? parseInt(nuevoProductoUnidades, 10) : 0,
+                      descuento_por_kilo: nuevoProductoDescuento ? Math.max(0, parseFloat(nuevoProductoDescuento)) : 0,
                     });
                   }}
                 >
