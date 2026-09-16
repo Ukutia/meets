@@ -132,11 +132,12 @@ export const getPedido = (id: number) => api.get<Pedido>(`/pedidos/${id}/`);
 export const createPedido = (data: {
   cliente: number;
   vendedor: number;
-  descuento_por_kilo?: number;
   detalles: {
     producto: number;
     cantidad_kilos: number;
     cantidad_unidades: number;
+    // Descuento por kilo de ESTE producto (0 = precio de lista).
+    descuento_por_kilo?: number;
   }[];
 }) => api.post<Pedido>('/pedidos/crear/', data);
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
@@ -146,6 +147,7 @@ export const agregarProductoPedido = (pedidoId: number, data: {
   producto_id: number;
   cantidad_kilos: number;
   cantidad_unidades: number;
+  descuento_por_kilo?: number;
 }) => api.post<Pedido>(`/pedidos/agregar-producto/`, { pedido_id: pedidoId, ...data });
 export const actualizarKilosPedido = (id: number, detalles: any[]) =>
   api.post(`/pedidos/actualizar_kilos/${id}/`, { detalles });

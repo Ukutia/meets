@@ -38,6 +38,10 @@ interface DetalleProducto {
   kilosTexto: string;
   unidades: number;
   precio_unitario: number;
+  // Descuento por kilo de ESTE producto: se resta de su precio por kilo y no
+  // afecta a los demás productos del pedido.
+  descuento: number;
+  descuentoTexto: string;
   stock_disponible: number;
   subtotal: number;
 }
@@ -48,7 +52,9 @@ export default function PedidoNuevo() {
   const [clienteDialogOpen, setClienteDialogOpen] = useState(false);
   const [observaciones, setObservaciones] = useState('');
   const [aplicarDescuento, setAplicarDescuento] = useState(false);
-  const [descuentoPorKiloTexto, setDescuentoPorKiloTexto] = useState('');
+  // Atajo opcional para cargar el mismo descuento en todos los productos de una
+  // vez; igual queda guardado producto por producto y se puede editar cada uno.
+  const [descuentoParaTodosTexto, setDescuentoParaTodosTexto] = useState('');
   const [detalles, setDetalles] = useState<DetalleProducto[]>([]);
   const [productoSeleccionado, setProductoSeleccionado] = useState('');
   const navigate = useNavigate();
@@ -142,6 +148,8 @@ const agregarProducto = () => {
         kilosTexto: '',
         unidades: stockDisponible > 0 ? 1 : 0,
         precio_unitario: precio,
+        descuento: 0,
+        descuentoTexto: '',
         stock_disponible: stockDisponible,
         subtotal: 0,
         // @ts-ignore - agregamos esto para la validación
@@ -151,6 +159,16 @@ const agregarProducto = () => {
     setProductoSeleccionado('');
 };
 
+  // Precio/kg con el que se cobra una línea: el del producto menos SU propio
+  // descuento (nunca bajo 0). Es la misma cuenta que hace el backend.
+  const precioConDescuento = (detalle: DetalleProducto) =>
+    Math.max(0, detalle.precio_unitario - detalle.descuento);
+
+  const recalcularSubtotal = (detalle: DetalleProducto) => ({
+    ...detalle,
+    subtotal: detalle.kilos * precioConDescuento(detalle),
+  });
+
   const actualizarDetalle = (
     index: number,
     field: 'kilos' | 'unidades',
@@ -158,7 +176,7 @@ const agregarProducto = () => {
   ) => {
     setDetalles((prev) => {
       const nuevos = [...prev];
-      const detalle = { ...nuevos[index] };
+      let detalle = { ...nuevos[index] };
       const nuevoValor = Math.max(0, value);
 
       if (field === 'unidades') {
@@ -171,21 +189,66 @@ const agregarProducto = () => {
         detalle.kilos = nuevoValor;
       }
 
-      detalle.subtotal = detalle.kilos * detalle.precio_unitario;
+      detalle = recalcularSubtotal(detalle);
       nuevos[index] = detalle;
       return nuevos;
     });
+  };
+
+  // El descuento guarda el texto tal cual se escribe (para no pelear con el
+  // cursor al tipear decimales) y el monto ya acotado: nunca negativo ni mayor
+  // al precio del producto, porque más allá de eso el subtotal no baja de $0.
+  const actualizarDescuento = (index: number, texto: string) => {
+    setDetalles((prev) => {
+      const nuevos = [...prev];
+      const detalle = { ...nuevos[index], descuentoTexto: texto };
+      detalle.descuento = Math.min(
+        detalle.precio_unitario,
+        Math.max(0, formatNumber(texto))
+      );
+      nuevos[index] = recalcularSubtotal(detalle);
+      return nuevos;
+    });
+  };
+
+  const aplicarDescuentoATodos = () => {
+    const monto = Math.max(0, formatNumber(descuentoParaTodosTexto));
+    setDetalles((prev) =>
+      prev.map((detalle) => {
+        const descuento = Math.min(detalle.precio_unitario, monto);
+        return recalcularSubtotal({
+          ...detalle,
+          descuento,
+          descuentoTexto: descuento === 0 ? '' : String(descuento),
+        });
+      })
+    );
+  };
+
+  const limpiarDescuentos = () => {
+    setDescuentoParaTodosTexto('');
+    setDetalles((prev) =>
+      prev.map((detalle) =>
+        recalcularSubtotal({ ...detalle, descuento: 0, descuentoTexto: '' })
+      )
+    );
   };
 
   const eliminarDetalle = (index: number) => {
     setDetalles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const totalSinDescuento = detalles.reduce((sum, d) => sum + d.subtotal, 0);
-  const descuentoPorKilo = aplicarDescuento ? Math.max(0, formatNumber(descuentoPorKiloTexto)) : 0;
-  const totalKilos = detalles.reduce((sum, d) => sum + d.kilos, 0);
-  const ahorroTotal = descuentoPorKilo * totalKilos;
-  const total = totalSinDescuento - ahorroTotal;
+  const totalSinDescuento = detalles.reduce(
+    (sum, d) => sum + d.kilos * d.precio_unitario,
+    0
+  );
+  // El ahorro se suma producto por producto: cada línea descuenta lo suyo.
+  const ahorroTotal = detalles.reduce(
+    (sum, d) => sum + d.kilos * Math.min(d.precio_unitario, d.descuento),
+    0
+  );
+  const total = detalles.reduce((sum, d) => sum + d.subtotal, 0);
+  const hayDescuentos = detalles.some((d) => d.descuento > 0);
 
   const pedidoMutation = useMutation({
     mutationFn: () => {
@@ -201,11 +264,12 @@ const agregarProducto = () => {
       return createPedido({
         cliente: clienteSeleccionado.id,
         vendedor: clienteSeleccionado.vendedor.id,
-        descuento_por_kilo: descuentoPorKilo,
         detalles: detalles.map((detalle) => ({
           producto: detalle.producto_id,
           cantidad_kilos: detalle.kilos,
           cantidad_unidades: detalle.unidades,
+          // Cada producto lleva su propio descuento por kilo (0 = sin descuento).
+          descuento_por_kilo: Math.min(detalle.precio_unitario, detalle.descuento),
         })),
       });
     },
@@ -306,6 +370,60 @@ case 2:
                 </Button>
               </div>
 
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">Descuento por kilo</p>
+                    <p className="text-xs text-muted-foreground">
+                      Se aplica producto por producto, no al pedido completo: solo baja el
+                      precio de los productos a los que le cargue un monto.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={aplicarDescuento ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => {
+                      if (aplicarDescuento) limpiarDescuentos();
+                      setAplicarDescuento((prev) => !prev);
+                    }}
+                  >
+                    {aplicarDescuento ? 'Quitar descuentos' : 'Aplicar descuento'}
+                  </Button>
+                </div>
+                {aplicarDescuento && (
+                  <div className="space-y-2">
+                    <Label htmlFor="descuento_para_todos">
+                      Cargar el mismo monto a todos los productos ($/kg)
+                    </Label>
+                    <div className="flex gap-2">
+                      <Input
+                        id="descuento_para_todos"
+                        type="number"
+                        min={0}
+                        step="any"
+                        placeholder="0"
+                        value={descuentoParaTodosTexto}
+                        onChange={(e) => setDescuentoParaTodosTexto(e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={aplicarDescuentoATodos}
+                        disabled={detalles.length === 0}
+                      >
+                        Aplicar a todos
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Es solo un atajo: después puede ajustar o borrar el descuento de cada
+                      producto en la tabla.
+                    </p>
+                  </div>
+                )}
+              </div>
+
               {detalles.length > 0 && (
                 <div className="rounded-lg border border-border overflow-hidden">
                   <Table>
@@ -316,6 +434,12 @@ case 2:
                         <TableHead className="text-center">Kilos</TableHead>
                         <TableHead className="text-center">Unidades</TableHead>
                         <TableHead>Precio</TableHead>
+                        {aplicarDescuento && (
+                          <>
+                            <TableHead className="text-center">Desc. $/kg</TableHead>
+                            <TableHead>Precio final</TableHead>
+                          </>
+                        )}
                         <TableHead>Subtotal</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
@@ -389,7 +513,30 @@ case 2:
                                 </Button>
                               </div>
                             </TableCell>
-                            <TableCell>${detalle.precio_unitario.toLocaleString('es-CL')}</TableCell>
+                            <TableCell
+                              className={detalle.descuento > 0 ? 'text-muted-foreground line-through' : ''}
+                            >
+                              ${detalle.precio_unitario.toLocaleString('es-CL')}
+                            </TableCell>
+                            {aplicarDescuento && (
+                              <>
+                                <TableCell>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    placeholder="0"
+                                    className="h-8 w-24 text-center"
+                                    value={detalle.descuentoTexto}
+                                    onChange={(e) => actualizarDescuento(index, e.target.value)}
+                                    onFocus={(e) => e.target.select()}
+                                  />
+                                </TableCell>
+                                <TableCell className="font-medium">
+                                  ${precioConDescuento(detalle).toLocaleString('es-CL')}
+                                </TableCell>
+                              </>
+                            )}
                             <TableCell className="font-bold text-primary">
                               ${detalle.subtotal.toLocaleString('es-CL')}
                             </TableCell>
@@ -430,7 +577,7 @@ case 2:
                   <p className="text-3xl font-black text-primary">
                     ${total.toLocaleString('es-CL')}
                   </p>
-                  {descuentoPorKilo > 0 && (
+                  {ahorroTotal > 0 && (
                     <p className="text-xs text-muted-foreground">
                       Sin descuento: ${totalSinDescuento.toLocaleString('es-CL')} · Ahorro: ${ahorroTotal.toLocaleString('es-CL')}
                     </p>
@@ -439,39 +586,40 @@ case 2:
               </div>
 
               <div className="rounded-lg border p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Descuento por kilo</p>
-                    <p className="text-xs text-muted-foreground">
-                      Aplica solo a este pedido, no cambia el precio general del producto.
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant={aplicarDescuento ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => {
-                      setAplicarDescuento((prev) => !prev);
-                      if (aplicarDescuento) setDescuentoPorKiloTexto('');
-                    }}
-                  >
-                    {aplicarDescuento ? 'Quitar descuento' : 'Aplicar descuento'}
-                  </Button>
+                <div>
+                  <p className="text-sm font-medium">Detalle por producto</p>
+                  <p className="text-xs text-muted-foreground">
+                    El descuento por kilo es de cada producto: los que no tienen monto se
+                    cobran a precio de lista. Para cambiarlo vuelva al paso 2.
+                  </p>
                 </div>
-                {aplicarDescuento && (
-                  <div className="space-y-2">
-                    <Label htmlFor="descuento_por_kilo">Monto a descontar por kilo ($)</Label>
-                    <Input
-                      id="descuento_por_kilo"
-                      type="number"
-                      min={0}
-                      step="any"
-                      placeholder="0"
-                      value={descuentoPorKiloTexto}
-                      onChange={(e) => setDescuentoPorKiloTexto(e.target.value)}
-                      onFocus={(e) => e.target.select()}
-                    />
-                  </div>
+                <div className="space-y-2">
+                  {detalles.map((detalle) => (
+                    <div
+                      key={detalle.producto_id}
+                      className="flex items-center justify-between gap-2 text-sm border-b last:border-b-0 pb-2 last:pb-0"
+                    >
+                      <div>
+                        <p className="font-medium">{detalle.producto_nombre}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {detalle.kilos.toLocaleString('es-CL')} kg × $
+                          {precioConDescuento(detalle).toLocaleString('es-CL')}/kg
+                          {detalle.descuento > 0 && (
+                            <span className="text-primary">
+                              {' '}· descuento ${detalle.descuento.toLocaleString('es-CL')}/kg
+                              (antes ${detalle.precio_unitario.toLocaleString('es-CL')}/kg)
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                      <span className="font-bold">${detalle.subtotal.toLocaleString('es-CL')}</span>
+                    </div>
+                  ))}
+                </div>
+                {!hayDescuentos && (
+                  <p className="text-xs text-muted-foreground">
+                    Ningún producto tiene descuento: el pedido va a precio de lista.
+                  </p>
                 )}
               </div>
 
