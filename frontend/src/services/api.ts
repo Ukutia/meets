@@ -216,6 +216,21 @@ export const createAjusteInventario = (data: {
   cantidad_unidades: number;
   razon?: string;
 }) => api.post<AjusteInventario>('/inventario/ajustes/crear/', data);
+// Editar y eliminar revierten en el backend el movimiento de stock que el
+// ajuste hizo al registrarse, asi que despues de llamarlos hay que invalidar
+// tambien la query de stock, no solo la de ajustes.
+export const updateAjusteInventario = (
+  id: number,
+  data: {
+    producto: number;
+    tipo: 'merma' | 'exceso' | 'ajuste';
+    cantidad: number;
+    cantidad_unidades: number;
+    razon?: string;
+  }
+) => api.put<AjusteInventario>(`/inventario/ajustes/${id}/`, data);
+export const deleteAjusteInventario = (id: number) =>
+  api.delete(`/inventario/ajustes/${id}/`);
 // Vendedores
 export const getVendedores = () => api.get<Vendedor[]>('/vendedores/');
 

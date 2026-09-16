@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText, Layers } from 'lucide-react';
-import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario, getStock } from '@/services/api'; // Asegúrate de tener estos servicios
+import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText, Layers, Pencil, Trash2 } from 'lucide-react';
+import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario, updateAjusteInventario, deleteAjusteInventario, getStock } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,16 @@ import {
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
@@ -61,6 +71,8 @@ export default function MovimientosInventario() {
   });
   const [selectedFacturas, setSelectedFacturas] = useState<any | null>(null);
   const [ajusteDialogOpen, setAjusteDialogOpen] = useState(false);
+  const [ajusteEditando, setAjusteEditando] = useState<AjusteInventario | null>(null);
+  const [ajusteAEliminar, setAjusteAEliminar] = useState<AjusteInventario | null>(null);
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -100,30 +112,87 @@ export default function MovimientosInventario() {
     defaultValues: { producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' },
   });
 
+  // El mismo diálogo sirve para crear y para corregir: si hay un ajuste en
+  // edición se hace PUT sobre él, si no se crea uno nuevo.
   const ajusteMutation = useMutation({
-    mutationFn: (values: AjusteForm) =>
-      createAjusteInventario({
+    mutationFn: (values: AjusteForm) => {
+      const payload = {
         producto: Number(values.producto),
         tipo: values.tipo,
         cantidad: Number(values.cantidad || 0),
         cantidad_unidades: Number(values.cantidad_unidades || 0),
         razon: values.razon || undefined,
-      }),
+      };
+      return ajusteEditando
+        ? updateAjusteInventario(ajusteEditando.id, payload)
+        : createAjusteInventario(payload);
+    },
     onSuccess: () => {
+      // El backend revierte y vuelve a aplicar el movimiento en el ledger, así
+      // que el stock cambia igual que al crear: hay que refrescar ambas listas.
       queryClient.invalidateQueries({ queryKey: ['ajustes-inventario'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
-      toast({ title: 'Ajuste registrado', description: 'El movimiento de inventario se guardó con éxito.' });
-      setAjusteDialogOpen(false);
-      ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' });
+      toast({
+        title: ajusteEditando ? 'Ajuste actualizado' : 'Ajuste registrado',
+        description: 'El movimiento de inventario se guardó con éxito.',
+      });
+      cerrarDialogoAjuste();
     },
     onError: (err: any) => {
       toast({
-        title: 'Error al registrar',
+        title: ajusteEditando ? 'Error al actualizar' : 'Error al registrar',
         description: err.response?.data?.error || 'Verifica los datos ingresados.',
         variant: 'destructive',
       });
     },
   });
+
+  const eliminarAjusteMutation = useMutation({
+    mutationFn: (id: number) => deleteAjusteInventario(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ajustes-inventario'] });
+      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      toast({ title: 'Ajuste eliminado', description: 'El stock volvió a su valor anterior.' });
+      setAjusteAEliminar(null);
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'No se pudo eliminar',
+        description: err.response?.data?.error || 'Intenta nuevamente.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const abrirNuevoAjuste = () => {
+    setAjusteEditando(null);
+    ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' });
+    setAjusteDialogOpen(true);
+  };
+
+  const abrirEdicionAjuste = (a: AjusteInventario) => {
+    setAjusteEditando(a);
+    // Mermas y excesos se guardan firmados, pero el formulario pide la
+    // magnitud en positivo (el signo lo pone el tipo). El ajuste manual sí
+    // conserva su signo, porque ahí lo elige el usuario.
+    const aMagnitud = (v: number) => (a.tipo === 'ajuste' ? v : Math.abs(v));
+    const kilos = aMagnitud(Number(a.cantidad || 0));
+    const unidades = aMagnitud(Number(a.cantidad_unidades || 0));
+    ajusteForm.reset({
+      producto: String(a.producto),
+      tipo: a.tipo,
+      cantidad: kilos ? String(kilos) : '',
+      cantidad_unidades: unidades ? String(unidades) : '',
+      razon: a.razon || '',
+    });
+    setAjusteDialogOpen(true);
+  };
+
+  const cerrarDialogoAjuste = () => {
+    setAjusteDialogOpen(false);
+    setAjusteEditando(null);
+    ajusteForm.reset({ producto: '', tipo: 'merma', cantidad: '', cantidad_unidades: '', razon: '' });
+  };
 
   const filteredAjustes = useMemo(() => {
     const data: AjusteInventario[] = Array.isArray(ajustes) ? ajustes : [];
@@ -387,7 +456,7 @@ export default function MovimientosInventario() {
 
           <div className="flex items-center gap-4">
             {activeTab === 'ajustes' && (
-              <Button size="sm" className="gap-2" onClick={() => setAjusteDialogOpen(true)}>
+              <Button size="sm" className="gap-2" onClick={abrirNuevoAjuste}>
                 <Plus className="h-4 w-4" />
                 Registrar Merma / Ajuste
               </Button>
@@ -486,6 +555,7 @@ export default function MovimientosInventario() {
                     <TableHead className="text-right">Kilos</TableHead>
                     <TableHead className="text-right">Unidades</TableHead>
                     <TableHead>Razón</TableHead>
+                    <TableHead className="w-[100px] text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -508,11 +578,33 @@ export default function MovimientosInventario() {
                         {Number(a.cantidad_unidades) > 0 ? '+' : ''}{Number(a.cantidad_unidades || 0)} un
                       </TableCell>
                       <TableCell className="text-muted-foreground">{a.razon || '—'}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Editar"
+                            onClick={() => abrirEdicionAjuste(a)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            title="Eliminar"
+                            onClick={() => setAjusteAEliminar(a)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                   {filteredAjustes.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
+                      <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
                         Sin mermas o ajustes registrados.
                       </TableCell>
                     </TableRow>
@@ -617,12 +709,14 @@ export default function MovimientosInventario() {
       </Tabs>
 
       {/* DIÁLOGO: REGISTRAR MERMA / EXCESO / AJUSTE MANUAL */}
-      <Dialog open={ajusteDialogOpen} onOpenChange={setAjusteDialogOpen}>
+      <Dialog open={ajusteDialogOpen} onOpenChange={(open) => (open ? setAjusteDialogOpen(true) : cerrarDialogoAjuste())}>
         <DialogContent className="sm:max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>Registrar Merma / Ajuste</DialogTitle>
+            <DialogTitle>{ajusteEditando ? 'Editar Merma / Ajuste' : 'Registrar Merma / Ajuste'}</DialogTitle>
             <DialogDescription>
-              Registra una pérdida de inventario (merma), un excedente encontrado, o una corrección manual.
+              {ajusteEditando
+                ? 'Al guardar se revierte el movimiento de stock anterior y se aplica el nuevo.'
+                : 'Registra una pérdida de inventario (merma), un excedente encontrado, o una corrección manual.'}
             </DialogDescription>
           </DialogHeader>
 
@@ -702,7 +796,7 @@ export default function MovimientosInventario() {
             </div>
 
             <DialogFooter className="pt-2">
-              <Button type="button" variant="outline" onClick={() => setAjusteDialogOpen(false)}>
+              <Button type="button" variant="outline" onClick={cerrarDialogoAjuste}>
                 Cancelar
               </Button>
               <Button
@@ -713,12 +807,46 @@ export default function MovimientosInventario() {
                   (!Number(ajusteForm.watch('cantidad') || 0) && !Number(ajusteForm.watch('cantidad_unidades') || 0))
                 }
               >
-                {ajusteMutation.isPending ? 'Guardando...' : 'Registrar'}
+                {ajusteMutation.isPending ? 'Guardando...' : ajusteEditando ? 'Guardar cambios' : 'Registrar'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* CONFIRMACIÓN: ELIMINAR MERMA / AJUSTE */}
+      <AlertDialog open={!!ajusteAEliminar} onOpenChange={(open) => !open && setAjusteAEliminar(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar este movimiento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {ajusteAEliminar && (
+                <>
+                  Se eliminará el registro de{' '}
+                  <strong>{ajusteAEliminar.tipo === 'ajuste' ? 'ajuste manual' : ajusteAEliminar.tipo}</strong> de{' '}
+                  <strong>{ajusteAEliminar.producto_nombre}</strong> (
+                  {Number(ajusteAEliminar.cantidad || 0).toFixed(2)} kg /{' '}
+                  {Number(ajusteAEliminar.cantidad_unidades || 0)} un) y el stock volverá a su valor anterior.
+                  Esta acción no se puede deshacer.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={eliminarAjusteMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={eliminarAjusteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (ajusteAEliminar) eliminarAjusteMutation.mutate(ajusteAEliminar.id);
+              }}
+            >
+              {eliminarAjusteMutation.isPending ? 'Eliminando...' : 'Eliminar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* DIÁLOGO: DESGLOSE DE FACTURAS QUE ABASTECIERON ESTA SALIDA */}
       <Dialog open={!!selectedFacturas} onOpenChange={() => setSelectedFacturas(null)}>

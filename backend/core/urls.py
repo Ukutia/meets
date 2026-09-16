@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, CrearAjusteInventario, RentabilidadHistoricaView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -30,6 +30,7 @@ urlpatterns = [
     path('inventario/detalle-facturas/', DetalleFacturasList.as_view(), name='detalle-facturas-list'),
     path('inventario/ajustes/', AjusteInventarioListView.as_view(), name='ajustes-inventario-list'),
     path('inventario/ajustes/crear/', CrearAjusteInventario.as_view(), name='crear_ajuste_inventario'),
+    path('inventario/ajustes/<int:pk>/', AjusteInventarioDetailView.as_view(), name='ajuste-inventario-detail'),
     path('pagos-vendedor/', PagoVendedorView.as_view(), name='pagos_vendedor'),
     path('reportes/ganancias/', ReporteGananciasView.as_view(), name='reporte_ganancias'),
     path('reportes/perdidas/', ReportePerdidasView.as_view(), name='reporte_perdidas'),

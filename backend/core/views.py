@@ -1099,6 +1099,123 @@ class AjusteInventarioListView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+def _aplicar_ajuste_en_ledger(producto, cantidad, cantidad_unidades):
+    """Aplica al ledger (``EntradaProducto``) el efecto de un ajuste YA FIRMADO.
+
+    Kilos y unidades son magnitudes independientes y se mueven por separado:
+    lo negativo baja por FIFO y lo positivo se suma al lote vivo mas antiguo
+    (ver docstring de ``CrearAjusteInventario``).
+    """
+    if cantidad_unidades < 0:
+        consumir_fifo(producto, abs(cantidad_unidades))
+    if cantidad < 0:
+        descontar_kilos_fifo(producto, abs(cantidad))
+    if cantidad_unidades > 0 or cantidad > 0:
+        agregar_exceso_fifo(
+            producto,
+            cantidad_unidades if cantidad_unidades > 0 else 0,
+            cantidad if cantidad > 0 else Decimal('0'),
+        )
+
+
+def _revertir_ajuste_en_ledger(ajuste):
+    """Deshace en el ledger el movimiento que hizo ``ajuste`` al registrarse.
+
+    Es el espejo de ``_aplicar_ajuste_en_ledger``: lo que se descontó vuelve al
+    lote vivo mas antiguo (mismo criterio que las correcciones de pesaje en un
+    pedido) y lo que se sumó se vuelve a descontar por FIFO.
+
+    Si el ledger no admite la reversion — por ejemplo, el producto ya no tiene
+    ningun lote vivo donde devolver los kilos de una merma — levanta
+    ValidationError y el llamador debe abortar la transaccion completa.
+    """
+    producto = ajuste.producto
+    cantidad = Decimal(str(ajuste.cantidad or 0))
+    cantidad_unidades = int(ajuste.cantidad_unidades or 0)
+
+    if cantidad_unidades < 0:
+        restituir_unidades_fifo(producto, abs(cantidad_unidades))
+    if cantidad < 0:
+        restituir_kilos_fifo(producto, abs(cantidad))
+    if cantidad_unidades > 0:
+        consumir_fifo(producto, cantidad_unidades)
+    if cantidad > 0:
+        descontar_kilos_fifo(producto, cantidad)
+
+
+def _validar_datos_ajuste(data, ajuste_actual=None):
+    """Valida y firma el payload de un ajuste, para crear o para editar.
+
+    Devuelve ``(datos, None)`` con los valores listos para guardar, o
+    ``(None, (mensaje, status))`` si algo no cuadra. Al editar, los campos que
+    no vengan en el payload se toman de ``ajuste_actual``, asi que una edicion
+    parcial (solo la razon, solo los kilos) no obliga a reenviar todo.
+
+    El signo lo decide siempre el ``tipo``, tambien al editar: si una merma
+    pasa a exceso, la magnitud guardada cambia de signo aunque el usuario no
+    haya tocado las cantidades.
+    """
+    def _campo(nombre, actual):
+        return data.get(nombre) if nombre in data else actual
+
+    producto_id = _campo('producto', ajuste_actual.producto_id if ajuste_actual else None)
+    tipo = _campo('tipo', ajuste_actual.tipo if ajuste_actual else None)
+    cantidad = _campo('cantidad', ajuste_actual.cantidad if ajuste_actual else None)
+    cantidad_unidades = _campo(
+        'cantidad_unidades', ajuste_actual.cantidad_unidades if ajuste_actual else None
+    )
+    razon = _campo('razon', ajuste_actual.razon if ajuste_actual else '') or ''
+
+    if not producto_id or not tipo:
+        return None, ('Faltan datos obligatorios (producto, tipo)', status.HTTP_400_BAD_REQUEST)
+
+    if tipo not in dict(AjusteInventario.TIPO_AJUSTE):
+        return None, ('Tipo de ajuste inválido', status.HTTP_400_BAD_REQUEST)
+
+    try:
+        producto = Producto.objects.get(id=producto_id)
+    except Producto.DoesNotExist:
+        return None, ('Producto no encontrado', status.HTTP_404_NOT_FOUND)
+
+    try:
+        cantidad = Decimal(str(cantidad)) if cantidad not in (None, '') else Decimal('0')
+    except Exception:
+        return None, ('Cantidad en kilos inválida', status.HTTP_400_BAD_REQUEST)
+
+    try:
+        cantidad_unidades = int(cantidad_unidades) if cantidad_unidades not in (None, '') else 0
+    except Exception:
+        return None, ('Cantidad de unidades inválida', status.HTTP_400_BAD_REQUEST)
+
+    if cantidad == 0 and cantidad_unidades == 0:
+        return None, (
+            'Debes ingresar una cantidad en kilos o en unidades distinta de cero',
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tipo == 'merma':
+        cantidad = -abs(cantidad)
+        cantidad_unidades = -abs(cantidad_unidades)
+    elif tipo == 'exceso':
+        cantidad = abs(cantidad)
+        cantidad_unidades = abs(cantidad_unidades)
+
+    return {
+        'producto': producto,
+        'tipo': tipo,
+        'cantidad': cantidad,
+        'cantidad_unidades': cantidad_unidades,
+        'razon': razon,
+    }, None
+
+
+def _error_de_validacion(e):
+    """Extrae el texto de un ValidationError de DRF para devolverlo como error."""
+    detail = e.detail if hasattr(e, 'detail') else str(e)
+    mensaje = detail[0] if isinstance(detail, list) and detail else detail
+    return Response({'error': str(mensaje)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class CrearAjusteInventario(APIView):
     """
     Registra un ajuste de inventario (merma, exceso o ajuste manual).
@@ -1140,77 +1257,100 @@ class CrearAjusteInventario(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
-        data = request.data
-        producto_id = data.get('producto')
-        tipo = data.get('tipo')
-        cantidad = data.get('cantidad')
-        cantidad_unidades = data.get('cantidad_unidades')
-        razon = data.get('razon', '')
-
-        if not producto_id or not tipo:
-            return Response({'error': 'Faltan datos obligatorios (producto, tipo)'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if tipo not in dict(AjusteInventario.TIPO_AJUSTE):
-            return Response({'error': 'Tipo de ajuste inválido'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            producto = Producto.objects.get(id=producto_id)
-        except Producto.DoesNotExist:
-            return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            cantidad = Decimal(str(cantidad)) if cantidad not in (None, '') else Decimal('0')
-        except Exception:
-            return Response({'error': 'Cantidad en kilos inválida'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            cantidad_unidades = int(cantidad_unidades) if cantidad_unidades not in (None, '') else 0
-        except Exception:
-            return Response({'error': 'Cantidad de unidades inválida'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if cantidad == 0 and cantidad_unidades == 0:
-            return Response(
-                {'error': 'Debes ingresar una cantidad en kilos o en unidades distinta de cero'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if tipo == 'merma':
-            cantidad = -abs(cantidad)
-            cantidad_unidades = -abs(cantidad_unidades)
-        elif tipo == 'exceso':
-            cantidad = abs(cantidad)
-            cantidad_unidades = abs(cantidad_unidades)
+        datos, error = _validar_datos_ajuste(request.data)
+        if error:
+            return Response({'error': error[0]}, status=error[1])
 
         try:
             with transaction.atomic():
                 ajuste = AjusteInventario.objects.create(
-                    producto=producto,
-                    cantidad=cantidad,
-                    cantidad_unidades=cantidad_unidades,
-                    tipo=tipo,
-                    razon=razon,
+                    producto=datos['producto'],
+                    cantidad=datos['cantidad'],
+                    cantidad_unidades=datos['cantidad_unidades'],
+                    tipo=datos['tipo'],
+                    razon=datos['razon'],
                 )
 
                 # Impacto real en el stock. Los ajustes negativos descuentan del
                 # ledger; los positivos (exceso, o ajuste manual en positivo) suman
                 # al lote mas antiguo — ver docstring de la clase.
-                if cantidad_unidades < 0:
-                    consumir_fifo(producto, abs(cantidad_unidades))
-                if cantidad < 0:
-                    descontar_kilos_fifo(producto, abs(cantidad))
-                if cantidad_unidades > 0 or cantidad > 0:
-                    agregar_exceso_fifo(
-                        producto,
-                        cantidad_unidades if cantidad_unidades > 0 else 0,
-                        cantidad if cantidad > 0 else Decimal('0'),
-                    )
+                _aplicar_ajuste_en_ledger(
+                    datos['producto'], datos['cantidad'], datos['cantidad_unidades']
+                )
 
         except ValidationError as e:
-            detail = e.detail if hasattr(e, 'detail') else str(e)
-            mensaje = detail[0] if isinstance(detail, list) and detail else detail
-            return Response({'error': str(mensaje)}, status=status.HTTP_400_BAD_REQUEST)
+            return _error_de_validacion(e)
 
         return Response(AjusteInventarioSerializer(ajuste).data, status=status.HTTP_201_CREATED)
+
+
+class AjusteInventarioDetailView(APIView):
+    """Edita (PUT/PATCH) o elimina (DELETE) un ajuste de inventario.
+
+    Un ajuste no es solo un registro contable: al crearse movio de verdad el
+    ledger ``EntradaProducto``, que es la unica fuente del stock que muestra el
+    dashboard (ver ``CrearAjusteInventario``). Por eso corregir o borrar una
+    merma tiene que DESHACER primero ese movimiento y, al editar, aplicar
+    despues el nuevo. Si solo se tocara la fila de AjusteInventario, la lista de
+    mermas y el stock quedarian contando cosas distintas.
+
+    Editar es entonces "revertir + aplicar", no un delta: asi da lo mismo que
+    cambie la cantidad, el tipo o incluso el producto (una merma cargada al
+    producto equivocado se devuelve al original y se descuenta del correcto).
+
+    Todo ocurre en UNA transaccion. Si el ledger no admite la reversion — el
+    producto ya no tiene ningun lote vivo donde devolver los kilos, o el nuevo
+    valor no alcanza a descontarse — no se toca nada y se devuelve el error.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_ajuste(self, pk):
+        return AjusteInventario.objects.select_related('producto').filter(pk=pk).first()
+
+    def put(self, request, pk, *args, **kwargs):
+        ajuste = self._get_ajuste(pk)
+        if ajuste is None:
+            return Response({'error': 'Ajuste no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        datos, error = _validar_datos_ajuste(request.data, ajuste_actual=ajuste)
+        if error:
+            return Response({'error': error[0]}, status=error[1])
+
+        try:
+            with transaction.atomic():
+                _revertir_ajuste_en_ledger(ajuste)
+
+                ajuste.producto = datos['producto']
+                ajuste.tipo = datos['tipo']
+                ajuste.cantidad = datos['cantidad']
+                ajuste.cantidad_unidades = datos['cantidad_unidades']
+                ajuste.razon = datos['razon']
+                ajuste.save()
+
+                _aplicar_ajuste_en_ledger(
+                    datos['producto'], datos['cantidad'], datos['cantidad_unidades']
+                )
+        except ValidationError as e:
+            return _error_de_validacion(e)
+
+        return Response(AjusteInventarioSerializer(ajuste).data, status=status.HTTP_200_OK)
+
+    def patch(self, request, pk, *args, **kwargs):
+        return self.put(request, pk, *args, **kwargs)
+
+    def delete(self, request, pk, *args, **kwargs):
+        ajuste = self._get_ajuste(pk)
+        if ajuste is None:
+            return Response({'error': 'Ajuste no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            with transaction.atomic():
+                _revertir_ajuste_en_ledger(ajuste)
+                ajuste.delete()
+        except ValidationError as e:
+            return _error_de_validacion(e)
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ============================================================================
