@@ -132,6 +132,7 @@ export const getPedido = (id: number) => api.get<Pedido>(`/pedidos/${id}/`);
 export const createPedido = (data: {
   cliente: number;
   vendedor: number;
+  descuento_por_kilo?: number;
   detalles: {
     producto: number;
     cantidad_kilos: number;

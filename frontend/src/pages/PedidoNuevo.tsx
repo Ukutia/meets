@@ -47,6 +47,8 @@ export default function PedidoNuevo() {
   const [clienteId, setClienteId] = useState('');
   const [clienteDialogOpen, setClienteDialogOpen] = useState(false);
   const [observaciones, setObservaciones] = useState('');
+  const [aplicarDescuento, setAplicarDescuento] = useState(false);
+  const [descuentoPorKiloTexto, setDescuentoPorKiloTexto] = useState('');
   const [detalles, setDetalles] = useState<DetalleProducto[]>([]);
   const [productoSeleccionado, setProductoSeleccionado] = useState('');
   const navigate = useNavigate();
@@ -179,7 +181,11 @@ const agregarProducto = () => {
     setDetalles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const total = detalles.reduce((sum, d) => sum + d.subtotal, 0);
+  const totalSinDescuento = detalles.reduce((sum, d) => sum + d.subtotal, 0);
+  const descuentoPorKilo = aplicarDescuento ? Math.max(0, formatNumber(descuentoPorKiloTexto)) : 0;
+  const totalKilos = detalles.reduce((sum, d) => sum + d.kilos, 0);
+  const ahorroTotal = descuentoPorKilo * totalKilos;
+  const total = totalSinDescuento - ahorroTotal;
 
   const pedidoMutation = useMutation({
     mutationFn: () => {
@@ -195,6 +201,7 @@ const agregarProducto = () => {
       return createPedido({
         cliente: clienteSeleccionado.id,
         vendedor: clienteSeleccionado.vendedor.id,
+        descuento_por_kilo: descuentoPorKilo,
         detalles: detalles.map((detalle) => ({
           producto: detalle.producto_id,
           cantidad_kilos: detalle.kilos,
@@ -423,7 +430,49 @@ case 2:
                   <p className="text-3xl font-black text-primary">
                     ${total.toLocaleString('es-CL')}
                   </p>
+                  {descuentoPorKilo > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Sin descuento: ${totalSinDescuento.toLocaleString('es-CL')} · Ahorro: ${ahorroTotal.toLocaleString('es-CL')}
+                    </p>
+                  )}
                 </div>
+              </div>
+
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium">Descuento por kilo</p>
+                    <p className="text-xs text-muted-foreground">
+                      Aplica solo a este pedido, no cambia el precio general del producto.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={aplicarDescuento ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => {
+                      setAplicarDescuento((prev) => !prev);
+                      if (aplicarDescuento) setDescuentoPorKiloTexto('');
+                    }}
+                  >
+                    {aplicarDescuento ? 'Quitar descuento' : 'Aplicar descuento'}
+                  </Button>
+                </div>
+                {aplicarDescuento && (
+                  <div className="space-y-2">
+                    <Label htmlFor="descuento_por_kilo">Monto a descontar por kilo ($)</Label>
+                    <Input
+                      id="descuento_por_kilo"
+                      type="number"
+                      min={0}
+                      step="any"
+                      placeholder="0"
+                      value={descuentoPorKiloTexto}
+                      onChange={(e) => setDescuentoPorKiloTexto(e.target.value)}
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">

@@ -183,6 +183,12 @@ class Pedido(models.Model):
     )
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total del pedido", default=0)
 
+    descuento_por_kilo = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        verbose_name="Descuento por kilo",
+        help_text="Monto a descontar del precio por kilo de cada linea de este pedido. Se aplica solo a pedidos especificos, no de forma global."
+    )
+
     tipo_recibo = models.CharField(
         max_length=10,
         choices=[

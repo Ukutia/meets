@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText } from 'lucide-react';
+import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText, Layers } from 'lucide-react';
 import { getDetalleFacturas, getDetallePedidos, getProductos, getAjustesInventario, createAjusteInventario, getStock } from '@/services/api'; // Asegúrate de tener estos servicios
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -50,7 +50,7 @@ const FACTOR_IVA = 1.19;
 const formatMonto = (val: number) => Math.round(val).toLocaleString('es-CL');
 
 export default function MovimientosInventario() {
-  const [activeTab, setActiveTab] = useState<'entradas' | 'salidas' | 'ajustes'>('entradas');
+  const [activeTab, setActiveTab] = useState<'entradas' | 'salidas' | 'ajustes' | 'resumen'>('entradas');
   const [filter, setFilter] = useState({
     search: '',
     cliente: '',
@@ -194,7 +194,17 @@ export default function MovimientosInventario() {
   // pantalla) porque el cuadre es por producto a nivel global, no por lo que
   // esté filtrado en ese momento. Si "Diferencia" no da 0, ahí está el punto
   // exacto (producto) que hay que revisar.
-  const filasStockCalculado = () => {
+  type ResumenProducto = {
+    producto: string;
+    entradasKg: number; entradasUn: number;
+    salidasKg: number; salidasUn: number;
+    ajustesKg: number; ajustesUn: number;
+    saldoKg: number; saldoUn: number;
+    stockRealKg: number | null; stockRealUn: number | null;
+    diferenciaKg: number | null; diferenciaUn: number | null;
+  };
+
+  const resumenProductos = useMemo<ResumenProducto[]>(() => {
     type Acc = { entradasKg: number; entradasUn: number; salidasKg: number; salidasUn: number; ajustesKg: number; ajustesUn: number };
     const porProducto = new Map<string, Acc>();
     const vacio = (): Acc => ({ entradasKg: 0, entradasUn: 0, salidasKg: 0, salidasUn: 0, ajustesKg: 0, ajustesUn: 0 });
@@ -227,28 +237,39 @@ export default function MovimientosInventario() {
     return Array.from(porProducto.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([producto, acc]) => {
-        const calculadoKg = acc.entradasKg - acc.salidasKg + acc.ajustesKg;
-        const calculadoUn = acc.entradasUn - acc.salidasUn + acc.ajustesUn;
+        const saldoKg = acc.entradasKg - acc.salidasKg + acc.ajustesKg;
+        const saldoUn = acc.entradasUn - acc.salidasUn + acc.ajustesUn;
         const real = stockPorProducto.get(producto);
-        const realKg = real ? Number(real.kilos_actuales) : null;
-        const realUn = real ? Number(real.disponibles) : null;
+        const stockRealKg = real ? Number(real.kilos_actuales) : null;
+        const stockRealUn = real ? Number(real.disponibles) : null;
         return {
-          'Producto': producto,
-          'Entradas (kg)': Number(acc.entradasKg.toFixed(2)),
-          'Entradas (un)': acc.entradasUn,
-          'Salidas (kg)': Number(acc.salidasKg.toFixed(2)),
-          'Salidas (un)': acc.salidasUn,
-          'Ajustes (kg)': Number(acc.ajustesKg.toFixed(2)),
-          'Ajustes (un)': acc.ajustesUn,
-          'Stock Calculado (kg)': Number(calculadoKg.toFixed(2)),
-          'Stock Calculado (un)': calculadoUn,
-          'Stock Real (kg)': realKg !== null ? Number(realKg.toFixed(2)) : 'N/A',
-          'Stock Real (un)': realUn !== null ? realUn : 'N/A',
-          'Diferencia (kg)': realKg !== null ? Number((realKg - calculadoKg).toFixed(2)) : 'N/A',
-          'Diferencia (un)': realUn !== null ? realUn - calculadoUn : 'N/A',
+          producto,
+          entradasKg: acc.entradasKg, entradasUn: acc.entradasUn,
+          salidasKg: acc.salidasKg, salidasUn: acc.salidasUn,
+          ajustesKg: acc.ajustesKg, ajustesUn: acc.ajustesUn,
+          saldoKg, saldoUn,
+          stockRealKg, stockRealUn,
+          diferenciaKg: stockRealKg !== null ? stockRealKg - saldoKg : null,
+          diferenciaUn: stockRealUn !== null ? stockRealUn - saldoUn : null,
         };
       });
-  };
+  }, [entradas, salidas, ajustes, stock]);
+
+  const filasStockCalculado = () => resumenProductos.map((r) => ({
+    'Producto': r.producto,
+    'Entradas (kg)': Number(r.entradasKg.toFixed(2)),
+    'Entradas (un)': r.entradasUn,
+    'Salidas (kg)': Number(r.salidasKg.toFixed(2)),
+    'Salidas (un)': r.salidasUn,
+    'Ajustes (kg)': Number(r.ajustesKg.toFixed(2)),
+    'Ajustes (un)': r.ajustesUn,
+    'Stock Calculado (kg)': Number(r.saldoKg.toFixed(2)),
+    'Stock Calculado (un)': r.saldoUn,
+    'Stock Real (kg)': r.stockRealKg !== null ? Number(r.stockRealKg.toFixed(2)) : 'N/A',
+    'Stock Real (un)': r.stockRealUn !== null ? r.stockRealUn : 'N/A',
+    'Diferencia (kg)': r.diferenciaKg !== null ? Number(r.diferenciaKg.toFixed(2)) : 'N/A',
+    'Diferencia (un)': r.diferenciaUn !== null ? r.diferenciaUn : 'N/A',
+  }));
 
   // El export siempre incluye Entradas, Salidas y Ajustes (con los filtros
   // aplicados a cada una) más una hoja Stock con el cuadre por producto,
@@ -359,6 +380,9 @@ export default function MovimientosInventario() {
             <TabsTrigger value="ajustes" className="gap-2">
               <PackageMinus className="h-4 w-4 text-destructive" /> Mermas / Ajustes
             </TabsTrigger>
+            <TabsTrigger value="resumen" className="gap-2">
+              <Layers className="h-4 w-4 text-amber-600" /> Resumen por Producto
+            </TabsTrigger>
           </TabsList>
 
           <div className="flex items-center gap-4">
@@ -368,9 +392,14 @@ export default function MovimientosInventario() {
                 Registrar Merma / Ajuste
               </Button>
             )}
-            {activeTab !== 'ajustes' && (
+            {activeTab !== 'ajustes' && activeTab !== 'resumen' && (
               <div className="text-sm text-muted-foreground">
                 Mostrando <b>{filteredData.length}</b> registros
+              </div>
+            )}
+            {activeTab === 'resumen' && (
+              <div className="text-sm text-muted-foreground">
+                <b>{resumenProductos.length}</b> productos
               </div>
             )}
             <Button
@@ -387,7 +416,63 @@ export default function MovimientosInventario() {
           </div>
         </div>
 
-        {activeTab === 'ajustes' ? (
+        {activeTab === 'resumen' ? (
+          <Card>
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50">
+                  <TableHead>Producto</TableHead>
+                  <TableHead className="text-right">Entradas (kg)</TableHead>
+                  <TableHead className="text-right">Entradas (un)</TableHead>
+                  <TableHead className="text-right">Salidas (kg)</TableHead>
+                  <TableHead className="text-right">Salidas (un)</TableHead>
+                  <TableHead className="text-right">Saldo (kg)</TableHead>
+                  <TableHead className="text-right">Saldo (un)</TableHead>
+                  <TableHead className="text-right">Stock Real (kg)</TableHead>
+                  <TableHead className="text-right">Stock Real (un)</TableHead>
+                  <TableHead className="text-right">Diferencia (kg)</TableHead>
+                  <TableHead className="text-right">Diferencia (un)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {resumenProductos.map((r) => (
+                  <TableRow key={r.producto}>
+                    <TableCell className="font-semibold">{r.producto}</TableCell>
+                    <TableCell className="text-right text-green-600 font-medium">
+                      {r.entradasKg.toFixed(2)} kg
+                    </TableCell>
+                    <TableCell className="text-right text-green-600">{r.entradasUn} un</TableCell>
+                    <TableCell className="text-right text-blue-600 font-medium">
+                      {r.salidasKg.toFixed(2)} kg
+                    </TableCell>
+                    <TableCell className="text-right text-blue-600">{r.salidasUn} un</TableCell>
+                    <TableCell className="text-right font-bold">{r.saldoKg.toFixed(2)} kg</TableCell>
+                    <TableCell className="text-right font-bold">{r.saldoUn} un</TableCell>
+                    <TableCell className="text-right text-muted-foreground">
+                      {r.stockRealKg !== null ? `${r.stockRealKg.toFixed(2)} kg` : 'N/A'}
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground">
+                      {r.stockRealUn !== null ? `${r.stockRealUn} un` : 'N/A'}
+                    </TableCell>
+                    <TableCell className={`text-right font-medium ${r.diferenciaKg && Math.abs(r.diferenciaKg) > 0.01 ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {r.diferenciaKg !== null ? r.diferenciaKg.toFixed(2) : 'N/A'}
+                    </TableCell>
+                    <TableCell className={`text-right font-medium ${r.diferenciaUn ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {r.diferenciaUn !== null ? r.diferenciaUn : 'N/A'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {resumenProductos.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={11} className="h-32 text-center text-muted-foreground">
+                      Sin movimientos registrados.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        ) : activeTab === 'ajustes' ? (
           loadingA ? (
             <LoadingSpinner />
           ) : (

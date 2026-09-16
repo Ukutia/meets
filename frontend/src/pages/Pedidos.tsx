@@ -217,7 +217,10 @@ export default function Pedidos() {
       if (i !== index) return det;
       if (field === 'cantidad_kilos') {
         const kilos = valAsNum;
-        return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.producto.precio_por_kilo) };
+        // Usamos el precio_venta ya guardado en la línea (no producto.precio_por_kilo):
+        // si el pedido tiene un descuento por kilo aplicado, precio_venta ya lo refleja,
+        // y el backend recalcula el total de la misma forma al guardar (kilos * precio_venta).
+        return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.precio_venta) };
       }
       if (field === 'cantidad_unidades') {
         return { ...det, cantidad_unidades: Math.trunc(valAsNum) };
@@ -450,7 +453,7 @@ export default function Pedidos() {
                       {cancelado ? (
                         <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px]">{formatCurrency(det.producto.precio_por_kilo)}/kg</Badge>
+                        <Badge variant="outline" className="text-[10px]">{formatCurrency(det.precio_venta)}/kg</Badge>
                       )}
                     </div>
                   </div>

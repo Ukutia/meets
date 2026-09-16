@@ -45,6 +45,7 @@ export interface DetallePedido {
   producto: Producto;
   cantidad_unidades: number;
   cantidad_kilos: number;
+  precio_venta: number;
   total_venta: number;
   total_costo: number;
   margen: number;
@@ -59,6 +60,7 @@ export interface Pedido {
   fecha: string;
   estado: 'Reservado' | 'Preparado' | 'Anulado' | 'Pagado';
   total: number;
+  descuento_por_kilo: number;
   detalles: DetallePedido[];
 }
 

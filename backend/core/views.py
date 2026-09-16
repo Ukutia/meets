@@ -7,7 +7,7 @@ from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_pondera
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import IsAuthenticated
@@ -95,9 +95,19 @@ class CrearPedido(APIView):
         if not isinstance(detalles, list) or len(detalles) == 0:
             return Response({'error': 'Los detalles deben ser una lista no vacía'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Descuento por kilo: opcional, se aplica solo a este pedido puntual
+        # (no es un descuento global de producto), restando del precio por
+        # kilo vigente al momento de crear cada linea.
+        try:
+            descuento_por_kilo = Decimal(str(data.get('descuento_por_kilo', 0) or 0))
+        except (InvalidOperation, ValueError):
+            return Response({'error': 'El descuento por kilo no es válido'}, status=status.HTTP_400_BAD_REQUEST)
+        if descuento_por_kilo < 0:
+            return Response({'error': 'El descuento por kilo no puede ser negativo'}, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             with transaction.atomic():
-                pedido = Pedido.objects.create(cliente_id=cliente_id)
+                pedido = Pedido.objects.create(cliente_id=cliente_id, descuento_por_kilo=descuento_por_kilo)
                 total_pedido = Decimal('0.00')
 
                 for detalle in detalles:
@@ -134,12 +144,14 @@ class CrearPedido(APIView):
                     # el desglose por factura que se muestra en Movimientos.
                     _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
+                    precio_venta = max(producto.precio_por_kilo - descuento_por_kilo, Decimal('0.00'))
+
                     if kilos == 0:
                         kilos = Decimal('0.00')  # Si no hay kilos, se deja en 0
                         total_venta = Decimal('0.00')
                         pedido.estado = "Reservado"
                     else:
-                        total_venta = kilos * producto.precio_por_kilo
+                        total_venta = kilos * precio_venta
                         total_pedido += total_venta
                         pedido.estado = "Preparado"
                         # El pedido viene pesado: los kilos REALES salen ahora
@@ -154,7 +166,7 @@ class CrearPedido(APIView):
                         cantidad_kilos=kilos,
                         cantidad_unidades=unidades,
                         total_venta=total_venta,
-                        precio_venta=producto.precio_por_kilo
+                        precio_venta=precio_venta
                     )
 
                     # Agregar las facturas usadas al detalle del pedido
@@ -771,8 +783,12 @@ class AgregarProductoPedido(APIView):
 
                 _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
+                # Igual que en CrearPedido: si el pedido tiene un descuento por
+                # kilo asignado, la línea nueva hereda ese mismo precio efectivo.
+                precio_venta = max(producto.precio_por_kilo - pedido.descuento_por_kilo, Decimal('0.00'))
+
                 if kilos > 0:
-                    total_venta = kilos * producto.precio_por_kilo
+                    total_venta = kilos * precio_venta
                     descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
                 else:
                     kilos = Decimal('0.00')
@@ -784,7 +800,7 @@ class AgregarProductoPedido(APIView):
                     cantidad_kilos=kilos,
                     cantidad_unidades=unidades,
                     total_venta=total_venta,
-                    precio_venta=producto.precio_por_kilo
+                    precio_venta=precio_venta
                 )
 
                 detalle_pedido.facturas.set(facturas_usadas)
