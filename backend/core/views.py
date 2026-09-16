@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
 from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, revertir_stock_detalle, agregar_exceso_fifo
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -258,10 +258,13 @@ class PedidoDetailView(APIView):
                         nuevo_cpk = costo_por_kilo_ponderado(detalle_obj)
                         if nuevo_cpk is not None:
                             detalle_obj.costo_por_kilo = nuevo_cpk
-                    # OJO: bajar la cantidad de unidades NO libera stock de vuelta al
-                    # inventario (el consumo ya esta comprometido); el costo/kg se
-                    # mantiene y solo cambia el total al recalcularse con los kilos
-                    # nuevos en save().
+                    elif delta_unidades < 0:
+                        # Bajar la cantidad de unidades tiene que devolver esa
+                        # diferencia al ledger (ver Pedido reportado: se bajo 1
+                        # unidad de tapabarriga al editar y no volvio al stock).
+                        # El costo/kg de la linea se mantiene: solo cambia el
+                        # total al recalcularse con los kilos nuevos abajo.
+                        restituir_unidades_fifo(detalle_obj.producto, -delta_unidades)
 
                     # Recalculamos subtotal de la línea
                     detalle_obj.total_venta = detalle_obj.cantidad_kilos * detalle_obj.precio_venta

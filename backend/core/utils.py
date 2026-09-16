@@ -190,6 +190,37 @@ def restituir_kilos_fifo(producto, kilos_a_devolver):
     return kilos_a_devolver
 
 
+def restituir_unidades_fifo(producto, unidades_a_devolver):
+    """Devuelve unidades al ledger, al lote vivo MAS ANTIGUO (mismo criterio que
+    ``restituir_kilos_fifo``), para que vuelvan a la misma posicion FIFO de la
+    que salieron.
+
+    La usan las correcciones de ``cantidad_unidades`` a la baja en un pedido ya
+    creado (``PedidoDetailView.put``): si una linea pasa de 3 a 2 unidades, esa
+    unidad nunca debio quedar comprometida del inventario y tiene que volver.
+    """
+    unidades_a_devolver = int(unidades_a_devolver)
+    if unidades_a_devolver <= 0:
+        return 0
+
+    entrada = (
+        EntradaProducto.objects.filter(producto=producto)
+        .order_by('fecha_entrada')
+        .first()
+    )
+    if entrada is None:
+        # Sin ningun lote vivo no hay donde ponerlas: el producto quedaria con
+        # unidades sin lote ni costo asociado. Se reporta en vez de inventar.
+        raise ValidationError(
+            f"No hay ningun lote de '{producto.nombre}' donde devolver "
+            f"{unidades_a_devolver} unidades"
+        )
+
+    entrada.cantidad_unidades = int(entrada.cantidad_unidades) + unidades_a_devolver
+    entrada.save()
+    return unidades_a_devolver
+
+
 def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar):
     """Suma al ledger (``EntradaProducto``) unidades y/o kilos encontrados en
     un conteo físico que superó al stock del sistema (ajuste tipo "exceso").
