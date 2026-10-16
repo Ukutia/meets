@@ -140,7 +140,7 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'descuento_por_kilo', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
 
 class PedidoSerializer(serializers.ModelSerializer):
     detalles = DetallePedidoSerializer(many=True)
@@ -149,7 +149,7 @@ class PedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total', 'descuento_por_kilo']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total']
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles')

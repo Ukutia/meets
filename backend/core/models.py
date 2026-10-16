@@ -183,12 +183,6 @@ class Pedido(models.Model):
     )
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total del pedido", default=0)
 
-    descuento_por_kilo = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-        verbose_name="Descuento por kilo",
-        help_text="Monto a descontar del precio por kilo de cada linea de este pedido. Se aplica solo a pedidos especificos, no de forma global."
-    )
-
     tipo_recibo = models.CharField(
         max_length=10,
         choices=[
@@ -214,6 +208,11 @@ class DetallePedido(models.Model):
     cantidad_kilos = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Cantidad en kilos",default=0)
     cantidad_unidades = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Cantidad en Unidades")
     precio_venta = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio de venta (por kilo)")
+    descuento_por_kilo = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        verbose_name="Descuento por kilo",
+        help_text="Monto descontado del precio por kilo de ESTE producto en este pedido (precio_venta ya lo refleja). No cambia el precio general del producto."
+    )
     costo_por_kilo = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Costo por kilo en la venta", default=0)
     total_venta = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total de la venta",default=0)
     total_costo = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total del costo", default=0)

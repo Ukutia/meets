@@ -38,6 +38,7 @@ interface DetalleProducto {
   kilosTexto: string;
   unidades: number;
   precio_unitario: number;
+  descuentoTexto: string;
   stock_disponible: number;
   subtotal: number;
 }
@@ -47,8 +48,6 @@ export default function PedidoNuevo() {
   const [clienteId, setClienteId] = useState('');
   const [clienteDialogOpen, setClienteDialogOpen] = useState(false);
   const [observaciones, setObservaciones] = useState('');
-  const [aplicarDescuento, setAplicarDescuento] = useState(false);
-  const [descuentoPorKiloTexto, setDescuentoPorKiloTexto] = useState('');
   const [detalles, setDetalles] = useState<DetalleProducto[]>([]);
   const [productoSeleccionado, setProductoSeleccionado] = useState('');
   const navigate = useNavigate();
@@ -142,6 +141,7 @@ const agregarProducto = () => {
         kilosTexto: '',
         unidades: stockDisponible > 0 ? 1 : 0,
         precio_unitario: precio,
+        descuentoTexto: '',
         stock_disponible: stockDisponible,
         subtotal: 0,
         // @ts-ignore - agregamos esto para la validación
@@ -171,7 +171,22 @@ const agregarProducto = () => {
         detalle.kilos = nuevoValor;
       }
 
-      detalle.subtotal = detalle.kilos * detalle.precio_unitario;
+      detalle.subtotal = detalle.kilos * precioConDescuento(detalle);
+      nuevos[index] = detalle;
+      return nuevos;
+    });
+  };
+
+  // Descuento por kilo propio de cada producto: solo aplica a este pedido,
+  // no cambia el precio general del producto.
+  const descuentoDe = (d: DetalleProducto) => Math.max(0, formatNumber(d.descuentoTexto));
+  const precioConDescuento = (d: DetalleProducto) => Math.max(0, d.precio_unitario - descuentoDe(d));
+
+  const actualizarDescuento = (index: number, texto: string) => {
+    setDetalles((prev) => {
+      const nuevos = [...prev];
+      const detalle = { ...nuevos[index], descuentoTexto: texto };
+      detalle.subtotal = detalle.kilos * precioConDescuento(detalle);
       nuevos[index] = detalle;
       return nuevos;
     });
@@ -181,11 +196,9 @@ const agregarProducto = () => {
     setDetalles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const totalSinDescuento = detalles.reduce((sum, d) => sum + d.subtotal, 0);
-  const descuentoPorKilo = aplicarDescuento ? Math.max(0, formatNumber(descuentoPorKiloTexto)) : 0;
-  const totalKilos = detalles.reduce((sum, d) => sum + d.kilos, 0);
-  const ahorroTotal = descuentoPorKilo * totalKilos;
-  const total = totalSinDescuento - ahorroTotal;
+  const total = detalles.reduce((sum, d) => sum + d.subtotal, 0);
+  const totalSinDescuento = detalles.reduce((sum, d) => sum + d.kilos * d.precio_unitario, 0);
+  const ahorroTotal = totalSinDescuento - total;
 
   const pedidoMutation = useMutation({
     mutationFn: () => {
@@ -201,11 +214,11 @@ const agregarProducto = () => {
       return createPedido({
         cliente: clienteSeleccionado.id,
         vendedor: clienteSeleccionado.vendedor.id,
-        descuento_por_kilo: descuentoPorKilo,
         detalles: detalles.map((detalle) => ({
           producto: detalle.producto_id,
           cantidad_kilos: detalle.kilos,
           cantidad_unidades: detalle.unidades,
+          descuento_por_kilo: descuentoDe(detalle),
         })),
       });
     },
@@ -316,6 +329,7 @@ case 2:
                         <TableHead className="text-center">Kilos</TableHead>
                         <TableHead className="text-center">Unidades</TableHead>
                         <TableHead>Precio</TableHead>
+                        <TableHead className="text-center">Desc./kg</TableHead>
                         <TableHead>Subtotal</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
@@ -389,7 +403,33 @@ case 2:
                                 </Button>
                               </div>
                             </TableCell>
-                            <TableCell>${detalle.precio_unitario.toLocaleString('es-CL')}</TableCell>
+                            <TableCell>
+                              {descuentoDe(detalle) > 0 ? (
+                                <div>
+                                  <span className="text-xs text-muted-foreground line-through">
+                                    ${detalle.precio_unitario.toLocaleString('es-CL')}
+                                  </span>
+                                  <p>${precioConDescuento(detalle).toLocaleString('es-CL')}</p>
+                                </div>
+                              ) : (
+                                <>${detalle.precio_unitario.toLocaleString('es-CL')}</>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex justify-center">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step="any"
+                                  placeholder="0"
+                                  className="h-8 w-24 text-center"
+                                  aria-label={`Descuento por kilo de ${detalle.producto_nombre}`}
+                                  value={detalle.descuentoTexto}
+                                  onChange={(e) => actualizarDescuento(index, e.target.value)}
+                                  onFocus={(e) => e.target.select()}
+                                />
+                              </div>
+                            </TableCell>
                             <TableCell className="font-bold text-primary">
                               ${detalle.subtotal.toLocaleString('es-CL')}
                             </TableCell>
@@ -430,49 +470,12 @@ case 2:
                   <p className="text-3xl font-black text-primary">
                     ${total.toLocaleString('es-CL')}
                   </p>
-                  {descuentoPorKilo > 0 && (
+                  {ahorroTotal > 0 && (
                     <p className="text-xs text-muted-foreground">
                       Sin descuento: ${totalSinDescuento.toLocaleString('es-CL')} · Ahorro: ${ahorroTotal.toLocaleString('es-CL')}
                     </p>
                   )}
                 </div>
-              </div>
-
-              <div className="rounded-lg border p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Descuento por kilo</p>
-                    <p className="text-xs text-muted-foreground">
-                      Aplica solo a este pedido, no cambia el precio general del producto.
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant={aplicarDescuento ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => {
-                      setAplicarDescuento((prev) => !prev);
-                      if (aplicarDescuento) setDescuentoPorKiloTexto('');
-                    }}
-                  >
-                    {aplicarDescuento ? 'Quitar descuento' : 'Aplicar descuento'}
-                  </Button>
-                </div>
-                {aplicarDescuento && (
-                  <div className="space-y-2">
-                    <Label htmlFor="descuento_por_kilo">Monto a descontar por kilo ($)</Label>
-                    <Input
-                      id="descuento_por_kilo"
-                      type="number"
-                      min={0}
-                      step="any"
-                      placeholder="0"
-                      value={descuentoPorKiloTexto}
-                      onChange={(e) => setDescuentoPorKiloTexto(e.target.value)}
-                      onFocus={(e) => e.target.select()}
-                    />
-                  </div>
-                )}
               </div>
 
               <div className="space-y-2">

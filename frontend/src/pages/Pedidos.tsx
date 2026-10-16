@@ -218,7 +218,7 @@ export default function Pedidos() {
       if (field === 'cantidad_kilos') {
         const kilos = valAsNum;
         // Usamos el precio_venta ya guardado en la línea (no producto.precio_por_kilo):
-        // si el pedido tiene un descuento por kilo aplicado, precio_venta ya lo refleja,
+        // si la línea tiene un descuento por kilo aplicado, precio_venta ya lo refleja,
         // y el backend recalcula el total de la misma forma al guardar (kilos * precio_venta).
         return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.precio_venta) };
       }

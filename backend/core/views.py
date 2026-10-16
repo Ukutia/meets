@@ -56,6 +56,17 @@ class PedidoListView(APIView):
         serializer = PedidoSerializer(pedidos, many=True)
         return Response(serializer.data)
 
+def parse_descuento_por_kilo(valor):
+    """Descuento por kilo de UNA linea: vacio -> 0; invalido o negativo -> ValidationError."""
+    try:
+        descuento = Decimal(str(valor or 0))
+    except (InvalidOperation, ValueError):
+        raise ValidationError("El descuento por kilo no es válido")
+    if descuento < 0:
+        raise ValidationError("El descuento por kilo no puede ser negativo")
+    return descuento
+
+
 class CrearPedido(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
@@ -95,22 +106,20 @@ class CrearPedido(APIView):
         if not isinstance(detalles, list) or len(detalles) == 0:
             return Response({'error': 'Los detalles deben ser una lista no vacía'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Descuento por kilo: opcional, se aplica solo a este pedido puntual
-        # (no es un descuento global de producto), restando del precio por
-        # kilo vigente al momento de crear cada linea.
+        # Descuento por kilo: opcional y POR PRODUCTO (cada detalle trae el
+        # suyo). Se resta del precio por kilo vigente de ese producto solo en
+        # este pedido; no es un descuento global.
         try:
-            descuento_por_kilo = Decimal(str(data.get('descuento_por_kilo', 0) or 0))
-        except (InvalidOperation, ValueError):
-            return Response({'error': 'El descuento por kilo no es válido'}, status=status.HTTP_400_BAD_REQUEST)
-        if descuento_por_kilo < 0:
-            return Response({'error': 'El descuento por kilo no puede ser negativo'}, status=status.HTTP_400_BAD_REQUEST)
+            descuentos = [parse_descuento_por_kilo(d.get('descuento_por_kilo')) for d in detalles]
+        except ValidationError as e:
+            return Response({'error': str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             with transaction.atomic():
-                pedido = Pedido.objects.create(cliente_id=cliente_id, descuento_por_kilo=descuento_por_kilo)
+                pedido = Pedido.objects.create(cliente_id=cliente_id)
                 total_pedido = Decimal('0.00')
 
-                for detalle in detalles:
+                for detalle, descuento_por_kilo in zip(detalles, descuentos):
                     producto_id = detalle.get('producto')
                     kilos = Decimal(str(detalle.get('cantidad_kilos', 0)))
                     unidades = int(detalle.get('cantidad_unidades', 0))
@@ -166,7 +175,8 @@ class CrearPedido(APIView):
                         cantidad_kilos=kilos,
                         cantidad_unidades=unidades,
                         total_venta=total_venta,
-                        precio_venta=precio_venta
+                        precio_venta=precio_venta,
+                        descuento_por_kilo=descuento_por_kilo
                     )
 
                     # Agregar las facturas usadas al detalle del pedido
@@ -783,9 +793,10 @@ class AgregarProductoPedido(APIView):
 
                 _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
 
-                # Igual que en CrearPedido: si el pedido tiene un descuento por
-                # kilo asignado, la línea nueva hereda ese mismo precio efectivo.
-                precio_venta = max(producto.precio_por_kilo - pedido.descuento_por_kilo, Decimal('0.00'))
+                # Igual que en CrearPedido: el descuento por kilo es propio de
+                # esta línea (opcional, 0 si no viene).
+                descuento_por_kilo = parse_descuento_por_kilo(request.data.get('descuento_por_kilo'))
+                precio_venta = max(producto.precio_por_kilo - descuento_por_kilo, Decimal('0.00'))
 
                 if kilos > 0:
                     total_venta = kilos * precio_venta
@@ -800,7 +811,8 @@ class AgregarProductoPedido(APIView):
                     cantidad_kilos=kilos,
                     cantidad_unidades=unidades,
                     total_venta=total_venta,
-                    precio_venta=precio_venta
+                    precio_venta=precio_venta,
+                    descuento_por_kilo=descuento_por_kilo
                 )
 
                 detalle_pedido.facturas.set(facturas_usadas)
