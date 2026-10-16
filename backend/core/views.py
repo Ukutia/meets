@@ -1856,3 +1856,34 @@ class RentabilidadHistoricaView(APIView):
             'producto_id': int(producto_id) if producto_id else None,
             'periodos': periodos,
         }, status=status.HTTP_200_OK)
+
+class CambiarPasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from django.contrib.auth.password_validation import validate_password
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from django.utils import translation
+
+        actual = request.data.get('password_actual')
+        nueva = request.data.get('password_nueva')
+
+        if not actual or not nueva:
+            return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        # 400 (no 401) para no gatillar el refresh/logout del interceptor del frontend
+        if not user.check_password(actual):
+            return Response({'error': 'La contraseña actual es incorrecta'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with translation.override('es'):
+                validate_password(nueva, user)
+        except DjangoValidationError as e:
+            with translation.override('es'):
+                mensajes = [str(m) for m in e.messages]
+            return Response({'error': ' '.join(mensajes)}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(nueva)
+        user.save(update_fields=['password'])
+        return Response({'mensaje': 'Contraseña actualizada correctamente'}, status=status.HTTP_200_OK)

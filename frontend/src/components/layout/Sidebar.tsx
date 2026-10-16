@@ -1,5 +1,5 @@
 import { useEffect } from 'react'; // Añadir useEffect
-import { NavLink, useLocation } from 'react-router-dom'; // Añadir useLocation
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'; // Añadir useLocation
 import {
   LayoutDashboard,
   Package,
@@ -10,6 +10,7 @@ import {
   LogOut,
   Feather,
   TrendingUp,
+  KeyRound,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -44,6 +45,7 @@ export function AppSidebar() {
   const { state, isMobile, setOpenMobile } = useSidebar(); // Extraemos isMobile y setOpenMobile
   const { logout, user } = useAuth();
   const location = useLocation(); // Detecta cambios de URL
+  const navigate = useNavigate();
   const collapsed = state === 'collapsed';
 
   // Cerrar automáticamente cuando cambie la ruta solo si estamos en móvil
@@ -104,6 +106,15 @@ export function AppSidebar() {
             <p className="text-xs text-muted-foreground">{user.email}</p>
           </div>
         )}
+        <Button
+          variant={location.pathname === '/cuenta' ? 'secondary' : 'ghost'}
+          size={collapsed ? 'icon' : 'default'}
+          onClick={() => navigate('/cuenta')}
+          className="w-full"
+        >
+          <KeyRound className="h-4 w-4" />
+          {!collapsed && <span className="ml-2">Cambiar Contraseña</span>}
+        </Button>
         <Button
           variant="ghost"
           size={collapsed ? 'icon' : 'default'}

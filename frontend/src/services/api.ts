@@ -97,6 +97,9 @@ api.interceptors.response.use(
 export const loginRequest = (credentials: { username: string; password: string }) =>
   api.post('/token/', credentials); // El endpoint que configuramos en Django
 
+export const cambiarPassword = (password_actual: string, password_nueva: string) =>
+  api.post('/auth/cambiar-password/', { password_actual, password_nueva });
+
 export const refreshToken = (refresh: string) =>
   api.post(REFRESH_URL, { refresh });
 

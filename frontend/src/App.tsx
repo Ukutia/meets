@@ -18,6 +18,7 @@ import Reportes from "./pages/Reportes";
 import NotFound from "./pages/NotFound";
 import FormularioPedido from "./pages/FormularioPedido";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
+import CambiarPassword from "./pages/CambiarPassword";
 
 const queryClient = new QueryClient();
 
@@ -144,6 +145,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Reportes />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/cuenta"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <CambiarPassword />
                   </Layout>
                 </ProtectedRoute>
               }
