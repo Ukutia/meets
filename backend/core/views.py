@@ -863,7 +863,7 @@ class ObtenerPedido(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         
 
-from django.db.models import Sum
+from django.db.models import Sum, Count
 
 from rest_framework import generics
 
@@ -1034,9 +1034,53 @@ class HistorialPrecioProductoView(APIView):
 class ProveedorListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        proveedores = Proveedor.objects.all()
+        proveedores = Proveedor.objects.annotate(cantidad_facturas=Count('facturas')).order_by('nombre')
         serializer = ProveedorSerializer(proveedores, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = ProveedorSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({'error': _primer_error(serializer.errors)}, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ProveedorDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        try:
+            proveedor = Proveedor.objects.get(pk=pk)
+        except Proveedor.DoesNotExist:
+            return Response({'error': 'Proveedor no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = ProveedorSerializer(proveedor, data=request.data)
+        if not serializer.is_valid():
+            return Response({'error': _primer_error(serializer.errors)}, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        try:
+            proveedor = Proveedor.objects.get(pk=pk)
+        except Proveedor.DoesNotExist:
+            return Response({'error': 'Proveedor no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        # Factura.proveedor es PROTECT: no se puede borrar un proveedor con facturas.
+        if proveedor.facturas.exists():
+            return Response(
+                {'error': 'No se puede eliminar: el proveedor tiene facturas asociadas'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        proveedor.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _primer_error(errors):
+    """Devuelve el primer mensaje de error de un serializer como texto plano."""
+    for mensajes in errors.values():
+        if isinstance(mensajes, list) and mensajes:
+            return str(mensajes[0])
+    return 'Datos inválidos'
 
 
 class StockProductosView(APIView):

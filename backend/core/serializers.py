@@ -167,9 +167,28 @@ class PagoFacturaSerializer(serializers.ModelSerializer):
 
 
 class ProveedorSerializer(serializers.ModelSerializer):
+    cantidad_facturas = serializers.SerializerMethodField()
+
     class Meta:
         model = Proveedor
-        fields = ['id', 'nombre']
+        fields = ['id', 'nombre', 'cantidad_facturas']
+
+    def get_cantidad_facturas(self, obj):
+        # La lista lo trae anotado; en create/update se cuenta directo.
+        if hasattr(obj, 'cantidad_facturas'):
+            return obj.cantidad_facturas
+        return obj.facturas.count() if obj.pk else 0
+
+    def validate_nombre(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('El nombre es obligatorio')
+        qs = Proveedor.objects.filter(nombre__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('Ya existe un proveedor con ese nombre')
+        return value
 
 
         

@@ -11,6 +11,7 @@ import {
   Feather,
   TrendingUp,
   KeyRound,
+  Truck,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -34,6 +35,7 @@ const menuItems = [
   { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
   { title: 'Clientes', url: '/clientes', icon: Users },
   { title: 'Productos', url: '/productos', icon: Package },
+  { title: 'Proveedores', url: '/proveedores', icon: Truck },
   { title: 'Facturas', url: '/facturas', icon: FileText },
   { title: 'Stock', url: '/stock', icon: Warehouse },
   { title: 'Reportes', url: '/reportes', icon: TrendingUp },

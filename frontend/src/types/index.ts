@@ -4,6 +4,12 @@ export interface Vendedor {
   sigla: string;
 }
 
+export interface Proveedor {
+  id: number;
+  nombre: string;
+  cantidad_facturas: number;
+}
+
 export interface Cliente {
   id: number;
   nombre: string;

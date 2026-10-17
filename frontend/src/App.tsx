@@ -9,6 +9,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Productos from "./pages/Productos";
 import Clientes from "./pages/Clientes";
+import Proveedores from "./pages/Proveedores";
 import Pedidos from "./pages/Pedidos";
 import PedidoNuevo from "./pages/PedidoNuevo";
 import MovimientosInventarios from "./pages/MovimientosInventario";
@@ -75,6 +76,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Clientes />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/proveedores"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Proveedores />
                   </Layout>
                 </ProtectedRoute>
               }

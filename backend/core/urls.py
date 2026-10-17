@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -22,7 +22,8 @@ urlpatterns = [
     path('pedidos/agregar-producto/', AgregarProductoPedido.as_view(), name='agregar_producto_pedido'),
     path('stock/', StockProductos.as_view(), name='stock_productos'),
     path('vendedores/', VendedorListView.as_view(), name='vendedores'),
-    path('proveedores/', ProveedorListView.as_view(), name='proveedores'), # Nueva ruta
+    path('proveedores/', ProveedorListView.as_view(), name='proveedores'),
+    path('proveedores/<int:pk>/', ProveedorDetailView.as_view(), name='proveedor-detail'),
     path('facturas/crear/', CrearFacturaEntrada.as_view(), name='crear_factura'),
     path('facturas/', FacturaListView.as_view(), name='facturas'),
     path('pedidos/<int:pk>/', PedidoDetailView.as_view(), name='pedido-detail'),

@@ -105,6 +105,11 @@ export const refreshToken = (refresh: string) =>
 
 // Productos
 export const getProveedores = () => api.get<Proveedor[]>('/proveedores/');
+export const createProveedor = (data: { nombre: string }) =>
+  api.post<Proveedor>('/proveedores/', data);
+export const updateProveedor = (id: number, data: { nombre: string }) =>
+  api.put<Proveedor>(`/proveedores/${id}/`, data);
+export const deleteProveedor = (id: number) => api.delete(`/proveedores/${id}/`);
 export const getProductos = () => api.get<Producto[]>('/productos/');
 export const createProducto = (data: {
   nombre: string;
