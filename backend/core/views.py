@@ -914,6 +914,8 @@ class StockProductos(APIView):
                 'producto': producto.nombre,
                 'precio_por_kilo': producto.precio_por_kilo,
                 'categoria': producto.categoria,
+                'venta_por_unidad': producto.venta_por_unidad,
+                'peso_flyer': producto.peso_flyer,
                 'disponibles': disponibles,
                 'estado': producto.estado,
                 'stock': stock_fisico,
@@ -1004,6 +1006,8 @@ class UpdateProducto(APIView):
             producto.estado = data.get('estado', producto.estado)
             producto.categoria = data.get('categoria', producto.categoria)
             producto.descripcion = data.get('descripcion', producto.descripcion)
+            producto.venta_por_unidad = data.get('venta_por_unidad', producto.venta_por_unidad)
+            producto.peso_flyer = (data.get('peso_flyer', producto.peso_flyer) or '').strip()
 
             producto.save()
 

@@ -55,7 +55,7 @@ class ClienteSerializer(serializers.ModelSerializer):
 class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Producto
-        fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado', 'peso_minimo']
+        fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado', 'peso_minimo', 'venta_por_unidad', 'peso_flyer']
 
 class HistorialPrecioProductoSerializer(serializers.ModelSerializer):
     usuario_nombre = serializers.SerializerMethodField()

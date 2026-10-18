@@ -26,6 +26,8 @@ export interface Producto {
   categoria?: string | null;
   precio_por_kilo: number;
   estado: 'disponible' | 'agotado';
+  venta_por_unidad?: boolean;
+  peso_flyer?: string;
 }
 
 export interface MargenProducto {
@@ -108,6 +110,8 @@ export interface StockItem {
   id: number;
   producto: string;
   categoria?: string | null;
+  venta_por_unidad?: boolean;
+  peso_flyer?: string;
   estado: string;
   precio_por_kilo: number;
   disponibles: number;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
 import { ArrowDown, ArrowUp, Download, FileDown, Loader2, RotateCcw, Save, Share2 } from 'lucide-react';
@@ -14,17 +14,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
-import { getPerfil, getStock, updateTelefonoPerfil } from '@/services/api';
+import { getPerfil, getStock, updateProducto, updateTelefonoPerfil } from '@/services/api';
 import type { StockItem } from '@/types';
 import { FlyerCanvas, FLYER_HEIGHT, FLYER_WIDTH, type FlyerFila } from '@/components/flyer/FlyerCanvas';
 
-// Ajustes por producto que el usuario cambia solo para el flyer (no tocan el producto real).
+// Ajustes de cada usuario para su flyer (quedan en su navegador). El "c/u" y el peso
+// fijo, en cambio, se guardan en el producto y valen para todos.
 interface AjusteFila {
   incluir?: boolean;
   nombre?: string;
   precio?: string; // precio manual; vacío = usa el de la plataforma
-  porUnidad?: boolean;
-  peso?: string; // texto del peso aproximado; undefined = calculado desde el stock
 }
 
 interface ConfigFlyer {
@@ -63,15 +62,20 @@ const formatoKilos = (kg: number) => {
 };
 
 // Peso promedio por pieza según lo que hay en bodega (kilos / unidades disponibles).
+// Los productos por unidad no lo muestran salvo que tengan un peso fijo.
 const pesoCalculado = (item: StockItem) =>
-  item.disponibles > 0 && Number(item.kilos_actuales) > 0
+  !item.venta_por_unidad && item.disponibles > 0 && Number(item.kilos_actuales) > 0
     ? formatoKilos(Number(item.kilos_actuales) / Number(item.disponibles))
     : '';
+
+const pesoFlyer = (item: StockItem) => item.peso_flyer?.trim() || pesoCalculado(item);
 
 const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible' && Number(item.disponibles) > 0;
 
 export default function Flyer() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [pesosEditando, setPesosEditando] = useState<Record<number, string>>({});
   const flyerRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const [config, setConfig] = useState<ConfigFlyer>(leerConfig);
@@ -133,13 +137,37 @@ export default function Flyer() {
     return {
       id: item.id,
       nombre: a.nombre?.trim() || item.producto,
-      precio: a.porUnidad ? `${base} c/u` : base,
-      peso: a.peso ?? pesoCalculado(item),
+      precio: item.venta_por_unidad ? `${base} c/u` : base,
+      peso: pesosEditando[item.id] ?? pesoFlyer(item),
     };
   });
 
   const ajustar = (id: number, cambios: AjusteFila) =>
     setConfig((c) => ({ ...c, filas: { ...c.filas, [id]: { ...c.filas[id], ...cambios } } }));
+
+  // Guarda en el producto (para todos los usuarios) y actualiza la lista sin recargar.
+  const guardarEnProducto = async (item: StockItem, cambios: { venta_por_unidad?: boolean; peso_flyer?: string }) => {
+    const actualizar = (valores: Partial<StockItem>) =>
+      queryClient.setQueryData<StockItem[]>(['stock'], (lista) =>
+        lista?.map((p) => (p.id === item.id ? { ...p, ...valores } : p))
+      );
+    actualizar(cambios);
+    try {
+      await updateProducto(item.id, cambios);
+    } catch {
+      actualizar({ venta_por_unidad: item.venta_por_unidad, peso_flyer: item.peso_flyer });
+      toast({ title: 'Error', description: `No se pudo guardar ${item.producto}`, variant: 'destructive' });
+    }
+  };
+
+  const guardarPeso = (item: StockItem) => {
+    const texto = pesosEditando[item.id];
+    if (texto === undefined) return;
+    setPesosEditando(({ [item.id]: _, ...resto }) => resto);
+    // Si el texto coincide con el calculado no se fija: así sigue actualizándose con el stock.
+    const nuevo = texto.trim() === pesoCalculado(item) ? '' : texto.trim();
+    if (nuevo !== (item.peso_flyer ?? '')) guardarEnProducto(item, { peso_flyer: nuevo });
+  };
 
   const mover = (id: number, dir: -1 | 1) => {
     const ids = productos.map((p) => p.id);
@@ -334,13 +362,19 @@ export default function Flyer() {
                           aria-label="Precio en el flyer"
                         />
                         <Input
-                          placeholder="Peso (vacío = no mostrar)"
-                          value={a.peso ?? pesoCalculado(item)}
-                          onChange={(e) => ajustar(item.id, { peso: e.target.value })}
+                          placeholder={pesoCalculado(item) || 'Peso por pieza'}
+                          value={pesosEditando[item.id] ?? item.peso_flyer ?? ''}
+                          onChange={(e) => setPesosEditando((p) => ({ ...p, [item.id]: e.target.value }))}
+                          onBlur={() => guardarPeso(item)}
+                          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
                           aria-label="Peso aproximado por pieza"
+                          title="Se guarda en el producto. Vacío = se calcula desde el stock"
                         />
-                        <label className="flex items-center gap-2 text-sm whitespace-nowrap">
-                          <Switch checked={!!a.porUnidad} onCheckedChange={(v) => ajustar(item.id, { porUnidad: v })} />
+                        <label className="flex items-center gap-2 text-sm whitespace-nowrap" title="Se guarda en el producto">
+                          <Switch
+                            checked={!!item.venta_por_unidad}
+                            onCheckedChange={(v) => guardarEnProducto(item, { venta_por_unidad: v })}
+                          />
                           c/u
                         </label>
                       </div>

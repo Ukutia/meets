@@ -54,6 +54,18 @@ class Producto(models.Model):
         verbose_name="Peso mínimo por unidad (kg)",
         help_text="Útil para detectar errores de digitación en el pesaje"
     )
+    venta_por_unidad = models.BooleanField(
+        default=False,
+        verbose_name="Precio por unidad en el flyer",
+        help_text="Si está marcado, el flyer muestra el precio como 'c/u' en vez de por kilo"
+    )
+    peso_flyer = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
+        verbose_name="Peso aproximado en el flyer",
+        help_text="Texto fijo (ej: 'paquete de 1 kg'). Vacío = se calcula desde el stock"
+    )
 
     def stock_actual(self):
         entradas = self.facturas_entrada.aggregate(total=models.Sum('cantidad'))['total'] or 0
