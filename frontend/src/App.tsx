@@ -20,6 +20,7 @@ import NotFound from "./pages/NotFound";
 import FormularioPedido from "./pages/FormularioPedido";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
+import Flyer from "./pages/Flyer";
 
 const queryClient = new QueryClient();
 
@@ -166,6 +167,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <CambiarPassword />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/flyer"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Flyer />
                   </Layout>
                 </ProtectedRoute>
               }

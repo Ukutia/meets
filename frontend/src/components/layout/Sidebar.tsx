@@ -12,6 +12,7 @@ import {
   TrendingUp,
   KeyRound,
   Truck,
+  Image,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -38,6 +39,7 @@ const menuItems = [
   { title: 'Proveedores', url: '/proveedores', icon: Truck },
   { title: 'Facturas', url: '/facturas', icon: FileText },
   { title: 'Stock', url: '/stock', icon: Warehouse },
+  { title: 'Flyer de precios', url: '/flyer', icon: Image },
   { title: 'Reportes', url: '/reportes', icon: TrendingUp },
   { title: 'Flujos de Inventario', url: '/flujos-de-inventario', icon: Feather },
   { title: 'Gestión de Pagos', url: '/gestion-pagos', icon: Feather },

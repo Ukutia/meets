@@ -105,7 +105,9 @@ export interface Factura {
 }
 
 export interface StockItem {
+  id: number;
   producto: string;
+  categoria?: string | null;
   estado: string;
   precio_por_kilo: number;
   disponibles: number;

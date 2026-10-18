@@ -913,6 +913,7 @@ class StockProductos(APIView):
                 'id': producto.id,
                 'producto': producto.nombre,
                 'precio_por_kilo': producto.precio_por_kilo,
+                'categoria': producto.categoria,
                 'disponibles': disponibles,
                 'estado': producto.estado,
                 'stock': stock_fisico,
@@ -1931,3 +1932,31 @@ class CambiarPasswordView(APIView):
         user.set_password(nueva)
         user.save(update_fields=['password'])
         return Response({'mensaje': 'Contraseña actualizada correctamente'}, status=status.HTTP_200_OK)
+
+
+class PerfilView(APIView):
+    """Datos del usuario logueado. El teléfono vive en su perfil de Vendedor."""
+    permission_classes = [IsAuthenticated]
+
+    def _vendedor(self, user):
+        return getattr(user, 'vendedor_profile', None)
+
+    def get(self, request):
+        vendedor = self._vendedor(request.user)
+        return Response({
+            'username': request.user.username,
+            'nombre': vendedor.nombre if vendedor else request.user.username,
+            'telefono': vendedor.telefono if vendedor else '',
+            'tiene_vendedor': vendedor is not None,
+        }, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        vendedor = self._vendedor(request.user)
+        if vendedor is None:
+            return Response({'error': 'Tu usuario no tiene un perfil de vendedor asociado'}, status=status.HTTP_400_BAD_REQUEST)
+        telefono = str(request.data.get('telefono', '')).strip()
+        if len(telefono) > 30:
+            return Response({'error': 'El teléfono es demasiado largo'}, status=status.HTTP_400_BAD_REQUEST)
+        vendedor.telefono = telefono
+        vendedor.save(update_fields=['telefono'])
+        return Response({'telefono': vendedor.telefono}, status=status.HTTP_200_OK)

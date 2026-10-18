@@ -8,6 +8,7 @@ class Vendedor(models.Model):
     id = models.AutoField(primary_key=True)  # Campo ID automático
     nombre = models.CharField(max_length=100)  # Nombre completo del vendedor
     sigla = models.CharField(max_length=10, unique=True)  # Sigla única para identificar al vendedor
+    telefono = models.CharField(max_length=30, blank=True, default='')  # Teléfono de contacto (se imprime en el flyer)
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, 
         on_delete=models.SET_NULL, 

@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -42,5 +42,6 @@ urlpatterns = [
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/cambiar-password/', CambiarPasswordView.as_view(), name='cambiar_password'),
+    path('auth/perfil/', PerfilView.as_view(), name='perfil'),
 ]
 
