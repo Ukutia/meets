@@ -40,7 +40,7 @@ const CONFIG_INICIAL: ConfigFlyer = {
   titulo1: 'Carnes',
   titulo2: 'al vacio',
   subtitulo: 'Precios por Kilo',
-  categoria: 'al vacio',
+  categoria: 'todas',
   orden: [],
   filas: {},
 };
@@ -48,7 +48,11 @@ const CONFIG_INICIAL: ConfigFlyer = {
 const leerConfig = (): ConfigFlyer => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...CONFIG_INICIAL, ...JSON.parse(raw) } : CONFIG_INICIAL;
+    if (!raw) return CONFIG_INICIAL;
+    const guardada = JSON.parse(raw);
+    // Las configs anteriores filtraban "al vacio" por defecto y ocultaban cortes con stock.
+    if (!guardada.v2) guardada.categoria = 'todas';
+    return { ...CONFIG_INICIAL, ...guardada };
   } catch {
     return CONFIG_INICIAL;
   }
@@ -105,7 +109,7 @@ export default function Flyer() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...config, v2: true }));
     } catch {
       /* sin almacenamiento: la config solo dura la sesión */
     }
@@ -130,6 +134,11 @@ export default function Flyer() {
     };
     return [...lista].sort((a, b) => pos(a.id) - pos(b.id) || b.precio_por_kilo - a.precio_por_kilo);
   }, [stock, config.categoria, config.orden]);
+
+  // Cortes con stock que el filtro de categoría está dejando fuera.
+  const ocultosConStock = (stock ?? []).filter(
+    (p) => disponibleParaVenta(p) && !productos.some((x) => x.id === p.id)
+  );
 
   const incluido = (item: StockItem) => config.filas[item.id]?.incluir ?? disponibleParaVenta(item);
 
@@ -330,6 +339,15 @@ export default function Flyer() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-2">
+              {ocultosConStock.length > 0 && (
+                <p className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+                  Hay {ocultosConStock.length} corte(s) con stock en otra categoría (
+                  {ocultosConStock.map((p) => p.producto).join(', ')}).{' '}
+                  <button className="font-medium text-primary underline" onClick={() => setConfig({ ...config, categoria: 'todas' })}>
+                    Ver todas
+                  </button>
+                </p>
+              )}
               {productos.length === 0 && <p className="text-sm text-muted-foreground">No hay productos en esta categoría.</p>}
               {productos.map((item, i) => {
                 const a = config.filas[item.id] ?? {};
