@@ -1,4 +1,4 @@
-import { forwardRef } from 'react';
+import { forwardRef, useEffect, useState } from 'react';
 import '@fontsource/josefin-sans/600.css';
 import '@fontsource/josefin-sans/700.css';
 import '@fontsource/lato/400.css';
@@ -31,6 +31,17 @@ export interface FlyerProps {
   filas: FlyerFila[];
 }
 
+// Achica la letra si el texto no cabe en la pastilla (nombres largos como "Hamburguesa 125 grs").
+let lienzo: HTMLCanvasElement | null = null;
+const fuenteQueCabe = (texto: string, ancho: number, base: number) => {
+  lienzo ??= document.createElement('canvas');
+  const ctx = lienzo.getContext('2d');
+  if (!ctx) return base;
+  ctx.font = `400 ${base}px Lato, sans-serif`;
+  const medido = ctx.measureText(texto).width;
+  return medido > ancho ? Math.max(9, Math.floor(base * (ancho / medido) * 10) / 10) : base;
+};
+
 const Cloche = () => (
   <svg width="64" height="40" viewBox="0 0 64 40" fill={C.cafe}>
     <circle cx="32" cy="5" r="3.5" />
@@ -58,6 +69,11 @@ const PhoneIcon = () => (
 
 export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
   ({ titulo1, titulo2, subtitulo, telefono, filas }, ref) => {
+    // Re-medir los textos cuando Lato termine de cargar.
+    const [, setFuentesListas] = useState(false);
+    useEffect(() => {
+      document.fonts.ready.then(() => setFuentesListas(true));
+    }, []);
     // Las filas se comprimen si hay más productos de los que caben con el espaciado original.
     const zonaFilas = 452;
     const paso = Math.min(51.5, zonaFilas / Math.max(filas.length, 1));
@@ -133,7 +149,7 @@ export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
           {filas.map((f, i) => (
             <div key={f.id} style={{ position: 'absolute', top: i * paso, display: 'flex', gap: 9 }}>
               {[
-                { texto: f.nombre, ancho: 159 },
+                { texto: f.nombre, ancho: 190 },
                 { texto: f.precio, ancho: 119 },
               ].map((celda, j) => (
                 <div
@@ -146,10 +162,10 @@ export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontSize: fuenteFila,
+                    fontSize: fuenteQueCabe(celda.texto, celda.ancho - 14, fuenteFila),
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
-                    padding: '0 4px',
+                    padding: '0 7px',
                   }}
                 >
                   {celda.texto}
