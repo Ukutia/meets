@@ -85,7 +85,9 @@ export default function Flyer() {
   const [escala, setEscala] = useState(0.6);
 
   const { data: stock, isLoading, error } = useQuery({
-    queryKey: ['stock'],
+    // Clave propia: el Dashboard guarda bajo ['stock'] la respuesta completa de axios, no la lista.
+    // Sigue bajo el prefijo 'stock', así que los invalidateQueries(['stock']) también la refrescan.
+    queryKey: ['stock', 'flyer'],
     queryFn: async () => {
       const response = await getStock();
       return Array.isArray(response.data) ? response.data : [];
@@ -148,7 +150,7 @@ export default function Flyer() {
   // Guarda en el producto (para todos los usuarios) y actualiza la lista sin recargar.
   const guardarEnProducto = async (item: StockItem, cambios: { venta_por_unidad?: boolean; peso_flyer?: string }) => {
     const actualizar = (valores: Partial<StockItem>) =>
-      queryClient.setQueryData<StockItem[]>(['stock'], (lista) =>
+      queryClient.setQueryData<StockItem[]>(['stock', 'flyer'], (lista) =>
         lista?.map((p) => (p.id === item.id ? { ...p, ...valores } : p))
       );
     actualizar(cambios);
