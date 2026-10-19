@@ -231,31 +231,44 @@ export default function Flyer() {
     }
   };
 
+  const sinFilas = exportando || filas.length === 0;
+
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="No se pudieron cargar los productos" />;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24 sm:pb-0">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Flyer de precios</h1>
           <p className="text-muted-foreground">Se arma con los productos y precios actuales de la plataforma.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => exportar('png')} disabled={exportando || filas.length === 0}>
+        <div className="hidden flex-wrap gap-2 sm:flex">
+          <Button onClick={() => exportar('png')} disabled={sinFilas}>
             {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
             Descargar PNG
           </Button>
-          <Button variant="outline" onClick={() => exportar('pdf')} disabled={exportando || filas.length === 0}>
+          <Button variant="outline" onClick={() => exportar('pdf')} disabled={sinFilas}>
             <FileDown className="mr-2 h-4 w-4" /> PDF
           </Button>
-          <Button variant="outline" onClick={() => exportar('compartir')} disabled={exportando || filas.length === 0}>
+          <Button variant="outline" onClick={() => exportar('compartir')} disabled={sinFilas}>
             <Share2 className="mr-2 h-4 w-4" /> Compartir
           </Button>
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      {/* En teléfono: compartir (WhatsApp, etc.) es la acción principal */}
+      <div className="fixed inset-x-0 bottom-0 z-40 flex gap-2 border-t bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
+        <Button className="flex-1" onClick={() => exportar('compartir')} disabled={sinFilas}>
+          {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Share2 className="mr-2 h-4 w-4" />}
+          Compartir
+        </Button>
+        <Button variant="outline" className="flex-1" onClick={() => exportar('png')} disabled={sinFilas}>
+          <Download className="mr-2 h-4 w-4" /> Descargar
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           <Card>
             <CardHeader>
@@ -329,20 +342,20 @@ export default function Flyer() {
                         checked={activo}
                         onCheckedChange={(v) => ajustar(item.id, { incluir: v === true })}
                       />
-                      <label htmlFor={`inc-${item.id}`} className="flex-1 cursor-pointer font-medium">
+                      <label htmlFor={`inc-${item.id}`} className="min-w-0 flex-1 cursor-pointer font-medium">
                         {item.producto}
-                        <span className="ml-2 text-sm font-normal text-muted-foreground">
+                        <span className="block text-sm font-normal text-muted-foreground sm:ml-2 sm:inline">
                           {formatoPesos(Number(item.precio_por_kilo))}/kg · {item.disponibles} u.
                         </span>
                       </label>
                       {!disponibleParaVenta(item) && <Badge variant="secondary">Sin stock</Badge>}
-                      <Button variant="ghost" size="icon" className="h-7 w-7" disabled={i === 0} onClick={() => mover(item.id, -1)}>
+                      <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 sm:h-7 sm:w-7" disabled={i === 0} onClick={() => mover(item.id, -1)}>
                         <ArrowUp className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7"
+                        className="h-9 w-9 shrink-0 sm:h-7 sm:w-7"
                         disabled={i === productos.length - 1}
                         onClick={() => mover(item.id, 1)}
                       >
@@ -350,7 +363,7 @@ export default function Flyer() {
                       </Button>
                     </div>
                     {activo && (
-                      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-center">
+                      <div className="mt-3 grid grid-cols-2 items-center gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
                         <Input
                           placeholder={item.producto}
                           value={a.nombre ?? ''}
@@ -388,7 +401,7 @@ export default function Flyer() {
           </Card>
         </div>
 
-        <div className="lg:sticky lg:top-4 lg:self-start">
+        <div className="order-first lg:order-none lg:sticky lg:top-4 lg:self-start">
           <div ref={previewRef} className="w-full">
             <div
               className="overflow-hidden rounded-lg shadow-lg"
