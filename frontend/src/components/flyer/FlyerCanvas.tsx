@@ -42,6 +42,32 @@ const fuenteQueCabe = (texto: string, ancho: number, base: number) => {
   return medido > ancho ? Math.max(9, Math.floor(base * (ancho / medido) * 10) / 10) : base;
 };
 
+// Las imágenes se incrustan como data URL: así la exportación no depende de volver a
+// descargarlas (en Safari/iPhone html-to-image a veces las deja en blanco).
+const IMAGENES = { foto1: '/flyer/foto1.jpg', foto2: '/flyer/foto2.jpg', logo: '/flyer/logo.png' };
+type Imagenes = typeof IMAGENES;
+
+const aDataUrl = async (url: string) => {
+  const blob = await (await fetch(url)).blob();
+  return new Promise<string>((resolve, reject) => {
+    const lector = new FileReader();
+    lector.onload = () => resolve(lector.result as string);
+    lector.onerror = reject;
+    lector.readAsDataURL(blob);
+  });
+};
+
+let cargaImagenes: Promise<Imagenes> | null = null;
+const cargarImagenes = () =>
+  (cargaImagenes ??= Promise.all(
+    Object.entries(IMAGENES).map(async ([k, url]) => [k, await aDataUrl(url)] as const)
+  )
+    .then((pares) => Object.fromEntries(pares) as Imagenes)
+    .catch((e) => {
+      cargaImagenes = null; // reintentar en el próximo montaje
+      throw e;
+    }));
+
 const Cloche = () => (
   <svg width="64" height="40" viewBox="0 0 64 40" fill={C.cafe}>
     <circle cx="32" cy="5" r="3.5" />
@@ -74,6 +100,19 @@ export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
     useEffect(() => {
       document.fonts.ready.then(() => setFuentesListas(true));
     }, []);
+
+    const [imagenes, setImagenes] = useState<Imagenes>(IMAGENES);
+    useEffect(() => {
+      let vivo = true;
+      cargarImagenes()
+        .then((d) => vivo && setImagenes(d))
+        .catch(() => {
+          /* se quedan las rutas normales */
+        });
+      return () => {
+        vivo = false;
+      };
+    }, []);
     // Las filas se comprimen si hay más productos de los que caben con el espaciado original.
     const zonaFilas = 452;
     const paso = Math.min(51.5, zonaFilas / Math.max(filas.length, 1));
@@ -97,26 +136,26 @@ export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
         {/* Foto 1 con marco */}
         <div style={{ position: 'absolute', left: 0, top: 0, width: 445, height: 250, background: C.pastilla, borderBottomRightRadius: 28 }} />
         <img
-          src="/flyer/foto1.jpg"
+          src={imagenes.foto1}
           alt=""
-          crossOrigin="anonymous"
+          data-flyer-img
           style={{ position: 'absolute', left: 15, top: 16, width: 412, height: 217, objectFit: 'cover', borderRadius: 14 }}
         />
 
         {/* Logo */}
         <img
-          src="/flyer/logo.png"
+          src={imagenes.logo}
           alt=""
-          crossOrigin="anonymous"
+          data-flyer-img
           style={{ position: 'absolute', left: 455, top: 30, width: 248, height: 80, objectFit: 'contain' }}
         />
 
         {/* Foto 2 con marco */}
         <div style={{ position: 'absolute', left: 342, top: 221, width: 400, height: 227, background: C.pastilla, borderRadius: 28 }} />
         <img
-          src="/flyer/foto2.jpg"
+          src={imagenes.foto2}
           alt=""
-          crossOrigin="anonymous"
+          data-flyer-img
           style={{ position: 'absolute', left: 355, top: 240, width: 380, height: 193, objectFit: 'cover', borderRadius: 14 }}
         />
 

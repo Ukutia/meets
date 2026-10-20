@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { toPng } from 'html-to-image';
+import { getFontEmbedCSS, toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
 import { ArrowDown, ArrowUp, Download, FileDown, Loader2, RotateCcw, Save, Share2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -73,6 +73,16 @@ const pesoCalculado = (item: StockItem) =>
     : '';
 
 const pesoFlyer = (item: StockItem) => item.peso_flyer?.trim() || pesoCalculado(item);
+
+const imagenLista = (img: HTMLImageElement) =>
+  img.complete && img.naturalWidth > 0
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        const listo = () => resolve();
+        img.addEventListener('load', listo, { once: true });
+        img.addEventListener('error', listo, { once: true });
+        setTimeout(listo, 5000);
+      });
 
 const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible' && Number(item.disponibles) > 0;
 
@@ -203,8 +213,20 @@ export default function Flyer() {
 
   const generarPng = async () => {
     if (!flyerRef.current) throw new Error('Flyer no disponible');
+    const nodo = flyerRef.current;
     await document.fonts.ready;
-    return toPng(flyerRef.current, { pixelRatio: 3, cacheBust: true });
+    // Esperar a que las fotos estén decodificadas (ya como data URL, ver FlyerCanvas).
+    const imgs = [...nodo.querySelectorAll<HTMLImageElement>('img[data-flyer-img]')];
+    // (img.decode() puede quedar colgado en algunos navegadores; se revisa complete/naturalWidth).
+    await Promise.all(imgs.map(imagenLista));
+    if (imgs.some((img) => !img.src.startsWith('data:'))) {
+      throw new Error('Las fotos aún no terminan de cargar');
+    }
+    // Safari pinta las imágenes en blanco en la primera pasada de html-to-image:
+    // una pasada previa barata las deja listas para la definitiva.
+    const fontEmbedCSS = await getFontEmbedCSS(nodo);
+    await toPng(nodo, { pixelRatio: 0.2, fontEmbedCSS });
+    return toPng(nodo, { pixelRatio: 3, fontEmbedCSS });
   };
 
   const nombreArchivo = `flyer-${new Date().toISOString().slice(0, 10)}`;
@@ -213,11 +235,14 @@ export default function Flyer() {
     setExportando(true);
     try {
       const dataUrl = await generarPng();
-      if (tipo === 'png') {
+      const descargar = () => {
         const a = document.createElement('a');
         a.href = dataUrl;
         a.download = `${nombreArchivo}.png`;
         a.click();
+      };
+      if (tipo === 'png') {
+        descargar();
       } else if (tipo === 'pdf') {
         const pdf = new jsPDF({ unit: 'px', format: [FLYER_WIDTH, FLYER_HEIGHT], hotfixes: ['px_scaling'] });
         pdf.addImage(dataUrl, 'PNG', 0, 0, FLYER_WIDTH, FLYER_HEIGHT);
@@ -226,14 +251,24 @@ export default function Flyer() {
         const blob = await (await fetch(dataUrl)).blob();
         const file = new File([blob], `${nombreArchivo}.png`, { type: 'image/png' });
         if (navigator.canShare?.({ files: [file] })) {
-          await navigator.share({ files: [file] });
+          try {
+            await navigator.share({ files: [file] });
+          } catch (e: any) {
+            // Si generar tardó, iOS ya no lo considera un toque del usuario: se descarga.
+            if (e?.name !== 'NotAllowedError') throw e;
+            descargar();
+          }
         } else {
-          toast({ title: 'No disponible', description: 'Tu navegador no permite compartir archivos; descarga el PNG.' });
+          descargar();
         }
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
-        toast({ title: 'Error', description: 'No se pudo generar el flyer', variant: 'destructive' });
+        toast({
+          title: 'Error',
+          description: e?.message === 'Las fotos aún no terminan de cargar' ? 'Las fotos aún se están cargando, intenta en unos segundos.' : 'No se pudo generar el flyer',
+          variant: 'destructive',
+        });
       }
     } finally {
       setExportando(false);
