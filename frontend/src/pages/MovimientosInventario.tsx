@@ -33,6 +33,10 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
 import type { AjusteInventario } from '@/types';
+import { enRango, formatFecha, hoyISO } from '@/lib/utils';
+import { Label } from '@/components/ui/label';
+import { Link } from 'react-router-dom';
+import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
 import {
   Select,
   SelectContent,
@@ -49,10 +53,17 @@ interface AjusteForm {
   razon: string;
 }
 
-// Los costos de compra se ingresan sin IVA (ver nota en backend/core/views.py,
-// seccion Reportes Financieros); para que la ganancia mostrada aca sea
-// consistente con Pedidos.tsx y Reportes.tsx hay que descontar el costo CON IVA.
+// Los costos de compra se ingresan sin IVA y el precio de venta lo incluye
+// (ver nota en backend/core/views.py, seccion Reportes Financieros). Los costos
+// se muestran CON IVA para compararlos con el precio de venta, pero la ganancia
+// es NETA en ambos lados (venta / 1,19 - costo neto), igual que en Pedidos.tsx
+// y Reportes.tsx; si no, la misma venta mostraría un 19% más de ganancia aquí.
 const FACTOR_IVA = 1.19;
+
+const gananciaNetaKg = (item: any) =>
+  Number(item.precio_venta || 0) / FACTOR_IVA - Number(item.costo_por_kilo || 0);
+const gananciaNetaTotal = (item: any) =>
+  Number(item.total_venta || 0) / FACTOR_IVA - Number(item.total_costo || 0);
 
 // Redondea a pesos enteros antes de formatear: con decimales sin redondear,
 // la coma decimal de es-CL se confunde visualmente con un separador de miles
@@ -69,6 +80,9 @@ export default function MovimientosInventario() {
     minUnidades: '',
     numDocumento: ''
   });
+  // El período filtra Entradas, Salidas y Ajustes; el Resumen por producto
+  // siempre usa el histórico completo porque cuadra contra el stock actual.
+  const [periodo, setPeriodo] = useState<RangoState>(rangoInicial('todo'));
   const [selectedFacturas, setSelectedFacturas] = useState<any | null>(null);
   const [ajusteDialogOpen, setAjusteDialogOpen] = useState(false);
   const [ajusteEditando, setAjusteEditando] = useState<AjusteInventario | null>(null);
@@ -201,9 +215,9 @@ export default function MovimientosInventario() {
         a.producto_nombre.toLowerCase() === filter.producto.toLowerCase();
       const matchSearch = (a.razon || '').toLowerCase().includes(filter.search.toLowerCase()) ||
         a.producto_nombre.toLowerCase().includes(filter.search.toLowerCase());
-      return matchProducto && matchSearch;
+      return matchProducto && matchSearch && enRango(a.fecha, periodo.rango);
     });
-  }, [ajustes, filter.producto, filter.search]);
+  }, [ajustes, filter.producto, filter.search, periodo]);
 
   // 2. Lógica de filtrado unificada (misma lógica para entradas y salidas,
   // reutilizable tanto para lo que se ve en pantalla como para el export)
@@ -226,16 +240,17 @@ export default function MovimientosInventario() {
       const matchKilos = filter.minKilos === '' || kilos >= Number(filter.minKilos);
       const matchUnidades = filter.minUnidades === '' || unidades >= Number(filter.minUnidades);
 
-      return matchCliente && matchProducto && matchNum && matchKilos && matchUnidades;
+      return matchCliente && matchProducto && matchNum && matchKilos && matchUnidades && enRango(item.fecha, periodo.rango);
     });
   };
 
-  const filteredEntradas = useMemo(() => filtrarEntradasSalidas(entradas || []), [entradas, filter]);
-  const filteredSalidas = useMemo(() => filtrarEntradasSalidas(salidas || []), [salidas, filter]);
+  const filteredEntradas = useMemo(() => filtrarEntradasSalidas(entradas || []), [entradas, filter, periodo]);
+  const filteredSalidas = useMemo(() => filtrarEntradasSalidas(salidas || []), [salidas, filter, periodo]);
   const filteredData = activeTab === 'entradas' ? filteredEntradas : filteredSalidas;
 
   const filaEntradaSalida = (item: any, tab: 'entradas' | 'salidas') => {
     const base: Record<string, any> = {
+      'Fecha': formatFecha(item.fecha),
       '#': item.pedido || item.factura,
       'Cliente / Proveedor': item.cliente_nombre || item.proveedor_nombre || 'N/A',
       'Producto': item.producto_nombre || item.producto?.nombre || 'N/A',
@@ -250,8 +265,8 @@ export default function MovimientosInventario() {
       base['Vendedor'] = item.vendedor_nombre || 'N/A';
       base['Costo/Kg'] = costoConIva;
       base['Costo Total'] = costoTotalConIva;
-      base['Ganancia/Kg'] = Number(item.precio_venta || 0) - costoConIva;
-      base['Ganancia Total'] = Number(item.total_venta || 0) - costoTotalConIva;
+      base['Ganancia neta/Kg'] = gananciaNetaKg(item);
+      base['Ganancia neta Total'] = gananciaNetaTotal(item);
     }
     return base;
   };
@@ -301,7 +316,7 @@ export default function MovimientosInventario() {
       acc.ajustesUn += Number(a.cantidad_unidades || 0);
     });
 
-    const stockPorProducto = new Map((stock || []).map((s) => [s.producto, s]));
+    const stockPorProducto = new Map((Array.isArray(stock) ? stock : []).map((s) => [s.producto, s]));
 
     return Array.from(porProducto.entries())
       .sort(([a], [b]) => a.localeCompare(b))
@@ -350,7 +365,7 @@ export default function MovimientosInventario() {
     const filasEntradas = filteredEntradas.map((item: any) => filaEntradaSalida(item, 'entradas'));
     const filasSalidas = filteredSalidas.map((item: any) => filaEntradaSalida(item, 'salidas'));
     const filasAjustes = filteredAjustes.map((a) => ({
-      'Fecha': new Date(a.fecha).toLocaleDateString('es-CL'),
+      'Fecha': formatFecha(a.fecha),
       'Producto': a.producto_nombre,
       'Tipo': a.tipo === 'ajuste' ? 'Ajuste manual' : a.tipo,
       'Kilos': Number(a.cantidad || 0),
@@ -364,7 +379,7 @@ export default function MovimientosInventario() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasAjustes), 'Ajustes');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasStockCalculado()), 'Stock');
 
-    const fecha = new Date().toISOString().slice(0, 10);
+    const fecha = hoyISO();
     XLSX.writeFile(workbook, `movimientos-inventario-${fecha}.xlsx`);
   };
 
@@ -372,9 +387,12 @@ export default function MovimientosInventario() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Movimientos de Inventario</h1>
-        <p className="text-muted-foreground">Historial detallado de ingresos (facturas) y egresos (pedidos).</p>
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Movimientos de Inventario</h1>
+          <p className="text-muted-foreground">Entradas (facturas), salidas (pedidos) y mermas o ajustes.</p>
+        </div>
+        <RangoFechaSelect value={periodo} onChange={setPeriodo} />
       </div>
 
       {/* Panel de Filtros */}
@@ -438,8 +456,8 @@ export default function MovimientosInventario() {
       </Card>
 
       <Tabs value={activeTab} onValueChange={(v: any) => setActiveTab(v)} className="w-full">
-        <div className="flex items-center justify-between mb-4">
-          <TabsList>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+          <TabsList className="flex flex-wrap h-auto">
             <TabsTrigger value="entradas" className="gap-2">
               <ArrowUpCircle className="h-4 w-4 text-green-600" /> Entradas (Facturas)
             </TabsTrigger>
@@ -491,55 +509,51 @@ export default function MovimientosInventario() {
               <TableHeader>
                 <TableRow className="bg-muted/50">
                   <TableHead>Producto</TableHead>
-                  <TableHead className="text-right">Entradas (kg)</TableHead>
-                  <TableHead className="text-right">Entradas (un)</TableHead>
-                  <TableHead className="text-right">Salidas (kg)</TableHead>
-                  <TableHead className="text-right">Salidas (un)</TableHead>
-                  <TableHead className="text-right">Saldo (kg)</TableHead>
-                  <TableHead className="text-right">Saldo (un)</TableHead>
-                  <TableHead className="text-right">Stock Real (kg)</TableHead>
-                  <TableHead className="text-right">Stock Real (un)</TableHead>
-                  <TableHead className="text-right">Diferencia (kg)</TableHead>
-                  <TableHead className="text-right">Diferencia (un)</TableHead>
+                  <TableHead className="text-right">Entradas</TableHead>
+                  <TableHead className="text-right">Salidas</TableHead>
+                  <TableHead className="text-right">Ajustes</TableHead>
+                  <TableHead className="text-right">Saldo calculado</TableHead>
+                  <TableHead className="text-right">Stock real</TableHead>
+                  <TableHead className="text-right">Diferencia</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {resumenProductos.map((r) => (
-                  <TableRow key={r.producto}>
-                    <TableCell className="font-semibold">{r.producto}</TableCell>
-                    <TableCell className="text-right text-green-600 font-medium">
-                      {r.entradasKg.toFixed(2)} kg
-                    </TableCell>
-                    <TableCell className="text-right text-green-600">{r.entradasUn} un</TableCell>
-                    <TableCell className="text-right text-blue-600 font-medium">
-                      {r.salidasKg.toFixed(2)} kg
-                    </TableCell>
-                    <TableCell className="text-right text-blue-600">{r.salidasUn} un</TableCell>
-                    <TableCell className="text-right font-bold">{r.saldoKg.toFixed(2)} kg</TableCell>
-                    <TableCell className="text-right font-bold">{r.saldoUn} un</TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {r.stockRealKg !== null ? `${r.stockRealKg.toFixed(2)} kg` : 'N/A'}
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {r.stockRealUn !== null ? `${r.stockRealUn} un` : 'N/A'}
-                    </TableCell>
-                    <TableCell className={`text-right font-medium ${r.diferenciaKg && Math.abs(r.diferenciaKg) > 0.01 ? 'text-destructive' : 'text-muted-foreground'}`}>
-                      {r.diferenciaKg !== null ? r.diferenciaKg.toFixed(2) : 'N/A'}
-                    </TableCell>
-                    <TableCell className={`text-right font-medium ${r.diferenciaUn ? 'text-destructive' : 'text-muted-foreground'}`}>
-                      {r.diferenciaUn !== null ? r.diferenciaUn : 'N/A'}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {resumenProductos.map((r) => {
+                  const difKg = r.diferenciaKg !== null && Math.abs(r.diferenciaKg) > 0.01;
+                  const difUn = !!r.diferenciaUn;
+                  return (
+                    <TableRow key={r.producto}>
+                      <TableCell className="font-semibold">{r.producto}</TableCell>
+                      <TableCell className="text-right text-green-600 tabular-nums"><KgUn kg={r.entradasKg} un={r.entradasUn} /></TableCell>
+                      <TableCell className="text-right text-blue-600 tabular-nums"><KgUn kg={r.salidasKg} un={r.salidasUn} /></TableCell>
+                      <TableCell className="text-right text-muted-foreground tabular-nums"><KgUn kg={r.ajustesKg} un={r.ajustesUn} /></TableCell>
+                      <TableCell className="text-right font-bold tabular-nums"><KgUn kg={r.saldoKg} un={r.saldoUn} /></TableCell>
+                      <TableCell className="text-right text-muted-foreground tabular-nums">
+                        {r.stockRealKg !== null ? <KgUn kg={r.stockRealKg} un={r.stockRealUn ?? 0} /> : 'N/A'}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {difKg || difUn ? (
+                          <span className="font-semibold text-destructive"><KgUn kg={r.diferenciaKg ?? 0} un={r.diferenciaUn ?? 0} /></span>
+                        ) : (
+                          <span className="text-green-600">Cuadra</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
                 {resumenProductos.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={11} className="h-32 text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
                       Sin movimientos registrados.
                     </TableCell>
                   </TableRow>
                 )}
               </TableBody>
             </Table>
+            <p className="px-4 py-3 text-xs text-muted-foreground border-t">
+              Saldo calculado = entradas − salidas ± ajustes, con todo el historial (no aplica el período).
+              Stock real en unidades = disponibles.
+            </p>
           </Card>
         ) : activeTab === 'ajustes' ? (
           loadingA ? (
@@ -561,7 +575,7 @@ export default function MovimientosInventario() {
                 <TableBody>
                   {filteredAjustes.map((a) => (
                     <TableRow key={a.id}>
-                      <TableCell>{new Date(a.fecha).toLocaleDateString('es-CL')}</TableCell>
+                      <TableCell>{formatFecha(a.fecha)}</TableCell>
                       <TableCell className="font-semibold">{a.producto_nombre}</TableCell>
                       <TableCell className="text-center">
                         <Badge
@@ -618,60 +632,51 @@ export default function MovimientosInventario() {
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50">
-                <TableHead className="w-[100px]">ID</TableHead>
-                <TableHead>Cliente / Proveedor</TableHead>
+                <TableHead>Fecha</TableHead>
+                <TableHead>{activeTab === 'salidas' ? 'Pedido' : 'Factura'}</TableHead>
+                <TableHead>{activeTab === 'salidas' ? 'Cliente' : 'Proveedor'}</TableHead>
                 <TableHead>Producto</TableHead>
-                <TableHead className="text-right">Unidades</TableHead>
-                <TableHead className="text-right">Kilos</TableHead>
-                <TableHead className="text-right">Precio/Kg</TableHead>
+                <TableHead className="text-right">Cantidad</TableHead>
+                <TableHead className="text-right">{activeTab === 'salidas' ? 'Precio/Kg' : 'Costo/Kg neto'}</TableHead>
                 <TableHead className="text-right">Total</TableHead>
-                {activeTab === 'salidas' && <TableHead>Vendedor</TableHead>}
-                {activeTab === 'salidas' && <TableHead className="text-right">Costo/Kg</TableHead>}
-                {activeTab === 'salidas' && <TableHead className="text-right">Costo Total</TableHead>}
-                {activeTab === 'salidas' && <TableHead className="text-right">Ganancia/Kg</TableHead>}
-                {activeTab === 'salidas' && <TableHead className="text-right">Ganancia Total</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right" title="Costo de lo vendido, con IVA">Costo</TableHead>}
+                {activeTab === 'salidas' && <TableHead className="text-right" title="Neta de IVA: venta sin IVA − costo sin IVA">Ganancia neta</TableHead>}
                 {activeTab === 'salidas' && <TableHead className="text-center">Facturas</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredData.map((item: any, index: number) => {
-                const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
                 const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
-                const gananciaKg = Number(item.precio_venta || 0) - costoConIva;
-                const gananciaTotal = Number(item.total_venta || 0) - costoTotalConIva;
+                const gananciaTotal = gananciaNetaTotal(item);
+                const precio = Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta);
                 return (
                 <TableRow key={`${activeTab}-${index}`}>
+                  <TableCell className="whitespace-nowrap text-sm">{formatFecha(item.fecha)}</TableCell>
                   <TableCell className="font-mono font-medium">
-                    #{item.pedido || item.factura}
+                    {activeTab === 'salidas' ? (
+                      <Link to={`/pedidos?buscar=${item.pedido}`} className="text-primary hover:underline">#{item.pedido}</Link>
+                    ) : (
+                      `#${item.factura}`
+                    )}
                   </TableCell>
-                  <TableCell>{item.cliente_nombre || item.proveedor_nombre || 'N/A'}</TableCell>
+                  <TableCell>
+                    <div>{item.cliente_nombre || item.proveedor_nombre || 'N/A'}</div>
+                    {activeTab === 'salidas' && item.vendedor_nombre && (
+                      <div className="text-xs text-muted-foreground">{item.vendedor_nombre}</div>
+                    )}
+                  </TableCell>
                   <TableCell className="font-semibold">{item.producto_nombre || item.producto?.nombre || 'N/A'}</TableCell>
-                  <TableCell className="text-right">{Number(item.cantidad_unidades).toFixed(0)}</TableCell>
-                  <TableCell className="text-right font-medium text-blue-600">
-                    {Number(item.cantidad_kilos).toFixed(2)} kg
+                  <TableCell className="text-right tabular-nums whitespace-nowrap">
+                    <span className="font-medium text-blue-600">{Number(item.cantidad_kilos).toFixed(2)} kg</span>
+                    <span className="block text-xs text-muted-foreground">{Number(item.cantidad_unidades).toFixed(0)} un</span>
                   </TableCell>
-                  <TableCell className="text-right">
-                    ${formatMonto(Number(activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta))}
-                  </TableCell>
-                  <TableCell className="text-right font-bold">
-                    ${formatMonto(item.cantidad_kilos * (activeTab === 'entradas' ? item.costo_por_kilo : item.precio_venta))}
-                  </TableCell>
+                  <TableCell className="text-right tabular-nums">${formatMonto(precio)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums">${formatMonto(Number(item.cantidad_kilos) * precio)}</TableCell>
                   {activeTab === 'salidas' && (
-                    <TableCell>{item.vendedor_nombre || 'N/A'}</TableCell>
+                    <TableCell className="text-right tabular-nums">${formatMonto(costoTotalConIva)}</TableCell>
                   )}
                   {activeTab === 'salidas' && (
-                    <TableCell className="text-right">${formatMonto(costoConIva)}</TableCell>
-                  )}
-                  {activeTab === 'salidas' && (
-                    <TableCell className="text-right">${formatMonto(costoTotalConIva)}</TableCell>
-                  )}
-                  {activeTab === 'salidas' && (
-                    <TableCell className={`text-right font-semibold ${gananciaKg >= 0 ? 'text-green-600' : 'text-destructive'}`}>
-                      ${formatMonto(gananciaKg)}
-                    </TableCell>
-                  )}
-                  {activeTab === 'salidas' && (
-                    <TableCell className={`text-right font-bold ${gananciaTotal >= 0 ? 'text-green-600' : 'text-destructive'}`}>
+                    <TableCell className={`text-right font-bold tabular-nums ${gananciaTotal >= 0 ? 'text-green-600' : 'text-destructive'}`}>
                       ${formatMonto(gananciaTotal)}
                     </TableCell>
                   )}
@@ -697,7 +702,7 @@ export default function MovimientosInventario() {
               })}
               {filteredData.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={activeTab === 'salidas' ? 13 : 7} className="h-32 text-center text-muted-foreground">
+                  <TableCell colSpan={activeTab === 'salidas' ? 10 : 7} className="h-32 text-center text-muted-foreground">
                     No se encontraron movimientos con los filtros aplicados.
                   </TableCell>
                 </TableRow>
@@ -881,14 +886,8 @@ export default function MovimientosInventario() {
             </TableBody>
           </Table>
           <p className="text-xs text-muted-foreground px-1">
-            "Kilos atribuidos" reparte los kilos realmente vendidos (báscula) en
-            proporción a las unidades tomadas de cada factura — por eso puede no
-            coincidir con el peso que esas piezas tenían al comprarlas (el peso
-            de una pieza varía de forma natural respecto al promedio del lote).
-            Este reparto es el que hace que el costo atribuido (neto) sume exacto
-            contra el costo neto total de la línea; los montos de esta tabla se
-            muestran con IVA para ser consistentes con la columna "Costo Total"
-            de la fila de Salidas.
+            Los kilos vendidos se reparten entre las facturas en proporción a las unidades tomadas de cada una,
+            por eso pueden no coincidir con el peso de compra. Montos con IVA.
           </p>
         </DialogContent>
       </Dialog>
@@ -896,7 +895,12 @@ export default function MovimientosInventario() {
   );
 }
 
-// Pequeño componente interno para Labels si no los tienes importados de UI
-function Label({ children, className }: { children: React.ReactNode, className?: string }) {
-  return <label className={`text-sm font-medium leading-none ${className}`}>{children}</label>;
+// "10,5 kg · 4 un" en una sola celda para no duplicar columnas.
+function KgUn({ kg, un }: { kg: number; un: number }) {
+  return (
+    <span className="whitespace-nowrap">
+      {kg.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kg
+      <span className="text-xs text-muted-foreground"> · {un} un</span>
+    </span>
+  );
 }

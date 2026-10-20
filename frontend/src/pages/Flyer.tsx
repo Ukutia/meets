@@ -284,7 +284,7 @@ export default function Flyer() {
     <div className="space-y-6 pb-24 sm:pb-0">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Flyer de precios</h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Flyer de Precios</h1>
           <p className="text-muted-foreground">Se arma con los productos y precios actuales de la plataforma.</p>
         </div>
         <div className="hidden flex-wrap gap-2 sm:flex">

@@ -6,7 +6,10 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
+import { useConfirm } from '@/components/shared/ConfirmDialog';
+import { enRango, formatCLP } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
@@ -30,9 +33,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+const ESTADOS = [
+  { value: 'Reservado', label: 'Por pesar' },
+  { value: 'Preparado', label: 'Por cobrar' },
+  { value: 'Pagado', label: 'Pagados' },
+  { value: 'Anulado', label: 'Anulados' },
+] as const;
+
 export default function Pedidos() {
-  const [search, setSearch] = useState('');
-  const [filterEstado, setFilterEstado] = useState('Todos');
+  // ?estado=Reservado y ?buscar=123 llegan desde el Resumen.
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get('buscar') ?? '');
+  const [filterEstado, setFilterEstado] = useState(searchParams.get('estado') ?? 'Todos');
+  const [rango, setRango] = useState<RangoState>(rangoInicial('todo'));
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [selectedPedidoGanancia, setSelectedPedidoGanancia] = useState<Pedido | null>(null);
@@ -120,8 +134,7 @@ export default function Pedidos() {
   });
 
   // --- HELPERS ---
-  const formatCurrency = (val: any) => 
-    Number(val).toLocaleString('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 });
+  const formatCurrency = formatCLP;
 
   const formatDate = (val?: string) => {
     if (!val) return '';
@@ -148,15 +161,23 @@ export default function Pedidos() {
     }
   };
 
+  // Las líneas Canceladas quedan en el pedido solo como historial: conservan
+  // total_venta/total_costo, pero ya no forman parte del total ni de la ganancia.
+  const lineasActivas = (pedido: Pedido) => pedido.detalles.filter(d => d.estado !== 'Cancelado');
+
   const cobrarPedido = (pedido: Pedido) => {
-    const saludo = `*Hola ${pedido.cliente.nombre}, detalle pedido #00${pedido.id}:*\n\n`;
-    const items = pedido.detalles.map(d => 
+    let telefono = (pedido.cliente.telefono ?? '').replace(/\D/g, '');
+    if (!telefono) {
+      toast({ title: "Sin teléfono", description: `${pedido.cliente.nombre} no tiene teléfono registrado.`, variant: "destructive" });
+      return;
+    }
+    if (!telefono.startsWith('56')) telefono = '56' + telefono;
+
+    const saludo = `*Hola ${pedido.cliente.nombre}, detalle pedido #${pedido.id}:*\n\n`;
+    const items = lineasActivas(pedido).map(d =>
       `• ${d.producto.nombre}: ${d.cantidad_kilos}kg = *${formatCurrency(d.total_venta)}*`
     ).join('\n');
     const totalMsg = `\n\n*TOTAL: ${formatCurrency(pedido.total)}*`;
-    
-    let telefono = pedido.cliente.telefono.replace(/\s/g, '');
-    if (!telefono.startsWith('56')) telefono = '56' + telefono;
 
     const whatsappUrl = `https://api.whatsapp.com/send?phone=${telefono}&text=${encodeURIComponent(saludo + items + totalMsg)}`;
     window.open(whatsappUrl, '_blank');
@@ -165,10 +186,10 @@ export default function Pedidos() {
   const filteredPedidos = useMemo(() => {
     let filtered = data ?? [];
     if (search) {
-      const searchLower = search.toLowerCase();
+      const searchLower = search.toLowerCase().replace(/^#/, '');
       filtered = filtered.filter(p => 
         p.cliente.nombre.toLowerCase().includes(searchLower) || 
-        p.id.toString().includes(searchLower)
+        p.id.toString() === searchLower
       );
     }
     if (filterEstado === 'Todos') {
@@ -177,13 +198,33 @@ export default function Pedidos() {
       filtered = filtered.filter(p => p.estado === filterEstado);
     }
     if (filterVendedor !== 'Todos') {
-      filtered = filtered.filter(p => p.vendedor?.id?.toString() === filterVendedor || p.vendedor_id?.toString() === filterVendedor);
+      filtered = filtered.filter(p => p.vendedor?.id?.toString() === filterVendedor);
     }
     if (filterCorte !== 'Todos') {
       filtered = filtered.filter(p => p.detalles.some(d => d.producto.nombre === filterCorte));
     }
+    filtered = filtered.filter(p => enRango(p.fecha, rango.rango));
     return [...filtered].sort((a, b) => b.id - a.id);
-  }, [data, search, filterEstado, filterCorte, filterVendedor]);
+  }, [data, search, filterEstado, filterCorte, filterVendedor, rango]);
+
+  // Conteo y monto por estado dentro del período y filtros actuales (sin el de estado).
+  const resumenEstados = useMemo(() => {
+    const base = (data ?? []).filter(p =>
+      enRango(p.fecha, rango.rango) &&
+      (filterVendedor === 'Todos' || p.vendedor?.id?.toString() === filterVendedor) &&
+      (filterCorte === 'Todos' || p.detalles.some(d => d.producto.nombre === filterCorte))
+    );
+    return ESTADOS.map(e => {
+      const del = base.filter(p => p.estado === e.value);
+      return { ...e, cantidad: del.length, monto: del.reduce((s, p) => s + Number(p.total), 0) };
+    });
+  }, [data, rango, filterVendedor, filterCorte]);
+
+  const vendedoresEnPedidos = useMemo(() => {
+    const m = new Map<number, string>();
+    (data ?? []).forEach(p => p.vendedor && m.set(p.vendedor.id, p.vendedor.nombre));
+    return Array.from(m, ([id, nombre]) => ({ id, nombre })).sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }, [data]);
 
   // Suma de pedidos seleccionados (Solo se mostrará en pantallas grandes)
   const sumaSeleccionados = useMemo(() => {
@@ -201,7 +242,7 @@ export default function Pedidos() {
         .filter(d => d.estado !== 'Cancelado')
         .map(d => d.producto.id)
     );
-    return productos.filter(p => !idsEnPedido.has(p.id));
+    return productos.filter(p => p.estado !== 'desactivado' && !idsEnPedido.has(p.id));
   }, [productosData, selectedPedido]);
 
   const todosPesados = useMemo(() => {
@@ -239,12 +280,39 @@ export default function Pedidos() {
   if (error) return <ErrorMessage message="Error al cargar pedidos" />;
 
   return (
-    <div className="max-w-[100vw] overflow-x-hidden px-0 md:px-6 space-y-4 pb-24">
-      <div className="flex items-center justify-between mt-4">
-        <h1 className="text-xl md:text-2xl font-bold">Pedidos</h1>
-        <Button onClick={() => navigate('/pedidos/nuevo')} size="sm" className="rounded-full shadow-lg">
-          <Plus className="mr-1 h-4 w-4" /> Nuevo
-        </Button>
+    <div className="max-w-[100vw] overflow-x-hidden space-y-4 pb-24">
+      {confirmDialog}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-2 md:px-0">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pedidos</h1>
+          <p className="text-muted-foreground text-sm hidden sm:block">Toca un pedido para ver sus productos.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <RangoFechaSelect value={rango} onChange={setRango} />
+          <Button onClick={() => navigate('/pedidos/nuevo')}>
+            <Plus className="mr-1 h-4 w-4" /> Nuevo
+          </Button>
+        </div>
+      </div>
+
+      {/* RESUMEN POR ESTADO: tocar uno filtra la lista */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 px-2 md:px-0">
+        {resumenEstados.map(e => {
+          const activo = filterEstado === e.value;
+          return (
+            <button
+              key={e.value}
+              onClick={() => setFilterEstado(activo ? 'Todos' : e.value)}
+              className={`rounded-xl border p-3 text-left transition-colors ${activo ? 'border-primary bg-primary/5' : 'bg-card hover:bg-muted/50'}`}
+            >
+              <div className="flex items-center justify-between">
+                <Badge className={`text-[10px] border-none ${getStatusColor(e.value)}`}>{e.label}</Badge>
+                <span className="text-xs text-muted-foreground">{e.cantidad}</span>
+              </div>
+              <div className="mt-1.5 text-lg font-bold tabular-nums">{formatCLP(e.monto)}</div>
+            </button>
+          );
+        })}
       </div>
 
 {/* FILTROS ACTUALIZADOS */}
@@ -253,7 +321,7 @@ export default function Pedidos() {
     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
     <Input 
       className="pl-9 h-12 bg-white border-slate-200" 
-      placeholder="Buscar..." 
+      placeholder="Cliente o N° de pedido..." 
       value={search} 
       onChange={e => setSearch(e.target.value)} 
     />
@@ -263,11 +331,8 @@ export default function Pedidos() {
     <Select value={filterEstado} onValueChange={setFilterEstado}>
       <SelectTrigger className="h-12 bg-white"><SelectValue placeholder="Estado" /></SelectTrigger>
       <SelectContent>
-        <SelectItem value="Todos">Todos los Estados</SelectItem>
-        <SelectItem value="Reservado">Reservados</SelectItem>
-        <SelectItem value="Preparado">Preparados</SelectItem>
-        <SelectItem value="Pagado">Pagados</SelectItem>
-        <SelectItem value="Anulado">Anulados</SelectItem>
+        <SelectItem value="Todos">Todos (sin anulados)</SelectItem>
+        {ESTADOS.map(e => <SelectItem key={e.value} value={e.value}>{e.label}</SelectItem>)}
       </SelectContent>
     </Select>
 
@@ -276,10 +341,7 @@ export default function Pedidos() {
       <SelectTrigger className="h-12 bg-white"><SelectValue placeholder="Vendedor" /></SelectTrigger>
       <SelectContent>
         <SelectItem value="Todos">Todos los Vendedores</SelectItem>
-        {Array.from(new Set(data?.map(p => JSON.stringify(p.vendedor)).filter(Boolean))).map(vStr => {
-          const v = JSON.parse(vStr as string);
-          return <SelectItem key={v.id} value={v.id.toString()}>{v.nombre}</SelectItem>
-        })}
+        {vendedoresEnPedidos.map(v => <SelectItem key={v.id} value={v.id.toString()}>{v.nombre}</SelectItem>)}
       </SelectContent>
     </Select>
           <Select value={filterCorte} onValueChange={setFilterCorte}>
@@ -287,7 +349,7 @@ export default function Pedidos() {
               <SelectValue placeholder="Producto" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="Todos">Cortes</SelectItem>
+              <SelectItem value="Todos">Todos los cortes</SelectItem>
               {Array.from(new Set(data?.flatMap(p => p.detalles.map(d => d.producto.nombre)))).sort().map(c => (
                 <SelectItem key={c} value={c}>{c}</SelectItem>
               ))}
@@ -301,7 +363,7 @@ export default function Pedidos() {
         <Table>
           <TableHeader className="bg-slate-50">
             <TableRow>
-              <TableHead className="w-8 px-2 hidden lg:table-cell"></TableHead>
+              <TableHead className="w-8 px-2"></TableHead>
               <TableHead className="w-8 px-2"></TableHead>
               <TableHead className="w-12 px-1">N°</TableHead>
               <TableHead className="px-2">Cliente</TableHead>
@@ -313,10 +375,17 @@ export default function Pedidos() {
             </TableRow>
           </TableHeader>
           <TableBody>
+            {filteredPedidos.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                  No hay pedidos con estos filtros.
+                </TableCell>
+              </TableRow>
+            )}
             {filteredPedidos.map((pedido) => (
               <React.Fragment key={pedido.id}>
                 <TableRow className="border-b last:border-0" onClick={() => setExpandedId(expandedId === pedido.id ? null : pedido.id)}>
-                  <TableCell className="px-2 hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>
+                  <TableCell className="px-2" onClick={(e) => e.stopPropagation()}>
               <input 
                 type="checkbox" 
                 className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
@@ -359,18 +428,28 @@ export default function Pedidos() {
                           <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
                         </DropdownMenuItem>
                         {pedido.estado !== 'Pagado' && pedido.estado !== 'Anulado' && (
-                          <DropdownMenuItem onClick={() => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' }})} className="text-blue-600">
+                          <DropdownMenuItem
+                            onClick={() => confirm({
+                              title: `¿Marcar el pedido #${pedido.id} como pagado?`,
+                              description: `${pedido.cliente.nombre} · ${formatCurrency(pedido.total)}`,
+                              confirmLabel: 'Marcar pagado',
+                              onConfirm: () => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' }}),
+                            })}
+                            className="text-blue-600"
+                          >
                             <CheckCircle2 className="mr-2 h-4 w-4" /> Marcar Pagado
                           </DropdownMenuItem>
                         )}
                         {/* SECCIÓN DE ANULACIÓN */}
                         {pedido.estado !== 'Anulado' && (
                           <DropdownMenuItem
-                            onClick={() => {
-                              if (confirm(`¿Estás seguro de anular el pedido #00${pedido.id}? El stock será devuelto.`)) {
-                                anularMutation.mutate(pedido.id);
-                              }
-                            }}
+                            onClick={() => confirm({
+                              title: `¿Anular el pedido #${pedido.id}?`,
+                              description: `${pedido.cliente.nombre} · ${formatCurrency(pedido.total)}. El stock será devuelto al inventario.`,
+                              confirmLabel: 'Anular pedido',
+                              destructive: true,
+                              onConfirm: () => anularMutation.mutate(pedido.id),
+                            })}
                             className="text-red-600 focus:text-red-600 focus:bg-red-50"
                           >
                             <Trash2 className="mr-2 h-4 w-4" /> Anular Pedido
@@ -383,7 +462,12 @@ export default function Pedidos() {
 
                 {expandedId === pedido.id && (
                   <TableRow className="bg-slate-50/80">
-                    <TableCell colSpan={8} className="p-2">
+                    <TableCell colSpan={9} className="p-2">
+                      {pedido.observaciones && (
+                        <p className="mx-1 mb-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+                          <span className="font-bold">Nota:</span> {pedido.observaciones}
+                        </p>
+                      )}
                       <div className="grid grid-cols-1 lg:grid-cols-3 gap-1.5 w-full">
                         {pedido.detalles.map((det, idx) => (
                           <div key={idx} className={`flex justify-between items-center p-2.5 bg-white rounded-lg border border-slate-200 shadow-xs mx-1 ${det.estado === 'Cancelado' ? 'opacity-50' : ''}`}>
@@ -409,7 +493,7 @@ export default function Pedidos() {
         </Table>
         {/* BARRA DE SUMA FLOTANTE (Desktop Only) */}
   {selectedIds.length > 0 && (
-    <div className="hidden lg:flex fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl items-center gap-6 animate-in slide-in-from-bottom-4">
+    <div className="flex fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white px-4 md:px-6 py-3 rounded-full shadow-2xl items-center gap-4 md:gap-6 animate-in slide-in-from-bottom-4 max-w-[calc(100vw-2rem)]">
       <div className="flex flex-col border-r border-slate-700 pr-6">
         <span className="text-[10px] text-slate-400 font-bold uppercase">Seleccionados</span>
         <span className="font-mono font-bold">{selectedIds.length} pedidos</span>
@@ -443,6 +527,11 @@ export default function Pedidos() {
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {selectedPedido?.observaciones && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <span className="font-bold">Nota de entrega:</span> {selectedPedido.observaciones}
+              </p>
+            )}
             {selectedPedido?.detalles.map((det, idx) => {
               const cancelado = det.estado === 'Cancelado';
               return (
@@ -495,9 +584,14 @@ export default function Pedidos() {
                       disabled={cancelarProductoMutation.isPending}
                       onClick={() => {
                         if (!selectedPedido) return;
-                        if (confirm(`¿Cancelar "${det.producto.nombre}" de este pedido? El stock será devuelto.`)) {
-                          cancelarProductoMutation.mutate({ pedidoId: selectedPedido.id, detalleId: det.id });
-                        }
+                        const pedidoId = selectedPedido.id;
+                        confirm({
+                          title: `¿Cancelar "${det.producto.nombre}"?`,
+                          description: 'Se quita de este pedido y el stock vuelve al inventario.',
+                          confirmLabel: 'Cancelar producto',
+                          destructive: true,
+                          onConfirm: () => cancelarProductoMutation.mutate({ pedidoId, detalleId: det.id }),
+                        });
                       }}
                     >
                       <XCircle className="mr-2 h-4 w-4" /> Cancelar producto
@@ -593,7 +687,7 @@ export default function Pedidos() {
 
           <div className="flex-1 overflow-y-auto p-4">
             {selectedPedidoGanancia && (() => {
-              const detalles = selectedPedidoGanancia.detalles;
+              const detalles = lineasActivas(selectedPedidoGanancia);
               const totalVenta = detalles.reduce((sum, d) => sum + Number(d.total_venta), 0);
               const totalVentaNeta = totalVenta / FACTOR_IVA;
               const totalCostoNeto = detalles.reduce((sum, d) => sum + Number(d.total_costo), 0);

@@ -1,19 +1,6 @@
 import { useEffect } from 'react'; // Añadir useEffect
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'; // Añadir useLocation
-import {
-  LayoutDashboard,
-  Package,
-  Users,
-  ShoppingCart,
-  FileText,
-  Warehouse,
-  LogOut,
-  Feather,
-  TrendingUp,
-  KeyRound,
-  Truck,
-  Image,
-} from 'lucide-react';
+import { LogOut, Package, KeyRound } from 'lucide-react';
 import {
   Sidebar,
   SidebarContent,
@@ -29,21 +16,8 @@ import {
 } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
+import { NAV_GROUPS } from './nav';
 
-
-const menuItems = [
-  { title: 'Dashboard', url: '/', icon: LayoutDashboard },
-  { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
-  { title: 'Clientes', url: '/clientes', icon: Users },
-  { title: 'Productos', url: '/productos', icon: Package },
-  { title: 'Proveedores', url: '/proveedores', icon: Truck },
-  { title: 'Facturas', url: '/facturas', icon: FileText },
-  { title: 'Stock', url: '/stock', icon: Warehouse },
-  { title: 'Flyer de precios', url: '/flyer', icon: Image },
-  { title: 'Reportes', url: '/reportes', icon: TrendingUp },
-  { title: 'Flujos de Inventario', url: '/flujos-de-inventario', icon: Feather },
-  { title: 'Gestión de Pagos', url: '/gestion-pagos', icon: Feather },
-];
 
 export function AppSidebar() {
   const { state, isMobile, setOpenMobile } = useSidebar(); // Extraemos isMobile y setOpenMobile
@@ -76,31 +50,33 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Menú Principal</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <NavLink
-                      to={item.url}
-                      end={item.url === '/'}
-                      className={({ isActive }) =>
-                        isActive
-                          ? 'bg-sidebar-accent text-sidebar-primary font-medium'
-                          : 'hover:bg-sidebar-accent/50'
-                      }
-                    >
-                      <item.icon className="h-4 w-4" />
-                      {!collapsed && <span>{item.title}</span>}
-                    </NavLink>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {NAV_GROUPS.map((group) => (
+          <SidebarGroup key={group.label} className="py-1">
+            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {group.items.map((item) => (
+                  <SidebarMenuItem key={item.url}>
+                    <SidebarMenuButton asChild tooltip={item.title}>
+                      <NavLink
+                        to={item.url}
+                        end={item.url === '/'}
+                        className={({ isActive }) =>
+                          isActive
+                            ? 'bg-sidebar-accent text-sidebar-primary font-medium'
+                            : 'hover:bg-sidebar-accent/50'
+                        }
+                      >
+                        <item.icon className="h-4 w-4" />
+                        {!collapsed && <span>{item.title}</span>}
+                      </NavLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
       </SidebarContent>
 
       <SidebarFooter className="border-t border-border p-4">

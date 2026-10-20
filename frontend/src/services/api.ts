@@ -152,6 +152,7 @@ export const createPedido = (data: {
     descuento_por_kilo?: number;
     cantidad_unidades: number;
   }[];
+  observaciones?: string;
 }) => api.post<Pedido>('/pedidos/crear/', data);
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
 export const cancelarProductoPedido = (pedidoId: number, detalleId: number) =>
@@ -185,6 +186,7 @@ export const createPagoVendedor = (formData: FormData) =>
   api.post('/pagos-vendedor/', formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   });
+export const deletePagoVendedor = (id: number) => api.delete(`/pagos-vendedor/${id}/`);
 
 // En services/api.ts
 
@@ -252,7 +254,8 @@ export const getVendedores = () => api.get<Vendedor[]>('/vendedores/');
 // --- Reportes (Plan 03) ---
 export const getReporteGanancias = (params?: { desde?: string; hasta?: string }) =>
   api.get('/reportes/ganancias/', { params });
-export const getReportePerdidas = () => api.get('/reportes/perdidas/');
+export const getReportePerdidas = (params?: { desde?: string; hasta?: string }) =>
+  api.get('/reportes/perdidas/', { params });
 export const getFluctuacionPrecios = (productoId?: number | string) =>
   api.get('/reportes/fluctuacion-precios/', {
     params: productoId ? { producto: productoId } : undefined,

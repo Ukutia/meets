@@ -25,7 +25,8 @@ export interface Producto {
   descripcion?: string | null;
   categoria?: string | null;
   precio_por_kilo: number;
-  estado: 'disponible' | 'agotado';
+  peso_minimo?: number | string;
+  estado: 'disponible' | 'agotado' | 'desactivado';
   venta_por_unidad?: boolean;
   peso_flyer?: string;
 }
@@ -70,6 +71,7 @@ export interface Pedido {
   estado: 'Reservado' | 'Preparado' | 'Anulado' | 'Pagado';
   total: number;
   detalles: DetallePedido[];
+  observaciones?: string;
 }
 
 
@@ -83,6 +85,8 @@ export interface DetalleFactura {
   costo_total: number;
   cantidad_unidades: number;
   costo_por_kilo: number;
+  fecha?: string;
+  proveedor_nombre?: string;
   // Guardas de stock calculadas por el backend.
   estado_edicion?: EstadoEdicionLinea;
   unidades_consumidas?: number;
@@ -96,7 +100,8 @@ export interface PagoFactura {
 }
 
 export interface Factura {
-  proveedor: string;
+  proveedor: number;
+  proveedor_nombre?: string;
   fecha: string;
   numero_factura: string;
   detalles: DetalleFactura[];

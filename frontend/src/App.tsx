@@ -1,5 +1,4 @@
 import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
@@ -17,7 +16,6 @@ import Facturas from "./pages/Facturas";
 import Stock from "./pages/Stock";
 import Reportes from "./pages/Reportes";
 import NotFound from "./pages/NotFound";
-import FormularioPedido from "./pages/FormularioPedido";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
@@ -47,7 +45,6 @@ const App = () => (
     <AuthProvider>
       <TooltipProvider>
         <Toaster />
-        <Sonner />
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />

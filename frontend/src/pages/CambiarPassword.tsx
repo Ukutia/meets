@@ -53,7 +53,7 @@ export default function CambiarPassword() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Mi Cuenta</h1>
+        <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Mi Cuenta</h1>
         <p className="text-muted-foreground">
           {user?.username ? `Usuario: ${user.username}` : 'Configuración de tu cuenta'}
         </p>

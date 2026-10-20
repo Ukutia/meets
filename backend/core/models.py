@@ -210,6 +210,9 @@ class Pedido(models.Model):
         upload_to="recibo_pedidos/", blank=True, null=True, verbose_name="Recibo (Foto)"
     )
 
+    # Notas de entrega que se escriben al crear el pedido (horario, portón, etc.).
+    observaciones = models.TextField(blank=True, default='', verbose_name="Observaciones")
+
     def __str__(self):
         return f"Pedido #{self.id} - Cliente: {self.cliente.nombre}"
     

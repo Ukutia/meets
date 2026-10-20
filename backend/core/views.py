@@ -116,7 +116,10 @@ class CrearPedido(APIView):
 
         try:
             with transaction.atomic():
-                pedido = Pedido.objects.create(cliente_id=cliente_id)
+                pedido = Pedido.objects.create(
+                    cliente_id=cliente_id,
+                    observaciones=(data.get('observaciones') or '').strip(),
+                )
                 total_pedido = Decimal('0.00')
 
                 for detalle, descuento_por_kilo in zip(detalles, descuentos):
@@ -967,6 +970,19 @@ class PagoVendedorView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+class PagoVendedorDetailView(APIView):
+    """Borra un pago/adelanto mal ingresado (no hay otro efecto contable)."""
+    permission_classes = [IsAuthenticated]
+    def delete(self, request, pk):
+        try:
+            pago = PagoVendedor.objects.get(pk=pk)
+        except PagoVendedor.DoesNotExist:
+            return Response({'error': 'Movimiento no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        if pago.comprobante:
+            pago.comprobante.delete(save=False)
+        pago.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 class DetalleFacturasList(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
@@ -1621,6 +1637,13 @@ class ReportePerdidasView(APIView):
             ))
             .select_related('producto')
         )
+        # Mismo filtro opcional de rango que ReporteGananciasView.
+        desde = request.query_params.get('desde')
+        hasta = request.query_params.get('hasta')
+        if desde:
+            mermas = mermas.filter(fecha__gte=desde)
+        if hasta:
+            mermas = mermas.filter(fecha__lte=hasta)
 
         por_producto = {}
         por_mes = {}

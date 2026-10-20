@@ -1,8 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Search, Plus, Trash2, Package, Calculator, FileText, Eye, Pencil, Lock, AlertTriangle, BadgeCheck } from 'lucide-react';
+import { Search, Plus, Trash2, Package, FileText, Pencil, Lock, AlertTriangle, BadgeCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import {
@@ -28,6 +27,12 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Factura, EstadoEdicionLinea } from '@/types';
 import { useToast } from '@/hooks/use-toast';
+import { diasDesde, enRango, formatCLP, formatFecha, hoyISO } from '@/lib/utils';
+import { useSearchParams } from 'react-router-dom';
+import { StatCard } from '@/components/shared/StatCard';
+import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Clock, Wallet } from 'lucide-react';
 
 interface DetalleFacturaForm {
   producto: string;
@@ -62,8 +67,14 @@ interface EditLinea {
 }
 
 export default function Facturas() {
-  const [search, setSearch] = useState('');
-  const [pagoFilter, setPagoFilter] = useState<'todas' | 'pagadas' | 'pendientes'>('todas');
+  // ?pago=pendientes&buscar=Proveedor llegan desde el Resumen y Proveedores.
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(searchParams.get('buscar') ?? '');
+  const [pagoFilter, setPagoFilter] = useState<'todas' | 'pagadas' | 'pendientes'>(
+    (searchParams.get('pago') as 'pendientes' | null) ?? 'todas'
+  );
+  const [proveedorFilter, setProveedorFilter] = useState('todos');
+  const [rango, setRango] = useState<RangoState>(rangoInicial('todo'));
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedFactura, setSelectedFactura] = useState<Factura | null>(null);
   const [detalles, setDetalles] = useState<DetalleFacturaForm[]>([]);
@@ -88,7 +99,7 @@ export default function Facturas() {
     defaultValues: {
       numero_factura: '',
       proveedor_id: '',
-      fecha: new Date().toISOString().split('T')[0],
+      fecha: hoyISO(),
       subtotal: '0',
       iva: '0',
       total: '0',
@@ -193,7 +204,7 @@ export default function Facturas() {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       toast({ title: 'Éxito', description: 'Factura registrada.' });
-      form.reset();
+      form.reset({ ...form.formState.defaultValues, fecha: hoyISO() });
       setDetalles([]);
       setDialogOpen(false);
     },
@@ -277,7 +288,7 @@ export default function Facturas() {
   // Al abrir el detalle de una factura sin pago, precarga fecha de hoy y el total como default.
   useEffect(() => {
     if (selectedFactura && !selectedFactura.pago_factura) {
-      setPagoFecha(new Date().toISOString().split('T')[0]);
+      setPagoFecha(hoyISO());
       setPagoMonto(String(selectedFactura.total));
     }
   }, [selectedFactura]);
@@ -288,37 +299,53 @@ export default function Facturas() {
                             f.numero_factura.toLowerCase().includes(search.toLowerCase());
       const pagado = Boolean(f.pago_factura);
       const matchesPago = pagoFilter === 'todas' || (pagoFilter === 'pagadas' && pagado) || (pagoFilter === 'pendientes' && !pagado);
-      return matchesSearch && matchesPago;
-    });
-  }, [facturasData, search, pagoFilter]);
+      const matchesProveedor = proveedorFilter === 'todos' || String(f.proveedor) === proveedorFilter;
+      return matchesSearch && matchesPago && matchesProveedor && enRango(f.fecha, rango.rango);
+    }).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.numero_factura.localeCompare(a.numero_factura));
+  }, [facturasData, search, pagoFilter, proveedorFilter, rango]);
+
+  // Totales de lo que se está viendo (respeta los filtros).
+  const resumen = useMemo(() => {
+    const pendientes = filteredFacturas.filter((f) => !f.pago_factura);
+    return {
+      compras: filteredFacturas.reduce((s, f) => s + Number(f.total), 0),
+      pendiente: pendientes.reduce((s, f) => s + Number(f.total), 0),
+      cantidadPendientes: pendientes.length,
+      masAntigua: pendientes.reduce<number | null>((max, f) => {
+        const d = diasDesde(f.fecha);
+        return max == null || d > max ? d : max;
+      }, null),
+    };
+  }, [filteredFacturas]);
 
   if (isLoading) return <LoadingSpinner />;
   if (error) return <ErrorMessage message="Error al cargar facturas" />;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Facturas de Entrada</h1>
-          <p className="text-muted-foreground">Gestiona tus compras y aumenta tu inventario.</p>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Facturas de Compra</h1>
+          <p className="text-muted-foreground">Cada factura registrada suma su mercadería al stock.</p>
         </div>
         
         {/* DIÁLOGO NUEVA FACTURA */}
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="lg"><Plus className="mr-2 h-5 w-5" /> Nueva Factura</Button>
+            <Button><Plus className="mr-2 h-4 w-4" /> Nueva Factura</Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-[800px]">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2"><FileText className="text-primary" /> Registrar Compra</DialogTitle>
             </DialogHeader>
             <div className="grid gap-6 py-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <Label>Proveedor</Label>
                   <Controller
                     control={form.control}
                     name="proveedor_id"
+                    rules={{ required: true }}
                     render={({ field }) => (
                       <Select onValueChange={field.onChange} value={field.value}>
                         <SelectTrigger><SelectValue placeholder="Seleccione proveedor" /></SelectTrigger>
@@ -335,11 +362,15 @@ export default function Facturas() {
                   <Label>N° Factura</Label>
                   <Input {...form.register('numero_factura', { required: true })} placeholder="0001" />
                 </div>
+                <div className="space-y-2">
+                  <Label>Fecha de la factura</Label>
+                  <Input type="date" {...form.register('fecha', { required: true })} />
+                </div>
               </div>
 
               <div className="border rounded-xl p-4 bg-muted/30 space-y-4">
-                <div className="grid grid-cols-12 gap-2">
-                  <div className="col-span-4">
+                <div className="grid grid-cols-2 sm:grid-cols-12 gap-2">
+                  <div className="col-span-2 sm:col-span-4">
                     <Select value={nuevoItem.producto_id} onValueChange={(v) => setNuevoItem({ ...nuevoItem, producto_id: v })}>
                       <SelectTrigger><SelectValue placeholder="Producto" /></SelectTrigger>
                       <SelectContent>
@@ -347,13 +378,13 @@ export default function Facturas() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="col-span-2"><Input type="number" placeholder="Kg" value={nuevoItem.cantidad_kilos} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_kilos: e.target.value })} /></div>
-                  <div className="col-span-2"><Input type="number" placeholder="Unid." value={nuevoItem.cantidad_unidades} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_unidades: e.target.value })} /></div>
-                  <div className="col-span-3"><Input type="number" placeholder="Costo/Kg" value={nuevoItem.costo_por_kilo} onChange={e => setNuevoItem({ ...nuevoItem, costo_por_kilo: e.target.value })} /></div>
-                  <div className="col-span-1"><Button type="button" onClick={agregarItem} className="w-full"><Plus className="h-4 w-4" /></Button></div>
+                  <div className="col-span-1 sm:col-span-2"><Input type="number" aria-label="Kilos" placeholder="Kg" value={nuevoItem.cantidad_kilos} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_kilos: e.target.value })} /></div>
+                  <div className="col-span-1 sm:col-span-2"><Input type="number" aria-label="Unidades" placeholder="Unid." value={nuevoItem.cantidad_unidades} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_unidades: e.target.value })} /></div>
+                  <div className="col-span-1 sm:col-span-3"><Input type="number" aria-label="Costo por kilo sin IVA" placeholder="Costo/Kg neto" value={nuevoItem.costo_por_kilo} onChange={e => setNuevoItem({ ...nuevoItem, costo_por_kilo: e.target.value })} /></div>
+                  <div className="col-span-1"><Button type="button" onClick={agregarItem} className="w-full" aria-label="Agregar línea"><Plus className="h-4 w-4" /></Button></div>
                 </div>
 
-                <div className="bg-background rounded-md border overflow-hidden">
+                <div className="bg-background rounded-md border overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50 border-b text-xs uppercase text-muted-foreground font-medium">
                       <tr>
@@ -405,62 +436,114 @@ export default function Facturas() {
               </div>
             </div>
             <DialogFooter>
-              <Button onClick={form.handleSubmit((v) => createMutation.mutate(v))} disabled={createMutation.isPending || detalles.length === 0}>Guardar Factura</Button>
+              <Button
+                onClick={form.handleSubmit(
+                  (v) => createMutation.mutate(v),
+                  () => toast({ title: 'Datos incompletos', description: 'Indica proveedor, número y fecha de la factura.', variant: 'destructive' })
+                )} disabled={createMutation.isPending || detalles.length === 0}>Guardar Factura</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
 
+      {/* RESUMEN (respeta los filtros) */}
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-3">
+        <StatCard title="Compras" value={formatCLP(resumen.compras)} icon={FileText} description={`${filteredFacturas.length} facturas · con IVA`} />
+        <StatCard
+          title="Por pagar"
+          value={formatCLP(resumen.pendiente)}
+          icon={Wallet}
+          accent={resumen.cantidadPendientes ? 'text-destructive' : 'text-green-600'}
+          description={resumen.cantidadPendientes ? `${resumen.cantidadPendientes} facturas pendientes` : 'Todo pagado'}
+          onClick={() => setPagoFilter('pendientes')}
+        />
+        <StatCard
+          title="Pendiente más antigua"
+          value={resumen.masAntigua != null ? `${resumen.masAntigua} días` : '—'}
+          icon={Clock}
+          accent={resumen.masAntigua != null && resumen.masAntigua > 30 ? 'text-destructive' : undefined}
+          description="Desde la fecha de la factura"
+          className="col-span-2 lg:col-span-1"
+        />
+      </div>
+
       {/* FILTROS */}
-      <div className="flex gap-4 p-4 bg-card border rounded-lg shadow-sm">
+      <div className="flex flex-col lg:flex-row gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input placeholder="Buscar por número o proveedor..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <Select value={pagoFilter} onValueChange={(v) => setPagoFilter(v as any)}>
-          <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="todas">Todos los estados</SelectItem>
-            <SelectItem value="pagadas">Pagadas</SelectItem>
-            <SelectItem value="pendientes">Pendientes</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex flex-wrap gap-2">
+          <Select value={proveedorFilter} onValueChange={setProveedorFilter}>
+            <SelectTrigger className="w-[190px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todos">Todos los proveedores</SelectItem>
+              {proveedores?.map((p: any) => (
+                <SelectItem key={p.id} value={p.id.toString()}>{p.nombre}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={pagoFilter} onValueChange={(v) => setPagoFilter(v as any)}>
+            <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todas">Pagadas y pendientes</SelectItem>
+              <SelectItem value="pagadas">Pagadas</SelectItem>
+              <SelectItem value="pendientes">Pendientes</SelectItem>
+            </SelectContent>
+          </Select>
+          <RangoFechaSelect value={rango} onChange={setRango} />
+        </div>
       </div>
 
       {/* LISTADO DE FACTURAS */}
-      <div className="grid gap-4">
-        {filteredFacturas.map((f) => (
-          <Card 
-            key={f.numero_factura} 
-            className="hover:border-primary cursor-pointer transition-all active:scale-[0.98]"
-            onClick={() => setSelectedFactura(f)}
-          >
-            <CardContent className="p-6 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-muted rounded-full text-muted-foreground"><FileText className="h-6 w-6" /></div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-lg">Factura #{f.numero_factura}</h3>
-                    <Badge variant={f.pago_factura ? 'outline' : 'secondary'} className={f.pago_factura ? 'border-green-500 text-green-600' : ''}>
-                      {f.pago_factura ? 'Pagada' : 'Pendiente'}
-                    </Badge>
-                  </div>
-                  <p className="font-medium text-muted-foreground">{f.proveedor_nombre}</p>
-                  <p className="text-xs text-muted-foreground">{new Date(f.fecha).toLocaleDateString()}</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-2xl font-black text-primary">${Number(f.total).toLocaleString('es-CL')}</p>
-                <span className="text-xs text-primary flex items-center gap-1 justify-end mt-1"><Eye className="h-3 w-3" /> Ver detalle</span>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="rounded-lg border bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/50">
+              <TableHead>Factura</TableHead>
+              <TableHead>Proveedor</TableHead>
+              <TableHead className="hidden sm:table-cell">Fecha</TableHead>
+              <TableHead>Estado</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredFacturas.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No hay facturas con estos filtros.</TableCell>
+              </TableRow>
+            )}
+            {filteredFacturas.map((f) => {
+              const dias = diasDesde(f.fecha);
+              return (
+                <TableRow key={f.numero_factura} className="cursor-pointer" onClick={() => setSelectedFactura(f)}>
+                  <TableCell className="font-mono font-semibold text-primary">#{f.numero_factura}</TableCell>
+                  <TableCell>
+                    <div className="font-medium">{f.proveedor_nombre}</div>
+                    <div className="text-xs text-muted-foreground sm:hidden">{formatFecha(f.fecha)}</div>
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell text-sm">{formatFecha(f.fecha)}</TableCell>
+                  <TableCell>
+                    {f.pago_factura ? (
+                      <Badge variant="outline" className="border-green-500 text-green-600">Pagada</Badge>
+                    ) : (
+                      <div className="flex flex-col items-start gap-0.5">
+                        <Badge variant="outline" className={`border-none ${dias > 30 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>Pendiente</Badge>
+                        <span className="text-[10px] text-muted-foreground">{dias === 0 ? 'hoy' : `hace ${dias} ${dias === 1 ? 'día' : 'días'}`}</span>
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right font-bold tabular-nums">{formatCLP(f.total)}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
       </div>
 
       {/* DIÁLOGO DETALLE DE FACTURA EXISTENTE */}
       <Dialog open={!!selectedFactura} onOpenChange={() => setSelectedFactura(null)}>
-        <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[760px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-2xl flex items-center gap-2">
               <FileText className="h-6 w-6 text-primary" /> 
@@ -481,22 +564,23 @@ export default function Facturas() {
                 </div>
                 <div>
                   <Label className="text-muted-foreground uppercase text-[10px] font-bold">Fecha de Ingreso</Label>
-                  <p className="font-semibold text-base">{new Date(selectedFactura.fecha).toLocaleDateString('es-CL')}</p>
+                  <p className="font-semibold text-base">{formatFecha(selectedFactura.fecha)}</p>
                 </div>
               </div>
 
               {/* Tabla de Productos */}
               <div className="space-y-3">
                 <Label className="flex items-center gap-2"><Package className="h-4 w-4" /> Productos Recibidos</Label>
-                <div className="rounded-xl border overflow-hidden">
+                <div className="rounded-xl border overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50 border-b">
                       <tr>
                         <th className="p-3 text-left">Producto</th>
                         <th className="p-3 text-right">Cantidad</th>
                         <th className="p-3 text-right">Peso Prom./Pieza</th>
-                        <th className="p-3 text-right">Costo Unit.</th>
+                        <th className="p-3 text-right">Costo/Kg neto</th>
                         <th className="p-3 text-right">Subtotal</th>
+                        <th className="p-3 text-left">Vendido</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -513,12 +597,24 @@ export default function Facturas() {
                             <td className="p-3 text-right font-bold text-primary">
                               ${Number(d.costo_total).toLocaleString('es-CL')}
                             </td>
+                            <td className="p-3 text-xs">
+                              {Number(d.unidades_consumidas) > 0 ? (
+                                <>
+                                  <span className="font-medium">{d.unidades_consumidas} de {d.cantidad_unidades} un.</span>
+                                  {d.pedidos_consumidores?.length > 0 && (
+                                    <span className="block text-muted-foreground">Pedidos {d.pedidos_consumidores.map((id: number) => `#${id}`).join(', ')}</span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">Sin ventas</span>
+                              )}
+                            </td>
                           </tr>
                           );
                         })
                       ) : (
                         <tr>
-                          <td colSpan={5} className="p-8 text-center text-muted-foreground italic">
+                          <td colSpan={6} className="p-8 text-center text-muted-foreground italic">
                             No hay detalles registrados para esta factura en la base de datos.
                           </td>
                         </tr>
@@ -549,7 +645,7 @@ export default function Facturas() {
                 <div className="flex items-center gap-2 rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-700">
                   <BadgeCheck className="h-4 w-4 shrink-0" />
                   <span>
-                    Pagada el {new Date(selectedFactura.pago_factura.fecha_de_pago).toLocaleDateString('es-CL')} —
+                    Pagada el {formatFecha(selectedFactura.pago_factura.fecha_de_pago)} —
                     ${Number(selectedFactura.pago_factura.monto_del_pago).toLocaleString('es-CL')}
                   </span>
                 </div>

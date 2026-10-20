@@ -20,7 +20,7 @@ import { useForm, Controller } from 'react-hook-form';
 import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createCliente, updateCliente, getVendedores } from '@/services/api';
-import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { Loader2 } from 'lucide-react';
 import type { Cliente, Vendedor } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 
@@ -241,7 +241,7 @@ export function ClienteFormDialog({
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? (
-                <><LoadingSpinner className="mr-2 h-4 w-4" /> Guardando...</>
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Guardando...</>
               ) : (
                 mode === 'edit' ? 'Actualizar' : 'Guardar'
               )}

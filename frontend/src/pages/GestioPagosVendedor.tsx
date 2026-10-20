@@ -1,296 +1,254 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { 
-  History, Image as ImageIcon, 
-  BadgeDollarSign, ExternalLink 
+import {
+  History, Image as ImageIcon, ExternalLink, Trash2, ShoppingCart, BadgeCheck, HandCoins, Scale,
 } from 'lucide-react';
-import { getVendedores, getPedidos, getPagosVendedor, createPagoVendedor } from '@/services/api';
+import { getVendedores, getPedidos, getPagosVendedor, createPagoVendedor, deletePagoVendedor } from '@/services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { toast } from 'sonner';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { StatCard } from '@/components/shared/StatCard';
+import { useConfirm } from '@/components/shared/ConfirmDialog';
+import { useToast } from '@/hooks/use-toast';
+import { formatCLP, formatFecha } from '@/lib/utils';
+import { calcularSaldosVendedores, pagosDesdeRespuesta, type PagoVendedor } from '@/lib/saldos';
+import type { Pedido, Vendedor } from '@/types';
+
+const getImageUrl = (path: string | null | undefined) => {
+  if (!path) return '';
+  if (path.startsWith('http')) return path;
+  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  // El backend devuelve "comprobantes_pagos/aa.jpg" y Django lo sirve bajo /media/.
+  const fileName = path.split('/').pop();
+  return `${cleanBase}/media/${fileName}`;
+};
+
+const saldoTexto = (saldo: number) => (saldo >= 0 ? formatCLP(saldo) : `${formatCLP(-saldo)} a favor`);
 
 export default function GestionPagosVendedor() {
   const queryClient = useQueryClient();
-  const [vendedorId, setVendedorId] = useState<string>("todos");
-  const [tipoMovimiento, setTipoMovimiento] = useState<string>("pago");
-  const [form, setForm] = useState({ monto: "", comentario: "" });
+  const { toast } = useToast();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [vendedorId, setVendedorId] = useState<string>('todos');
+  const [tipoMovimiento, setTipoMovimiento] = useState<'pago' | 'adelanto'>('pago');
+  const [form, setForm] = useState({ monto: '', comentario: '' });
   const [archivo, setArchivo] = useState<File | null>(null);
-  const [imgModal, setImgModal] = useState<{ open: boolean; url: string }>({ open: false, url: "" });
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
 
-// --- LÓGICA DE URLS PARA TU ESTRUCTURA ---
-  const getImageUrl = (path: string | null) => {
-    if (!path) return "";
-    if (path.startsWith('http')) return path;
-    
-    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-
-    // Tu backend devuelve "comprobantes_pagos/aa.jpg"
-    // Pero Django ahora lo servirá bajo "/media/"
-    // Necesitamos que quede: http://localhost:8000/media/aa.jpg
-    
-    // Extraemos solo el nombre del archivo si viene con la carpeta
-    const fileName = path.split('/').pop(); 
-    
-    return `${cleanBase}/media/${fileName}`;
-  };
-
-  /* ... resto del componente igual ... */
-
-
-
-  // 1. Cargas de datos
-  const { data: respVendedores } = useQuery({ queryKey: ['vendedores'], queryFn: getVendedores });
-  const { data: respPedidos } = useQuery({ queryKey: ['pedidos-todos'], queryFn: getPedidos });
-  const { data: respPagos } = useQuery({ queryKey: ['pagos-todos'], queryFn: () => getPagosVendedor() });
-
-  const vendedores = useMemo(() => Array.isArray(respVendedores?.data) ? respVendedores.data : [], [respVendedores]);
-  const todosPedidos = useMemo(() => Array.isArray(respPedidos?.data) ? respPedidos.data : [], [respPedidos]);
-  
-  const todosPagos = useMemo(() => {
-    if (!respPagos) return [];
-    if (Array.isArray(respPagos.data)) return respPagos.data;
-    if (respPagos.data && Array.isArray(respPagos.data.data)) return respPagos.data.data;
-    return [];
-  }, [respPagos]);
-
-  // 2. Lógica de Resumen y Totales
-const resumenGeneral = useMemo(() => {
-  return vendedores.map(v => {
-    const vId = Number(v.id); // Convertimos el ID del vendedor a número una sola vez
-
-    // 1. Filtrar ventas (Pedidos)
-    const ventas = todosPedidos
-      .filter((p: any) => {
-        // Accedemos al ID dentro del objeto vendedor
-        const idDelPedido = p.vendedor?.id || p.vendedor_id;
-        return Number(idDelPedido) === vId;
-      })
-      .reduce((acc: number, p: any) => acc + Number(p.total || 0), 0);
-    
-    // 2. Filtrar pagos realizados
-    const pagosRealizados = todosPagos
-      .filter((p: any) => {
-        // En pagos, verifica si 'vendedor' viene como objeto o ID directo
-        const idDelPago = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
-        return Number(idDelPago) === vId && p.tipo === 'pago';
-      })
-      .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
-
-    // 3. Filtrar adelantos
-    const adelantosAcumulados = todosPagos
-      .filter((p: any) => {
-        const idDelPago = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
-        return Number(idDelPago) === vId && p.tipo === 'adelanto';
-      })
-      .reduce((acc: number, p: any) => acc + Number(p.monto || 0), 0);
-
-    return { 
-      ...v, 
-      ventas, 
-      pagos: pagosRealizados, 
-      adelantos: adelantosAcumulados,
-      deudaNeta: ventas - pagosRealizados 
-    };
+  // Mismas claves que el Resumen y Pedidos para compartir caché.
+  const { data: vendedores = [] } = useQuery({
+    queryKey: ['vendedores'],
+    queryFn: async () => (await getVendedores()).data as Vendedor[],
   });
-}, [vendedores, todosPedidos, todosPagos]);
+  const { data: todosPedidos } = useQuery({
+    queryKey: ['pedidos'],
+    queryFn: async () => (await getPedidos(true)).data as Pedido[],
+  });
+  const { data: todosPagos = [] } = useQuery({
+    queryKey: ['pagos-vendedor'],
+    queryFn: async () => pagosDesdeRespuesta((await getPagosVendedor()).data),
+  });
 
-  const totalesGlobales = useMemo(() => {
-    return resumenGeneral.reduce((acc, curr) => ({
-      ventas: acc.ventas + curr.ventas,
-      pagos: acc.pagos + curr.pagos,
-      deuda: acc.deuda + curr.deudaNeta,
-      adelantos: acc.adelantos + curr.adelantos
-    }), { ventas: 0, pagos: 0, deuda: 0, adelantos: 0 });
-  }, [resumenGeneral]);
+  const pedidosVigentes = useMemo(() => (todosPedidos ?? []).filter((p) => p.estado !== 'Anulado'), [todosPedidos]);
+  const resumen = useMemo(
+    () => calcularSaldosVendedores(vendedores, pedidosVigentes, todosPagos),
+    [vendedores, pedidosVigentes, todosPagos]
+  );
+  const totales = resumen.reduce(
+    (acc, v) => ({
+      ventas: acc.ventas + v.ventas,
+      pagos: acc.pagos + v.pagos,
+      adelantos: acc.adelantos + v.adelantos,
+      saldo: acc.saldo + v.saldo,
+    }),
+    { ventas: 0, pagos: 0, adelantos: 0, saldo: 0 }
+  );
 
-  // 3. Mutación
-  const mutation = useMutation({
+  const seleccionado = resumen.find((v) => String(v.id) === vendedorId);
+  const movimientos = todosPagos
+    .filter((p) => String(p.vendedor) === vendedorId)
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+  const crearMutation = useMutation({
     mutationFn: createPagoVendedor,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pagos-todos'] });
-      toast.success(`${tipoMovimiento === 'pago' ? 'Pago' : 'Adelanto'} registrado`);
-      setForm({ monto: "", comentario: "" });
+      queryClient.invalidateQueries({ queryKey: ['pagos-vendedor'] });
+      toast({ title: `${tipoMovimiento === 'pago' ? 'Pago' : 'Adelanto'} registrado` });
+      setForm({ monto: '', comentario: '' });
       setArchivo(null);
     },
-    onError: () => toast.error("Error al registrar")
+    onError: (err: any) =>
+      toast({ title: 'Error al registrar', description: err?.response?.data?.error, variant: 'destructive' }),
+  });
+
+  const borrarMutation = useMutation({
+    mutationFn: (id: number) => deletePagoVendedor(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pagos-vendedor'] });
+      toast({ title: 'Movimiento eliminado' });
+    },
+    onError: (err: any) =>
+      toast({ title: 'No se pudo eliminar', description: err?.response?.data?.error, variant: 'destructive' }),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (vendedorId === "todos" || !form.monto) return toast.error("Faltan datos");
-    
+    if (vendedorId === 'todos' || !Number(form.monto)) {
+      toast({ title: 'Faltan datos', description: 'Ingresa un monto mayor a cero.', variant: 'destructive' });
+      return;
+    }
     const formData = new FormData();
     formData.append('vendedor', vendedorId);
     formData.append('monto', form.monto);
     formData.append('comentario', form.comentario);
     formData.append('tipo', tipoMovimiento);
     if (archivo) formData.append('comprobante', archivo);
-    
-    mutation.mutate(formData);
-  };
-
-  const abrirModalImagen = (url: string) => {
-    if (!url) return toast.info("No hay comprobante");
-    setImgModal({ open: true, url: getImageUrl(url) });
+    crearMutation.mutate(formData);
   };
 
   return (
-    <div className="space-y-6 p-4">
-      {/* MODAL VISOR */}
-      <Dialog open={imgModal.open} onOpenChange={(o) => setImgModal({ ...imgModal, open: o })}>
-        <DialogContent className="max-w-3xl bg-white">
-          <DialogHeader><DialogTitle>Comprobante Adjunto</DialogTitle></DialogHeader>
-          <div className="flex justify-center bg-slate-50 p-2 rounded-lg border min-h-[300px] items-center">
-            <img 
-                src={imgModal.url} 
-                alt="Comprobante" 
-                className="max-h-[70vh] object-contain shadow-md"
-                onError={(e) => {
-                    (e.target as HTMLImageElement).src = "https://placehold.co/600x400?text=Error+al+cargar+imagen";
-                }}
-            />
+    <div className="space-y-6">
+      {confirmDialog}
+
+      <Dialog open={!!imgUrl} onOpenChange={(o) => !o && setImgUrl(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader><DialogTitle>Comprobante adjunto</DialogTitle></DialogHeader>
+          <div className="flex justify-center bg-muted/40 p-2 rounded-lg border min-h-[300px] items-center">
+            {imgUrl && <img src={imgUrl} alt="Comprobante" className="max-h-[70vh] object-contain shadow-md" />}
           </div>
-          <Button variant="outline" onClick={() => window.open(imgModal.url, '_blank')} className="w-full">
+          <Button variant="outline" onClick={() => imgUrl && window.open(imgUrl, '_blank')} className="w-full">
             <ExternalLink className="h-4 w-4 mr-2" /> Abrir en pestaña nueva
           </Button>
         </DialogContent>
       </Dialog>
 
-      {/* HEADER */}
-      <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border">
+      <div className="flex flex-col md:flex-row justify-between md:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <BadgeDollarSign className="text-primary" /> Finanzas de Vendedores
-          </h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pagos de Vendedores</h1>
+          <p className="text-muted-foreground">Lo que cada vendedor ha vendido, rendido y adelantado.</p>
         </div>
         <Select value={vendedorId} onValueChange={setVendedorId}>
-          <SelectTrigger className="w-full md:w-72 border-2 border-primary/20">
-            <SelectValue placeholder="Seleccionar Vendedor" />
+          <SelectTrigger className="w-full md:w-72">
+            <SelectValue placeholder="Seleccionar vendedor" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="todos">📋 Ver Resumen General</SelectItem>
-            {vendedores.map((v: any) => (
+            <SelectItem value="todos">Resumen de todos</SelectItem>
+            {vendedores.map((v) => (
               <SelectItem key={v.id} value={v.id.toString()}>{v.nombre}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
 
-      {vendedorId === "todos" ? (
-        <Card className="border-none shadow-lg overflow-hidden">
-          <CardHeader className="bg-slate-900 text-white"><CardTitle>Consolidado General</CardTitle></CardHeader>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader className="bg-muted">
-                <TableRow>
-                  <TableHead>Vendedor</TableHead>
-                  <TableHead className="text-right">Ventas</TableHead>
-                  <TableHead className="text-right text-green-700">Pagado</TableHead>
-                  <TableHead className="text-right text-orange-600">Deuda</TableHead>
-                  <TableHead className="text-right text-blue-600">Adelantos</TableHead>
+      {vendedorId === 'todos' ? (
+        <Card className="overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/50">
+                <TableHead>Vendedor</TableHead>
+                <TableHead className="text-right">Ventas</TableHead>
+                <TableHead className="text-right">Pagado</TableHead>
+                <TableHead className="text-right">Adelantos</TableHead>
+                <TableHead className="text-right">Saldo por rendir</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {resumen.map((v) => (
+                <TableRow key={v.id} className="cursor-pointer" onClick={() => setVendedorId(v.id.toString())}>
+                  <TableCell className="font-semibold">{v.nombre}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatCLP(v.ventas)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-green-600">{formatCLP(v.pagos)}</TableCell>
+                  <TableCell className="text-right tabular-nums text-blue-600">{formatCLP(v.adelantos)}</TableCell>
+                  <TableCell className={`text-right tabular-nums font-bold ${v.saldo > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                    {saldoTexto(v.saldo)}
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {resumenGeneral.map((v: any) => (
-                  <TableRow key={v.id} className="hover:bg-muted/50 cursor-pointer" onClick={() => setVendedorId(v.id.toString())}>
-                    <TableCell className="font-bold">{v.nombre}</TableCell>
-                    <TableCell className="text-right">${v.ventas.toLocaleString('es-CL')}</TableCell>
-                    <TableCell className="text-right text-green-600 font-medium">${v.pagos.toLocaleString('es-CL')}</TableCell>
-                    <TableCell className="text-right font-bold text-orange-600">${v.deudaNeta.toLocaleString('es-CL')}</TableCell>
-                    <TableCell className="text-right font-bold text-blue-600 bg-blue-50/30">${v.adelantos.toLocaleString('es-CL')}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-              <TableFooter className="bg-slate-100 font-black">
-                <TableRow>
-                  <TableCell>TOTALES</TableCell>
-                  <TableCell className="text-right">${totalesGlobales.ventas.toLocaleString('es-CL')}</TableCell>
-                  <TableCell className="text-right text-green-600">${totalesGlobales.pagos.toLocaleString('es-CL')}</TableCell>
-                  <TableCell className="text-right text-orange-600">${totalesGlobales.deuda.toLocaleString('es-CL')}</TableCell>
-                  <TableCell className="text-right text-blue-600">${totalesGlobales.adelantos.toLocaleString('es-CL')}</TableCell>
-                </TableRow>
-              </TableFooter>
-            </Table>
-          </div>
+              ))}
+            </TableBody>
+            <TableFooter>
+              <TableRow className="font-bold">
+                <TableCell>Total</TableCell>
+                <TableCell className="text-right tabular-nums">{formatCLP(totales.ventas)}</TableCell>
+                <TableCell className="text-right tabular-nums text-green-600">{formatCLP(totales.pagos)}</TableCell>
+                <TableCell className="text-right tabular-nums text-blue-600">{formatCLP(totales.adelantos)}</TableCell>
+                <TableCell className="text-right tabular-nums text-orange-600">{saldoTexto(totales.saldo)}</TableCell>
+              </TableRow>
+            </TableFooter>
+          </Table>
+          <p className="px-4 py-3 text-xs text-muted-foreground border-t">
+            Ventas = pedidos no anulados (con IVA). Saldo = ventas − pagos − adelantos. Toca un vendedor para ver su detalle.
+          </p>
         </Card>
       ) : (
-        <div className="space-y-6 animate-in fade-in duration-500">
-          {(() => {
-            const resumenVendedor = resumenGeneral.find((v: any) => v.id.toString() === vendedorId);
-            if (!resumenVendedor) return null;
-            return (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <Card className="shadow-sm">
-                  <CardContent className="pt-6 text-center">
-                    <p className="text-sm text-muted-foreground">Ventas</p>
-                    <p className="text-2xl font-bold">${resumenVendedor.ventas.toLocaleString('es-CL')}</p>
-                  </CardContent>
-                </Card>
-                <Card className="shadow-sm">
-                  <CardContent className="pt-6 text-center">
-                    <p className="text-sm text-muted-foreground">Pagado</p>
-                    <p className="text-2xl font-bold text-green-600">${resumenVendedor.pagos.toLocaleString('es-CL')}</p>
-                  </CardContent>
-                </Card>
-                <Card className="shadow-sm">
-                  <CardContent className="pt-6 text-center">
-                    <p className="text-sm text-muted-foreground">Deuda</p>
-                    <p className="text-2xl font-bold text-orange-600">${resumenVendedor.deudaNeta.toLocaleString('es-CL')}</p>
-                  </CardContent>
-                </Card>
-                <Card className="shadow-sm">
-                  <CardContent className="pt-6 text-center">
-                    <p className="text-sm text-muted-foreground">Adelantos</p>
-                    <p className="text-2xl font-bold text-blue-600">${resumenVendedor.adelantos.toLocaleString('es-CL')}</p>
-                  </CardContent>
-                </Card>
-              </div>
-            );
-          })()}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-4">
-            <Card className="shadow-md border-t-4 border-t-primary">
+        <div className="space-y-6">
+          {seleccionado && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard title="Ventas" value={formatCLP(seleccionado.ventas)} icon={ShoppingCart} />
+              <StatCard title="Pagado" value={formatCLP(seleccionado.pagos)} icon={BadgeCheck} accent="text-green-600" />
+              <StatCard title="Adelantos" value={formatCLP(seleccionado.adelantos)} icon={HandCoins} accent="text-blue-600" />
+              <StatCard
+                title="Saldo por rendir"
+                value={saldoTexto(seleccionado.saldo)}
+                icon={Scale}
+                accent={seleccionado.saldo > 0 ? 'text-orange-600' : 'text-green-600'}
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <Card>
               <CardContent className="pt-6">
-                <Tabs value={tipoMovimiento} onValueChange={setTipoMovimiento} className="w-full">
+                <Tabs value={tipoMovimiento} onValueChange={(v) => setTipoMovimiento(v as 'pago' | 'adelanto')}>
                   <TabsList className="grid grid-cols-2 mb-4">
-                    <TabsTrigger value="pago" className="data-[state=active]:bg-green-600 data-[state=active]:text-white">Pago</TabsTrigger>
-                    <TabsTrigger value="adelanto" className="data-[state=active]:bg-blue-600 data-[state=active]:text-white">Adelanto</TabsTrigger>
+                    <TabsTrigger value="pago">Pago</TabsTrigger>
+                    <TabsTrigger value="adelanto">Adelanto</TabsTrigger>
                   </TabsList>
-                  <form onSubmit={handleSubmit} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label>Monto</Label>
-                      <Input type="number" required value={form.monto} onChange={e => setForm({...form, monto: e.target.value})} className="text-xl font-bold text-center" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Comentario</Label>
-                      <Input value={form.comentario} onChange={e => setForm({...form, comentario: e.target.value})} placeholder="Referencia de pago..." />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Comprobante</Label>
-                      <Input type="file" accept="image/*" onChange={e => setArchivo(e.target.files?.[0] || null)} />
-                    </div>
-                    <Button type="submit" className="w-full" disabled={mutation.isPending}>
-                      {mutation.isPending ? "Guardando..." : "Confirmar Movimiento"}
-                    </Button>
-                  </form>
                 </Tabs>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="pago-monto">Monto</Label>
+                    <Input
+                      id="pago-monto"
+                      type="number"
+                      min={1}
+                      required
+                      value={form.monto}
+                      onChange={(e) => setForm({ ...form, monto: e.target.value })}
+                      className="text-xl font-bold text-center"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="pago-comentario">Comentario</Label>
+                    <Input
+                      id="pago-comentario"
+                      value={form.comentario}
+                      onChange={(e) => setForm({ ...form, comentario: e.target.value })}
+                      placeholder="Referencia de pago..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="pago-comprobante">Comprobante (opcional)</Label>
+                    <Input id="pago-comprobante" type="file" accept="image/*" onChange={(e) => setArchivo(e.target.files?.[0] || null)} />
+                  </div>
+                  <Button type="submit" className="w-full" disabled={crearMutation.isPending}>
+                    {crearMutation.isPending ? 'Guardando...' : `Registrar ${tipoMovimiento === 'pago' ? 'pago' : 'adelanto'}`}
+                  </Button>
+                </form>
               </CardContent>
             </Card>
-          </div>
 
-          <div className="lg:col-span-2 space-y-4">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between py-3">
-                <CardTitle className="text-md flex items-center gap-2"><History className="h-4 w-4" /> Movimientos</CardTitle>
-                <Badge variant="outline">{vendedores.find((v:any) => v.id.toString() === vendedorId)?.nombre}</Badge>
+            <Card className="lg:col-span-2">
+              <CardHeader className="py-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <History className="h-4 w-4" /> Movimientos de {seleccionado?.nombre}
+                </CardTitle>
               </CardHeader>
               <div className="max-h-[500px] overflow-y-auto">
                 <Table>
@@ -300,40 +258,56 @@ const resumenGeneral = useMemo(() => {
                       <TableHead>Tipo</TableHead>
                       <TableHead>Detalle</TableHead>
                       <TableHead className="text-right">Monto</TableHead>
-                      <TableHead className="w-10"></TableHead>
+                      <TableHead className="w-20 text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {todosPagos
-                      .filter((p:any) => {
-                        const id = typeof p.vendedor === 'object' ? p.vendedor?.id : p.vendedor;
-                        return id?.toString() === vendedorId;
-                      })
-                      .map((p: any) => (
-                        <TableRow 
-                            key={p.id} 
-                            className="hover:bg-muted/50 cursor-pointer" 
-                            onClick={() => abrirModalImagen(p.comprobante)}
-                        >
-                          <TableCell className="text-xs">{new Date(p.fecha).toLocaleDateString()}</TableCell>
-                          <TableCell>
-                            <Badge variant="secondary" className={p.tipo === 'pago' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}>
-                              {p.tipo?.toUpperCase()}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm max-w-[200px] truncate">{p.comentario || '-'}</TableCell>
-                          <TableCell className="text-right font-bold">${Number(p.monto).toLocaleString('es-CL')}</TableCell>
-                          <TableCell>
-                            {p.comprobante && <ImageIcon className="h-4 w-4 text-primary animate-pulse" />}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                    {movimientos.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">Sin movimientos.</TableCell>
+                      </TableRow>
+                    )}
+                    {movimientos.map((p: PagoVendedor) => (
+                      <TableRow key={p.id}>
+                        <TableCell className="text-xs whitespace-nowrap">{formatFecha(p.fecha)}</TableCell>
+                        <TableCell>
+                          <Badge variant="secondary" className={p.tipo === 'pago' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}>
+                            {p.tipo === 'pago' ? 'Pago' : 'Adelanto'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm max-w-[220px] truncate">{p.comentario || '—'}</TableCell>
+                        <TableCell className="text-right font-bold tabular-nums">{formatCLP(p.monto)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap">
+                          {p.comprobante && (
+                            <Button variant="ghost" size="icon" className="h-8 w-8" title="Ver comprobante" onClick={() => setImgUrl(getImageUrl(p.comprobante))}>
+                              <ImageIcon className="h-4 w-4 text-primary" />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            title="Eliminar"
+                            onClick={() =>
+                              confirm({
+                                title: '¿Eliminar este movimiento?',
+                                description: `${p.tipo === 'pago' ? 'Pago' : 'Adelanto'} de ${formatCLP(p.monto)} del ${formatFecha(p.fecha)}. Esta acción no se puede deshacer.`,
+                                confirmLabel: 'Eliminar',
+                                destructive: true,
+                                onConfirm: () => borrarMutation.mutate(p.id),
+                              })
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </div>
             </Card>
           </div>
-        </div>
         </div>
       )}
     </div>

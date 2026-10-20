@@ -169,6 +169,12 @@ export default function Productos() {
     }, 100);
   };
 
+  const categorias = useMemo(() => {
+    const set = new Set<string>(['al vacio', 'congelado']);
+    (Array.isArray(data) ? data : []).forEach((p: Producto) => p.categoria && set.add(p.categoria));
+    return Array.from(set).sort();
+  }, [data]);
+
   const filteredProducts = useMemo(() => {
     const productos = Array.isArray(data) ? data : [];
     return productos.filter((p: Producto) =>
@@ -198,7 +204,7 @@ export default function Productos() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Catálogo de Productos</h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Productos</h1>
           <p className="text-muted-foreground">Configuración de precios y parámetros base.</p>
         </div>
         <Button onClick={() => { setEditingProducto(null); form.reset(); setDialogOpen(true); }}>
@@ -280,16 +286,11 @@ export default function Productos() {
 
             <div className="grid gap-2">
               <Label htmlFor="categoria">Categoría</Label>
-              <Select 
-                value={form.watch('categoria')} 
-                onValueChange={(v) => form.setValue('categoria', v)}
-              >
-                <SelectTrigger><SelectValue placeholder="Seleccione categoría" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="al vacio">Al Vacío</SelectItem>
-                  <SelectItem value="congelado">Congelado</SelectItem>
-                </SelectContent>
-              </Select>
+              {/* Sugiere las categorías ya usadas, pero acepta una nueva. */}
+              <Input id="categoria" list="categorias-existentes" placeholder="Ej: al vacio" {...form.register('categoria')} />
+              <datalist id="categorias-existentes">
+                {categorias.map((c) => <option key={c} value={c} />)}
+              </datalist>
             </div>
 
             <div className="grid gap-2">

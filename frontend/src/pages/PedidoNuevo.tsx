@@ -95,6 +95,7 @@ export default function PedidoNuevo() {
 
   const productosDisponibles = useMemo(() => {
     return productos.filter((producto) =>
+      producto.estado !== 'desactivado' &&
       !detalles.some((detalle) => detalle.producto_id === producto.id)
     );
   }, [productos, detalles]);
@@ -220,6 +221,7 @@ const agregarProducto = () => {
           cantidad_unidades: detalle.unidades,
           descuento_por_kilo: descuentoDe(detalle),
         })),
+        observaciones: observaciones.trim(),
       });
     },
     onSuccess: () => {
@@ -233,7 +235,10 @@ const agregarProducto = () => {
     onError: (error: any) => {
       toast({
         title: 'No se pudo crear el pedido',
-        description: error?.message || 'Verifique la información e intente nuevamente.',
+        description:
+          error?.response?.data?.error ||
+          error?.message ||
+          'Verifique la información e intente nuevamente.',
         variant: 'destructive',
       });
     },
@@ -307,7 +312,7 @@ case 2:
                     <SelectContent>
                       {productosDisponibles.map((producto) => (
                         <SelectItem key={producto.id} value={producto.id.toString()}>
-                          {producto.nombre} - ${Number(producto.precio_por_kilo).toLocaleString('es-CL')}/kg
+                          {producto.nombre} - ${Number(producto.precio_por_kilo).toLocaleString('es-CL')}/kg · {obtenerStockDisponible(producto)} disp.
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -459,7 +464,7 @@ case 2:
               <CardTitle>Paso 3: Revisar y Confirmar</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="rounded-lg border p-4 bg-muted/30">
                   <p className="text-xs uppercase text-muted-foreground font-bold">Cliente</p>
                   <p className="text-lg font-bold">{clienteSeleccionado?.nombre}</p>
@@ -476,6 +481,33 @@ case 2:
                     </p>
                   )}
                 </div>
+              </div>
+
+              <div className="rounded-lg border overflow-hidden">
+                <Table>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow>
+                      <TableHead>Producto</TableHead>
+                      <TableHead className="text-right">Unid.</TableHead>
+                      <TableHead className="text-right">Kilos</TableHead>
+                      <TableHead className="text-right">Precio/kg</TableHead>
+                      <TableHead className="text-right">Subtotal</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {detalles.map((d) => (
+                      <TableRow key={d.producto_id}>
+                        <TableCell className="font-medium">{d.producto_nombre}</TableCell>
+                        <TableCell className="text-right">{d.unidades}</TableCell>
+                        <TableCell className="text-right">
+                          {d.kilos > 0 ? `${d.kilos} kg` : <span className="text-muted-foreground">por pesar</span>}
+                        </TableCell>
+                        <TableCell className="text-right">${precioConDescuento(d).toLocaleString('es-CL')}</TableCell>
+                        <TableCell className="text-right font-semibold">${d.subtotal.toLocaleString('es-CL')}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
 
               <div className="space-y-2">
@@ -531,7 +563,7 @@ case 2:
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Nuevo Pedido</h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Nuevo Pedido</h1>
           <p className="text-muted-foreground">
             Complete los pasos para registrar un nuevo pedido
           </p>

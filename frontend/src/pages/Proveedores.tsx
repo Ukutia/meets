@@ -30,11 +30,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getProveedores, createProveedor, updateProveedor, deleteProveedor } from '@/services/api';
+import { getProveedores, createProveedor, updateProveedor, deleteProveedor, getFacturas } from '@/services/api';
+import { useNavigate } from 'react-router-dom';
+import { formatCLP, formatFecha } from '@/lib/utils';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
-import type { Proveedor } from '@/types';
+import type { Factura, Proveedor } from '@/types';
 
 export default function Proveedores() {
   const { toast } = useToast();
@@ -45,10 +47,29 @@ export default function Proveedores() {
   const [nombre, setNombre] = useState('');
   const [toDelete, setToDelete] = useState<Proveedor | null>(null);
 
+  const navigate = useNavigate();
   const { data: proveedores = [], isLoading, error } = useQuery({
     queryKey: ['proveedores'],
     queryFn: async () => (await getProveedores()).data,
   });
+  // Misma clave que Facturas para compartir caché.
+  const { data: facturas } = useQuery({
+    queryKey: ['facturas'],
+    queryFn: async () => (await getFacturas()).data as Factura[],
+  });
+
+  const compras = useMemo(() => {
+    const m = new Map<string, { total: number; pendiente: number; ultima: string | null }>();
+    (facturas ?? []).forEach((f) => {
+      const key = String(f.proveedor);
+      const c = m.get(key) ?? { total: 0, pendiente: 0, ultima: null };
+      c.total += Number(f.total);
+      if (!f.pago_factura) c.pendiente += Number(f.total);
+      if (!c.ultima || f.fecha > c.ultima) c.ultima = f.fecha;
+      m.set(key, c);
+    });
+    return m;
+  }, [facturas]);
 
   const onError = (err: any) => {
     toast({
@@ -110,7 +131,7 @@ export default function Proveedores() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Proveedores</h1>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Proveedores</h1>
           <p className="text-muted-foreground">Gestión de proveedores para las facturas de compra</p>
         </div>
         <Button onClick={() => openDialog(null)}>
@@ -133,14 +154,17 @@ export default function Proveedores() {
           <TableHeader>
             <TableRow>
               <TableHead>Proveedor</TableHead>
-              <TableHead>Facturas</TableHead>
-              <TableHead className="w-[120px]">Acciones</TableHead>
+              <TableHead className="text-right">Facturas</TableHead>
+              <TableHead className="text-right">Total comprado</TableHead>
+              <TableHead className="text-right">Por pagar</TableHead>
+              <TableHead className="hidden md:table-cell">Última compra</TableHead>
+              <TableHead className="w-[120px] text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
+                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                   No hay proveedores
                 </TableCell>
               </TableRow>
@@ -148,8 +172,24 @@ export default function Proveedores() {
               filtered.map((proveedor) => (
                 <TableRow key={proveedor.id}>
                   <TableCell className="font-medium">{proveedor.nombre}</TableCell>
-                  <TableCell>{proveedor.cantidad_facturas}</TableCell>
-                  <TableCell>
+                  <TableCell className="text-right tabular-nums">{proveedor.cantidad_facturas}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatCLP(compras.get(String(proveedor.id))?.total ?? 0)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {(compras.get(String(proveedor.id))?.pendiente ?? 0) > 0 ? (
+                      <button
+                        className="font-semibold text-destructive hover:underline"
+                        onClick={() => navigate(`/facturas?pago=pendientes&buscar=${encodeURIComponent(proveedor.nombre)}`)}
+                      >
+                        {formatCLP(compras.get(String(proveedor.id))!.pendiente)}
+                      </button>
+                    ) : (
+                      <span className="text-muted-foreground">Al día</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell text-sm">
+                    {formatFecha(compras.get(String(proveedor.id))?.ultima) || <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className="text-right whitespace-nowrap">
                     <Button variant="ghost" size="icon" onClick={() => openDialog(proveedor)}>
                       <Pencil className="h-4 w-4" />
                     </Button>

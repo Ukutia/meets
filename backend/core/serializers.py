@@ -149,7 +149,7 @@ class PedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total', 'observaciones']
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles')
@@ -195,6 +195,7 @@ class ProveedorSerializer(serializers.ModelSerializer):
 class DetalleFacturaSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
     proveedor_nombre = serializers.ReadOnlyField(source='factura.proveedor.nombre')
+    fecha = serializers.ReadOnlyField(source='factura.fecha')
     # Estado de edición según cuánto del lote ya se vendió (guardas de stock).
     estado_edicion = serializers.SerializerMethodField()
     unidades_consumidas = serializers.SerializerMethodField()
@@ -203,7 +204,7 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetalleFactura
-        fields = ['id', 'producto', 'producto_nombre', 'cantidad_kilos', 'cantidad_unidades', 'costo_por_kilo', 'costo_total','factura','proveedor_nombre', 'estado_edicion', 'unidades_consumidas', 'unidades_vivas', 'pedidos_consumidores']
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad_kilos', 'cantidad_unidades', 'costo_por_kilo', 'costo_total','factura','proveedor_nombre', 'fecha', 'estado_edicion', 'unidades_consumidas', 'unidades_vivas', 'pedidos_consumidores']
 
     def _info(self, obj):
         # Cachea el cálculo por instancia para no repetir el query en cada campo.

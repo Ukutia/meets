@@ -1,161 +1,287 @@
-import { Package, AlertCircle, Plus, Search, Scale, ShoppingCart, ChevronDown } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getStock } from '@/services/api';
+import {
+  Plus, ShoppingCart, TrendingUp, HandCoins, FileText, AlertCircle, Scale, Wallet, ChevronRight,
+} from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { StatCard } from '@/components/shared/StatCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { StockItem } from '@/types';
-import { useMemo, useState } from 'react';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
-} from '@/components/ui/table';
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import { ScrollArea } from '@/components/ui/scroll-area';
+  getStock, getPedidos, getFacturas, getReporteGanancias, getVendedores, getPagosVendedor,
+} from '@/services/api';
+import type { Factura, Pedido, StockItem, Vendedor } from '@/types';
+import { diasDesde, enRango, formatCLP, formatFecha, rangoDesdePreset } from '@/lib/utils';
+import { calcularSaldosVendedores, pagosDesdeRespuesta } from '@/lib/saldos';
+
+// Bajo este número de unidades disponibles un corte aparece en "Stock bajo".
+const UMBRAL_STOCK_BAJO = 10;
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [searchTerm, setSearchTerm] = useState('');
 
-  const { data: stockResponse, isLoading, error } = useQuery({
-    queryKey: ['stock'],
-    queryFn: getStock,
+  // Mismas claves y formas que las páginas de detalle para compartir caché.
+  const pedidosQ = useQuery({
+    queryKey: ['pedidos'],
+    queryFn: async () => (await getPedidos(true)).data as Pedido[],
   });
+  const stockQ = useQuery({
+    queryKey: ['stock'],
+    queryFn: async () => (await getStock()).data,
+  });
+  const facturasQ = useQuery({
+    queryKey: ['facturas'],
+    queryFn: async () => (await getFacturas()).data as Factura[],
+  });
+  const mes = rangoDesdePreset('mes');
+  const gananciaQ = useQuery({
+    queryKey: ['reporte-ganancias', mes],
+    queryFn: async () => (await getReporteGanancias(mes)).data,
+  });
+  const vendedoresQ = useQuery({ queryKey: ['vendedores'], queryFn: async () => (await getVendedores()).data as Vendedor[] });
+  const pagosQ = useQuery({ queryKey: ['pagos-vendedor'], queryFn: async () => pagosDesdeRespuesta((await getPagosVendedor()).data) });
 
-  const stockData = useMemo(() => {
-    const rawData = stockResponse?.data || [];
-    return Array.isArray(rawData) ? (rawData as StockItem[]) : [];
-  }, [stockResponse]);
+  const pedidos = useMemo(() => (pedidosQ.data ?? []).filter((p) => p.estado !== 'Anulado'), [pedidosQ.data]);
+  const stock: StockItem[] = Array.isArray(stockQ.data) ? stockQ.data : [];
+  const facturas = facturasQ.data ?? [];
 
-  const stockCritico = useMemo(() => 
-    stockData.filter(item => item.disponibles < 10), 
-    [stockData]
+  // Ventas del mes vs. el mismo tramo del mes anterior (1 al día de hoy).
+  const ventas = useMemo(() => {
+    const hoy = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const finMesAnterior = new Date(hoy.getFullYear(), hoy.getMonth(), 0);
+    const tramoAnterior = {
+      desde: iso(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)),
+      hasta: iso(new Date(hoy.getFullYear(), hoy.getMonth() - 1, Math.min(hoy.getDate(), finMesAnterior.getDate()))),
+    };
+    const delMes = pedidos.filter((p) => enRango(p.fecha, mes));
+    const actual = delMes.reduce((s, p) => s + Number(p.total), 0);
+    const anterior = pedidos.filter((p) => enRango(p.fecha, tramoAnterior)).reduce((s, p) => s + Number(p.total), 0);
+    return { actual, cantidad: delMes.length, variacion: anterior > 0 ? ((actual - anterior) / anterior) * 100 : NaN };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedidos]);
+
+  const porPesar = pedidos.filter((p) => p.estado === 'Reservado').sort((a, b) => a.id - b.id);
+  const porCobrar = pedidos.filter((p) => p.estado === 'Preparado').sort((a, b) => a.id - b.id);
+  const montoPorCobrar = [...porPesar, ...porCobrar].reduce((s, p) => s + Number(p.total), 0);
+
+  const facturasPendientes = facturas.filter((f) => !f.pago_factura);
+  const montoFacturasPendientes = facturasPendientes.reduce((s, f) => s + Number(f.total), 0);
+  const facturaMasAntigua = facturasPendientes.reduce<number | null>((max, f) => {
+    const d = diasDesde(f.fecha);
+    return max == null || d > max ? d : max;
+  }, null);
+
+  const stockBajo = stock
+    .filter((s) => s.estado === 'disponible' && s.disponibles < UMBRAL_STOCK_BAJO)
+    .sort((a, b) => a.disponibles - b.disponibles);
+
+  const saldos = useMemo(
+    () => calcularSaldosVendedores(vendedoresQ.data ?? [], pedidos, pagosQ.data ?? []),
+    [vendedoresQ.data, pedidos, pagosQ.data]
   );
+  const saldoTotal = saldos.reduce((s, v) => s + v.saldo, 0);
 
-const filteredStock = useMemo(() => {
-    return stockData
-      .filter(item => 
-        item.estado === 'disponible' && 
-        item.producto.toLowerCase().includes(searchTerm.toLowerCase())
-      )
-      .sort((a, b) => b.disponibles - a.disponibles); // <--- LÓGICA DE ORDENAMIENTO AGREGADA
-  }, [stockData, searchTerm]);
+  if (pedidosQ.isLoading || stockQ.isLoading) return <LoadingSpinner />;
+  if (pedidosQ.error) return <ErrorMessage message="Error al cargar el resumen" />;
 
-  if (isLoading) return <LoadingSpinner />;
-  if (error) return <ErrorMessage message="Error al cargar el stock" />;
+  const ganancia = gananciaQ.data?.total;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-100px)] space-y-4 pb-20 md:pb-0">
-      
-      {/* 1. CABECERA COMPACTA */}
+    <div className="space-y-6 pb-20 md:pb-0">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Inventario</h1>
-          <p className="text-xs text-muted-foreground hidden sm:block">Existencias y precios actuales</p>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Resumen</h1>
+          <p className="text-sm text-muted-foreground first-letter:uppercase">
+            {new Date().toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' })}
+          </p>
         </div>
-        <Button 
-          onClick={() => navigate('/pedidos/nuevo')} 
-          className="hidden md:flex shadow-lg"
-        >
+        <Button onClick={() => navigate('/pedidos/nuevo')} className="hidden md:flex">
           <Plus className="mr-2 h-4 w-4" /> Nuevo Pedido
         </Button>
       </div>
 
-      {/* 2. ALERTAS DE STOCK (Acordeón Desplegable) */}
-      {stockCritico.length > 0 && (
-        <Accordion type="single" collapsible className="w-full bg-destructive/5 border border-destructive/20 rounded-lg px-4">
-          <AccordionItem value="alerts" className="border-none">
-            <AccordionTrigger className="hover:no-underline py-3">
-              <div className="flex items-center gap-2 text-destructive">
-                <AlertCircle className="h-4 w-4 fill-destructive text-white" />
-                <span className="font-bold text-sm uppercase">Alertas de Stock ({stockCritico.length})</span>
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 pb-3">
-                {stockCritico.map(item => (
-                  <div key={`crit-${item.producto}`} className="flex justify-between items-center bg-white p-2 rounded border border-destructive/30 text-xs">
-                    <span className="font-medium truncate mr-2">{item.producto}</span>
-                    <Badge variant="destructive" className="h-5 text-[10px]">{item.disponibles} UN</Badge>
-                  </div>
-                ))}
-              </div>
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-      )}
-
-      {/* 3. BUSCADOR FIJO */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input 
-          placeholder="Buscar producto..." 
-          className="pl-10 h-10 shadow-sm bg-white"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          title="Ventas del mes"
+          value={formatCLP(ventas.actual)}
+          icon={ShoppingCart}
+          trend={{ value: ventas.variacion, label: 'vs. mismo período del mes anterior' }}
+          description={`${ventas.cantidad} pedidos · con IVA`}
+          onClick={() => navigate('/pedidos')}
+        />
+        <StatCard
+          title="Ganancia neta del mes"
+          value={ganancia ? formatCLP(ganancia.ganancia) : '—'}
+          icon={TrendingUp}
+          accent={ganancia && Number(ganancia.ganancia) < 0 ? 'text-destructive' : 'text-green-600'}
+          description={ganancia ? `Margen ${Number(ganancia.margen_pct).toFixed(1)}% · sin IVA` : 'Calculando…'}
+          onClick={() => navigate('/reportes')}
+        />
+        <StatCard
+          title="Por cobrar a clientes"
+          value={formatCLP(montoPorCobrar)}
+          icon={HandCoins}
+          accent="text-amber-600"
+          description={`${porPesar.length} por pesar · ${porCobrar.length} por cobrar`}
+          onClick={() => navigate('/pedidos')}
+        />
+        <StatCard
+          title="Facturas por pagar"
+          value={formatCLP(montoFacturasPendientes)}
+          icon={FileText}
+          accent={facturasPendientes.length ? 'text-destructive' : undefined}
+          description={
+            facturasPendientes.length
+              ? `${facturasPendientes.length} pendientes · la más antigua hace ${facturaMasAntigua} días`
+              : 'Todo al día'
+          }
+          onClick={() => navigate('/facturas?pago=pendientes')}
         />
       </div>
 
-      {/* 4. TABLA DE PRODUCTOS CON SCROLL INTERNO */}
-      <Card className="flex-1 min-h-0 overflow-hidden border-none shadow-sm md:border md:shadow-none">
-        <ScrollArea className="h-full">
-          <Table>
-            <TableHeader className="sticky top-0 bg-white z-10 shadow-sm">
-              <TableRow>
-                <TableHead className="w-[45%] text-xs uppercase font-bold">Producto</TableHead>
-                <TableHead className="text-center text-xs uppercase font-bold">Stock</TableHead>
-                <TableHead className="text-right text-xs uppercase font-bold">Precio/Kg</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredStock.map((item) => (
-                <TableRow key={item.producto} className="hover:bg-primary/5 transition-colors">
-                  <TableCell className="py-3">
-                    <div className="font-bold text-sm">{item.producto}</div>
-                    <div className="text-[10px] text-blue-600 font-medium">
-                      {item.kilos_actuales.toFixed(1)} Kg disponibles
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <div className="inline-flex flex-col items-center">
-                      <span className="text-sm font-black">{item.disponibles}</span>
-                      <span className="text-[9px] text-muted-foreground uppercase">unidades</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right font-mono font-bold text-sm">
-                    ${Number(item.precio_por_kilo).toLocaleString('es-CL')}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollArea>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* PEDIDOS POR ATENDER */}
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-base">Pedidos por atender</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/pedidos')}>
+              Ver todos <ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <ListaPedidos
+              titulo="Por pesar"
+              icono={Scale}
+              pedidos={porPesar}
+              color="bg-blue-100 text-blue-700"
+              onVerTodos={() => navigate('/pedidos?estado=Reservado')}
+            />
+            <ListaPedidos
+              titulo="Por cobrar"
+              icono={HandCoins}
+              pedidos={porCobrar}
+              color="bg-amber-100 text-amber-700"
+              onVerTodos={() => navigate('/pedidos?estado=Preparado')}
+            />
+          </CardContent>
+        </Card>
 
-      {/* 5. BOTÓN FLOTANTE MÓVIL (Fijado abajo) */}
-      <div className="md:hidden fixed bottom-24 right-6 z-50">
-        <Button 
-          size="lg" 
-          onClick={() => navigate('/pedidos/nuevo')} 
-          className="h-14 w-14 rounded-full shadow-2xl bg-primary flex items-center justify-center p-0"
-        >
-          <Plus className="h-8 w-8 text-white" />
-        </Button>
+        <div className="space-y-4">
+          {/* STOCK BAJO */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <AlertCircle className={`h-4 w-4 ${stockBajo.length ? 'text-destructive' : 'text-muted-foreground'}`} />
+                Stock bajo
+              </CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => navigate('/stock')}>
+                Stock <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-1.5">
+              {stockBajo.length === 0 && <p className="text-sm text-muted-foreground">Ningún corte bajo {UMBRAL_STOCK_BAJO} unidades.</p>}
+              {stockBajo.slice(0, 6).map((s) => (
+                <div key={s.id} className="flex items-center justify-between text-sm">
+                  <span className="truncate mr-2">{s.producto}</span>
+                  <Badge variant={s.disponibles === 0 ? 'destructive' : 'outline'} className="shrink-0">
+                    {s.disponibles} un
+                  </Badge>
+                </div>
+              ))}
+              {stockBajo.length > 6 && <p className="text-xs text-muted-foreground">y {stockBajo.length - 6} más</p>}
+            </CardContent>
+          </Card>
+
+          {/* SALDO VENDEDORES */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-muted-foreground" /> Saldo de vendedores
+              </CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => navigate('/gestion-pagos')}>
+                Pagos <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-1.5">
+              {saldos.map((v) => (
+                <div key={v.id} className="flex items-center justify-between text-sm">
+                  <span className="truncate mr-2">{v.nombre}</span>
+                  <span className={`font-semibold tabular-nums ${v.saldo > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                    {v.saldo >= 0 ? formatCLP(v.saldo) : `${formatCLP(-v.saldo)} a favor`}
+                  </span>
+                </div>
+              ))}
+              {saldos.length > 1 && (
+                <div className="flex items-center justify-between border-t pt-1.5 text-sm font-bold">
+                  <span>Total por rendir</span>
+                  <span className="tabular-nums">{formatCLP(saldoTotal)}</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
+      {/* BOTÓN FLOTANTE MÓVIL */}
+      <div className="md:hidden fixed bottom-6 right-6 z-50">
+        <Button
+          size="lg"
+          aria-label="Nuevo pedido"
+          onClick={() => navigate('/pedidos/nuevo')}
+          className="h-14 w-14 rounded-full shadow-2xl p-0"
+        >
+          <Plus className="h-8 w-8" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ListaPedidos({
+  titulo, icono: Icono, pedidos, color, onVerTodos,
+}: {
+  titulo: string;
+  icono: React.ComponentType<{ className?: string }>;
+  pedidos: Pedido[];
+  color: string;
+  onVerTodos: () => void;
+}) {
+  const navigate = useNavigate();
+  return (
+    <div className="space-y-2">
+      <button onClick={onVerTodos} className="flex w-full items-center justify-between text-sm font-semibold hover:text-primary">
+        <span className="flex items-center gap-2">
+          <Icono className="h-4 w-4 text-muted-foreground" /> {titulo}
+        </span>
+        <Badge className={`border-none ${color}`}>{pedidos.length}</Badge>
+      </button>
+      {pedidos.length === 0 && <p className="text-sm text-muted-foreground">Sin pedidos.</p>}
+      {pedidos.slice(0, 6).map((p) => (
+        <button
+          key={p.id}
+          onClick={() => navigate(`/pedidos?buscar=${p.id}`)}
+          className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline gap-2 min-w-0">
+              <span className="font-mono text-xs text-primary shrink-0">#{p.id}</span>
+              <span className="font-medium truncate">{p.cliente.nombre}</span>
+            </span>
+            <span className="block text-xs text-muted-foreground">{formatFecha(p.fecha)}</span>
+          </span>
+          <span className="font-semibold tabular-nums shrink-0 ml-2">{formatCLP(p.total)}</span>
+        </button>
+      ))}
+      {pedidos.length > 6 && (
+        <button onClick={onVerTodos} className="text-xs text-primary hover:underline">
+          Ver los {pedidos.length} pedidos
+        </button>
+      )}
     </div>
   );
 }

@@ -45,9 +45,11 @@ import {
   getFluctuacionPrecios,
   getRentabilidadHistorica,
 } from '@/services/api';
+import { formatCLP, formatFecha } from '@/lib/utils';
+import { StatCard } from '@/components/shared/StatCard';
+import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
 
-const clp = (n: number | string | null | undefined) =>
-  `$${Number(n ?? 0).toLocaleString('es-CL', { maximumFractionDigits: 0 })}`;
+const clp = formatCLP;
 
 const pct = (n: number | string | null | undefined) =>
   `${Number(n ?? 0).toLocaleString('es-CL', { maximumFractionDigits: 1 })}%`;
@@ -114,46 +116,26 @@ interface TramoRentabilidad {
   margen_pct: number | null;
 }
 
-function KpiCard({
-  label,
-  value,
-  sub,
-  icon: Icon,
-  accent = 'text-primary',
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  icon: React.ComponentType<{ className?: string }>;
-  accent?: string;
-}) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-        <Icon className={`h-4 w-4 ${accent}`} />
-      </CardHeader>
-      <CardContent>
-        <div className={`text-2xl font-black ${accent}`}>{value}</div>
-        {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
-      </CardContent>
-    </Card>
-  );
-}
-
 export default function Reportes() {
+  const [periodo, setPeriodo] = useState<RangoState>(rangoInicial('anio'));
+  const rango = periodo.rango;
+
   const {
     data: ganancias,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['reporte-ganancias'],
-    queryFn: async () => (await getReporteGanancias()).data as ReporteGanancias,
+    queryKey: ['reporte-ganancias', rango],
+    queryFn: async () => (await getReporteGanancias(rango)).data as ReporteGanancias,
+    // Al cambiar el período se mantiene lo anterior en pantalla mientras carga.
+    placeholderData: (prev) => prev,
   });
 
   const { data: perdidas } = useQuery({
-    queryKey: ['reporte-perdidas'],
-    queryFn: async () => (await getReportePerdidas()).data as ReportePerdidas,
+    queryKey: ['reporte-perdidas', rango],
+    queryFn: async () => (await getReportePerdidas(rango)).data as ReportePerdidas,
+    // Al cambiar el período se mantiene lo anterior en pantalla mientras carga.
+    placeholderData: (prev) => prev,
   });
 
   const [productoFluct, setProductoFluct] = useState<string>('');
@@ -205,8 +187,8 @@ export default function Reportes() {
     `${clp(t.precio)} / costo ${t.costo_unitario != null ? clp(t.costo_unitario) : 'N/A'}`;
 
   const tramoRango = (t: TramoRentabilidad) => {
-    const desde = t.desde ? new Date(t.desde).toLocaleDateString('es-CL') : 'Inicio';
-    const hasta = t.hasta ? new Date(t.hasta).toLocaleDateString('es-CL') : 'Hoy';
+    const desde = t.desde ? formatFecha(t.desde) : 'Inicio';
+    const hasta = t.hasta ? formatFecha(t.hasta) : 'Hoy';
     return `${desde} – ${hasta}`;
   };
 
@@ -217,41 +199,44 @@ export default function Reportes() {
 
   return (
     <div className="space-y-6 pb-20 md:pb-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Reportes y Ganancias</h1>
-        <p className="text-muted-foreground">
-          Rentabilidad por corte, vendedor y mes, neta de IVA. No incluye pedidos anulados.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Reportes</h1>
+          <p className="text-muted-foreground">
+            Rentabilidad por corte, vendedor y mes, neta de IVA. No incluye pedidos anulados.
+          </p>
+        </div>
+        <RangoFechaSelect value={periodo} onChange={setPeriodo} />
       </div>
 
       {/* TARJETAS DE RESUMEN */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-        <KpiCard
-          label="Ganancia Total"
+        <StatCard
+          title="Ganancia Total"
           value={clp(total?.ganancia)}
-          sub="Venta sin IVA − costo sin IVA"
+          description="Venta sin IVA − costo sin IVA"
           icon={TrendingUp}
           accent={Number(total?.ganancia) >= 0 ? 'text-green-600' : 'text-destructive'}
         />
-        <KpiCard label="Ventas Totales" value={clp(total?.ventas)} sub="Ingresos sin IVA" icon={DollarSign} />
-        <KpiCard
-          label="Margen Promedio"
+        <StatCard title="Ventas Totales" value={clp(total?.ventas)} description="Ingresos sin IVA" icon={DollarSign} />
+        <StatCard
+          title="Margen Promedio"
           value={pct(total?.margen_pct)}
-          sub="Ganancia / Ventas"
+          description="Ganancia / Ventas"
           icon={Percent}
           accent="text-blue-600"
         />
-        <KpiCard
-          label={Number(total?.iva_a_pagar) >= 0 ? 'IVA a Pagar' : 'IVA a Favor'}
+        <StatCard
+          title={Number(total?.iva_a_pagar) >= 0 ? 'IVA a Pagar' : 'IVA a Favor'}
           value={clp(Math.abs(Number(total?.iva_a_pagar ?? 0)))}
-          sub="Débito de venta − crédito de compra"
+          description="Débito de venta − crédito de compra"
           icon={Landmark}
           accent={Number(total?.iva_a_pagar) >= 0 ? 'text-amber-600' : 'text-blue-600'}
         />
-        <KpiCard
-          label="Pérdidas (Mermas)"
+        <StatCard
+          title="Pérdidas (Mermas)"
           value={clp(perdidas?.total.valor)}
-          sub={`${Number(perdidas?.total.kilos ?? 0).toLocaleString('es-CL')} kg mermados`}
+          description={`${Number(perdidas?.total.kilos ?? 0).toLocaleString('es-CL')} kg mermados`}
           icon={AlertTriangle}
           accent="text-destructive"
         />
@@ -352,6 +337,7 @@ export default function Reportes() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Corte</TableHead>
+                    <TableHead className="text-right">Kilos</TableHead>
                     <TableHead className="text-right">Ventas</TableHead>
                     <TableHead className="text-right">Costo</TableHead>
                     <TableHead className="text-right">Ganancia</TableHead>
@@ -362,6 +348,7 @@ export default function Reportes() {
                   {(ganancias?.por_producto ?? []).map((r) => (
                     <TableRow key={r.producto_id}>
                       <TableCell className="font-medium">{r.nombre}</TableCell>
+                      <TableCell className="text-right tabular-nums">{Number(r.kilos).toLocaleString('es-CL', { maximumFractionDigits: 1 })} kg</TableCell>
                       <TableCell className="text-right">{clp(r.ventas)}</TableCell>
                       <TableCell className="text-right text-muted-foreground">{clp(r.costo)}</TableCell>
                       <TableCell
@@ -376,7 +363,7 @@ export default function Reportes() {
                   ))}
                   {(ganancias?.por_producto ?? []).length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                         Sin datos.
                       </TableCell>
                     </TableRow>
