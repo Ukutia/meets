@@ -21,6 +21,7 @@ import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
 import Precios from "./pages/Precios";
+import Mas from "./pages/Mas";
 
 const queryClient = new QueryClient();
 
@@ -176,6 +177,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Flyer />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/mas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Mas />
                   </Layout>
                 </ProtectedRoute>
               }

@@ -14,9 +14,11 @@ import {
   Plus,
   Landmark,
   Tag,
+  Ellipsis,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
-export type NavItem = { title: string; url: string; icon: React.ComponentType<{ className?: string }> };
+export type NavItem = { title: string; url: string; icon: LucideIcon };
 export type NavGroup = { label: string; items: NavItem[] };
 
 // Fuente única del menú: el Sidebar lo dibuja agrupado y el encabezado del
@@ -57,9 +59,27 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+// Destinos de la barra de pestañas del teléfono (máximo 5). El resto vive en "Más".
+export const TAB_ITEMS: NavItem[] = [
+  { title: 'Resumen', url: '/', icon: LayoutDashboard },
+  { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
+  { title: 'Precios', url: '/precios', icon: Tag },
+  { title: 'Clientes', url: '/clientes', icon: Users },
+  { title: 'Más', url: '/mas', icon: Ellipsis },
+];
+
+// Pestaña que corresponde a una ruta: las pantallas que no son pestaña se abren desde "Más".
+export function tabActiva(pathname: string): string {
+  if (pathname === '/') return '/';
+  if (pathname.startsWith('/pedidos')) return '/pedidos';
+  if (pathname === '/precios' || pathname === '/clientes') return pathname;
+  return '/mas';
+}
+
 const EXTRA: Record<string, { group: string; title: string; icon: NavItem['icon'] }> = {
   '/pedidos/nuevo': { group: 'Ventas', title: 'Nuevo Pedido', icon: Plus },
   '/cuenta': { group: 'Cuenta', title: 'Mi Cuenta', icon: KeyRound },
+  '/mas': { group: 'General', title: 'Más', icon: Ellipsis },
 };
 
 export function navInfo(pathname: string): { group: string; title: string } | null {
