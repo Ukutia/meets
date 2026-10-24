@@ -23,12 +23,16 @@ export interface FlyerFila {
   peso: string;
 }
 
+export type FotosFlyer = Partial<Record<keyof Imagenes, string | null>>;
+
 export interface FlyerProps {
   titulo1: string;
   titulo2: string;
   subtitulo: string;
   telefono: string;
   filas: FlyerFila[];
+  /** Fotos propias del usuario (URL). Las que falten usan las originales. */
+  fotos?: FotosFlyer;
 }
 
 // Achica la letra si el texto no cabe en la pastilla (nombres largos como "Hamburguesa 125 grs").
@@ -57,16 +61,20 @@ const aDataUrl = async (url: string) => {
   });
 };
 
-let cargaImagenes: Promise<Imagenes> | null = null;
-const cargarImagenes = () =>
-  (cargaImagenes ??= Promise.all(
-    Object.entries(IMAGENES).map(async ([k, url]) => [k, await aDataUrl(url)] as const)
-  )
-    .then((pares) => Object.fromEntries(pares) as Imagenes)
-    .catch((e) => {
-      cargaImagenes = null; // reintentar en el próximo montaje
-      throw e;
-    }));
+// Una descarga por URL, compartida entre montajes.
+const cache = new Map<string, Promise<string>>();
+const cargarImagen = (url: string) => {
+  if (!cache.has(url)) {
+    cache.set(
+      url,
+      aDataUrl(url).catch((e) => {
+        cache.delete(url); // reintentar en el próximo montaje
+        throw e;
+      })
+    );
+  }
+  return cache.get(url)!;
+};
 
 const Cloche = () => (
   <svg width="64" height="40" viewBox="0 0 64 40" fill={C.cafe}>
@@ -94,25 +102,35 @@ const PhoneIcon = () => (
 );
 
 export const FlyerCanvas = forwardRef<HTMLDivElement, FlyerProps>(
-  ({ titulo1, titulo2, subtitulo, telefono, filas }, ref) => {
+  ({ titulo1, titulo2, subtitulo, telefono, filas, fotos }, ref) => {
     // Re-medir los textos cuando Lato termine de cargar.
     const [, setFuentesListas] = useState(false);
     useEffect(() => {
       document.fonts.ready.then(() => setFuentesListas(true));
     }, []);
 
-    const [imagenes, setImagenes] = useState<Imagenes>(IMAGENES);
+    const fuentes: Imagenes = {
+      foto1: fotos?.foto1 || IMAGENES.foto1,
+      foto2: fotos?.foto2 || IMAGENES.foto2,
+      logo: fotos?.logo || IMAGENES.logo,
+    };
+    const claveFuentes = `${fuentes.foto1}|${fuentes.foto2}|${fuentes.logo}`;
+    const [imagenes, setImagenes] = useState<Imagenes>(fuentes);
     useEffect(() => {
       let vivo = true;
-      cargarImagenes()
-        .then((d) => vivo && setImagenes(d))
-        .catch(() => {
-          /* se quedan las rutas normales */
-        });
+      setImagenes(fuentes);
+      (Object.keys(fuentes) as (keyof Imagenes)[]).forEach((k) =>
+        cargarImagen(fuentes[k])
+          .then((d) => vivo && setImagenes((prev) => ({ ...prev, [k]: d })))
+          .catch(() => {
+            /* se queda la ruta normal */
+          })
+      );
       return () => {
         vivo = false;
       };
-    }, []);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [claveFuentes]);
     // Las filas se comprimen si hay más productos de los que caben con el espaciado original.
     const zonaFilas = 452;
     const paso = Math.min(51.5, zonaFilas / Math.max(filas.length, 1));

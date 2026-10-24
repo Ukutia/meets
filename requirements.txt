@@ -8,3 +8,4 @@ whitenoise
 gunicorn
 python-dotenv
 djangorestframework-simplejwt
+anthropic

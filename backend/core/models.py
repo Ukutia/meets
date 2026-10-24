@@ -35,6 +35,21 @@ class Cliente(models.Model):
     telefono = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True,null=True)
 
+    # Mayoristas: datos de la empresa a la que se le emite la factura.
+    tipo_cliente = models.CharField(
+        max_length=10,
+        choices=[("minorista", "Minorista"), ("mayorista", "Mayorista")],
+        default="minorista",
+    )
+    rut = models.CharField(max_length=15, blank=True, default='')
+    razon_social = models.CharField(max_length=150, blank=True, default='')
+    giro = models.CharField(max_length=150, blank=True, default='')
+    direccion_facturacion = models.CharField(max_length=255, blank=True, default='')
+    comuna = models.CharField(max_length=80, blank=True, default='')
+    ciudad = models.CharField(max_length=80, blank=True, default='')
+    email_facturacion = models.EmailField(blank=True, default='')
+    contacto = models.CharField(max_length=100, blank=True, default='')
+
     class Meta:
         ordering = ['nombre']
 
@@ -224,6 +239,20 @@ class DetallePedido(models.Model):
     cantidad_kilos = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Cantidad en kilos",default=0)
     cantidad_unidades = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Cantidad en Unidades")
     precio_venta = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Precio de venta (por kilo)")
+    # Cómo se fijó precio_venta en esta línea (el precio del producto sigue siendo el default):
+    #   lista         -> precio vigente del producto
+    #   descuento     -> precio vigente - descuento_por_kilo
+    #   personalizado -> precio escrito a mano
+    #   costo         -> costo/kg ponderado de los lotes + IVA (ni gana ni pierde)
+    modo_precio = models.CharField(
+        max_length=15,
+        choices=[("lista", "Lista"), ("descuento", "Descuento"), ("personalizado", "Personalizado"), ("costo", "A costo")],
+        default="lista",
+    )
+    precio_lista = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Precio vigente del producto al momento de la venta (referencia para el descuento)"
+    )
     descuento_por_kilo = models.DecimalField(
         max_digits=10, decimal_places=2, default=0,
         verbose_name="Descuento por kilo",
@@ -255,8 +284,9 @@ class DetallePedido(models.Model):
         # datos historicos (ventas que figuran pesando mas de lo comprado), lo
         # que hacia estallar el costo reconstruido. Este modelo solo usa datos
         # confiables: costo/kg del proveedor y kilos de bascula.
-        if self.cantidad_kilos and self.cantidad_kilos > 0:
-            self.total_costo = self.cantidad_kilos * self.costo_por_kilo
+        # Siempre se deriva (también con 0 kg): si una línea pesada vuelve a 0 kg
+        # el costo viejo no puede quedar pegado inflando el costo del pedido.
+        self.total_costo = (self.cantidad_kilos or 0) * self.costo_por_kilo
 
         self.margen = self.total_venta - self.total_costo
 
@@ -285,6 +315,11 @@ class Factura(models.Model):
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Subtotal")
     iva = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="IVA")
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total con IVA")
+    fecha_vencimiento = models.DateField(null=True, blank=True, verbose_name="Fecha de vencimiento")
+    foto = models.FileField(upload_to="facturas/", blank=True, null=True, verbose_name="Foto o PDF de la factura")
+
+    def total_notas_credito(self):
+        return self.notas_credito.aggregate(t=models.Sum('total'))['t'] or 0
 
     def __str__(self):
         return f"Factura {self.numero_factura} - {self.proveedor} - {self.fecha}"
@@ -394,5 +429,141 @@ class EntradaProducto(models.Model):
 
     def __str__(self):
         return f"{self.producto.nombre} - {self.cantidad_kilos} kg - {self.costo_por_kilo} por kilo"
+
+
+class NotaCredito(models.Model):
+    """Nota de crédito del proveedor sobre una factura de compra (devolución,
+    diferencia de precio o de peso). Es solo financiera: rebaja lo que se le
+    debe al proveedor y el crédito fiscal de IVA del mes; no mueve stock."""
+    factura = models.ForeignKey(Factura, on_delete=models.CASCADE, related_name="notas_credito")
+    numero = models.CharField(max_length=50)
+    fecha = models.DateField()
+    neto = models.DecimalField(max_digits=12, decimal_places=2)
+    iva = models.DecimalField(max_digits=12, decimal_places=2)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    motivo = models.CharField(max_length=255, blank=True, default='')
+    foto = models.FileField(upload_to="notas_credito/", blank=True, null=True)
+    creada = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+        unique_together = ('factura', 'numero')
+
+    def __str__(self):
+        return f"NC {self.numero} (factura {self.factura_id})"
+
+
+class PerfilUsuario(models.Model):
+    """Datos propios de cada usuario (con o sin perfil de vendedor) para su flyer."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='perfil')
+    telefono = models.CharField(max_length=30, blank=True, default='')
+    foto1 = models.ImageField(upload_to="flyer/", blank=True, null=True)
+    foto2 = models.ImageField(upload_to="flyer/", blank=True, null=True)
+    logo = models.ImageField(upload_to="flyer/", blank=True, null=True)
+    mensaje_whatsapp = models.TextField(blank=True, default='')
+
+    def __str__(self):
+        return f"Perfil de {self.user}"
+
+
+class Cartola(models.Model):
+    """Un archivo de cartola bancaria subido. Los movimientos se deduplican por
+    huella, así que subir dos cartolas que se traslapan no duplica nada."""
+    nombre_archivo = models.CharField(max_length=255)
+    banco = models.CharField(max_length=100, blank=True, default='')
+    subida = models.DateTimeField(auto_now_add=True)
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    movimientos_nuevos = models.IntegerField(default=0)
+    movimientos_duplicados = models.IntegerField(default=0)
+    metodo = models.CharField(max_length=20, default='planilla')  # planilla | ia
+
+    class Meta:
+        ordering = ['-subida']
+
+
+CATEGORIAS_MOVIMIENTO = [
+    ("sin_clasificar", "Sin clasificar"),
+    ("venta", "Pago de cliente"),
+    ("proveedor", "Pago a proveedor"),
+    ("gasto", "Gasto"),
+    ("impuesto", "Impuestos (IVA/PPM)"),
+    ("sueldo", "Sueldos / retiros"),
+    ("traspaso", "Traspaso entre cuentas"),
+    ("otro", "Otro"),
+]
+
+
+class MovimientoBancario(models.Model):
+    cartola = models.ForeignKey(Cartola, on_delete=models.SET_NULL, null=True, blank=True, related_name='movimientos')
+    fecha = models.DateField()
+    descripcion = models.CharField(max_length=255)
+    # Positivo = abono (entra plata), negativo = cargo (sale plata).
+    monto = models.DecimalField(max_digits=14, decimal_places=2)
+    saldo = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    documento = models.CharField(max_length=60, blank=True, default='')
+    huella = models.CharField(max_length=64, unique=True)
+    categoria = models.CharField(max_length=20, choices=CATEGORIAS_MOVIMIENTO, default="sin_clasificar")
+    comentario = models.TextField(blank=True, default='')
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+    def monto_asignado(self):
+        return self.asignaciones.aggregate(t=models.Sum('monto'))['t'] or 0
+
+
+class AsignacionMovimiento(models.Model):
+    """Parte (o todo) de un movimiento bancario asociado a un pedido (cobro) o a
+    una factura de compra (pago a proveedor)."""
+    movimiento = models.ForeignKey(MovimientoBancario, on_delete=models.CASCADE, related_name='asignaciones')
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, null=True, blank=True, related_name='asignaciones_banco')
+    factura = models.ForeignKey(Factura, on_delete=models.CASCADE, null=True, blank=True, related_name='asignaciones_banco')
+    monto = models.DecimalField(max_digits=14, decimal_places=2)
+    creado = models.DateTimeField(auto_now_add=True)
+
+
+CATEGORIAS_GASTO = [
+    ("arriendo", "Arriendo"),
+    ("servicios", "Luz, agua, gas, internet"),
+    ("transporte", "Transporte / combustible"),
+    ("insumos", "Insumos y envases"),
+    ("sueldos", "Sueldos y honorarios"),
+    ("marketing", "Publicidad"),
+    ("comisiones", "Comisiones bancarias"),
+    ("contador", "Contador / trámites"),
+    ("otro", "Otro"),
+]
+
+
+class Gasto(models.Model):
+    """Gasto de la empresa que no es mercadería (eso va en Factura). Si viene con
+    factura, su IVA es crédito fiscal."""
+    fecha = models.DateField()
+    descripcion = models.CharField(max_length=255)
+    categoria = models.CharField(max_length=20, choices=CATEGORIAS_GASTO, default="otro")
+    neto = models.DecimalField(max_digits=12, decimal_places=2)
+    iva = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    con_factura = models.BooleanField(default=False)
+    movimiento = models.ForeignKey(MovimientoBancario, on_delete=models.SET_NULL, null=True, blank=True, related_name='gastos')
+    comentario = models.TextField(blank=True, default='')
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+
+class ConfiguracionContable(models.Model):
+    """Fila única (pk=1) con las tasas usadas en las estimaciones."""
+    tasa_impuesto_renta = models.DecimalField(max_digits=5, decimal_places=2, default=25,
+                                              help_text="Impuesto de primera categoría, %")
+    tasa_ppm = models.DecimalField(max_digits=5, decimal_places=3, default=0.25,
+                                   help_text="Pago provisional mensual sobre ingresos netos, %")
+
+    @classmethod
+    def actual(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
 
 

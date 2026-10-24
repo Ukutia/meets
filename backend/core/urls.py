@@ -1,7 +1,8 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView, NotaCreditoView, NotaCreditoDetailView
+from . import views_tesoreria as tes
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -16,6 +17,8 @@ urlpatterns = [
     path('facturas/crear/', CrearFacturaEntrada.as_view(), name='crear_factura'),
     path('facturas/', FacturaListView.as_view(), name='facturas'),
     path('facturas/pagar/', CrearPagoFactura.as_view(), name='pagar_factura'),
+    path('facturas/notas-credito/<int:pk>/', NotaCreditoDetailView.as_view(), name='nota_credito_detail'),
+    path('facturas/<str:numero_factura>/notas-credito/', NotaCreditoView.as_view(), name='notas_credito'),
     path('facturas/<str:numero_factura>/', UpdateFacturaEntrada.as_view(), name='actualizar_factura'),
     path('pedidos/cancelar/', CancelarPedido.as_view(), name='cancelar_pedido'),
     path('pedidos/cancelar-producto/', CancelarProductoPedido.as_view(), name='cancelar_producto_pedido'),
@@ -40,6 +43,18 @@ urlpatterns = [
     path('reportes/margen-productos/', MargenActualProductoView.as_view(), name='reporte_margen_productos'),
     path('reportes/rentabilidad-historica/', RentabilidadHistoricaView.as_view(), name='reporte_rentabilidad_historica'),
     path('clientes/<int:pk>/', UpdateCliente.as_view(), name='actualizar_cliente'),
+    path('tesoreria/cartolas/', tes.CartolaListView.as_view(), name='cartolas'),
+    path('tesoreria/cartolas/analizar/', tes.AnalizarCartolaView.as_view(), name='cartola_analizar'),
+    path('tesoreria/cartolas/importar/', tes.ImportarCartolaView.as_view(), name='cartola_importar'),
+    path('tesoreria/cartolas/<int:pk>/', tes.CartolaDetailView.as_view(), name='cartola_detail'),
+    path('tesoreria/movimientos/', tes.MovimientoListView.as_view(), name='movimientos_banco'),
+    path('tesoreria/movimientos/<int:pk>/', tes.MovimientoDetailView.as_view(), name='movimiento_banco'),
+    path('tesoreria/movimientos/<int:pk>/asignar/', tes.AsignarMovimientoView.as_view(), name='movimiento_asignar'),
+    path('tesoreria/asignaciones/<int:pk>/', tes.AsignacionDetailView.as_view(), name='asignacion_detail'),
+    path('tesoreria/gastos/', tes.GastoListView.as_view(), name='gastos'),
+    path('tesoreria/gastos/<int:pk>/', tes.GastoDetailView.as_view(), name='gasto_detail'),
+    path('tesoreria/contabilidad/', tes.ContabilidadView.as_view(), name='contabilidad'),
+    path('tesoreria/configuracion/', tes.ConfiguracionContableView.as_view(), name='configuracion_contable'),
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/cambiar-password/', CambiarPasswordView.as_view(), name='cambiar_password'),

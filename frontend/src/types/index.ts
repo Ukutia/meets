@@ -10,7 +10,19 @@ export interface Proveedor {
   cantidad_facturas: number;
 }
 
-export interface Cliente {
+export interface DatosFacturacion {
+  tipo_cliente?: 'minorista' | 'mayorista';
+  rut?: string;
+  razon_social?: string;
+  giro?: string;
+  direccion_facturacion?: string;
+  comuna?: string;
+  ciudad?: string;
+  email_facturacion?: string;
+  contacto?: string;
+}
+
+export interface Cliente extends DatosFacturacion {
   id: number;
   nombre: string;
   telefono?: string | null;
@@ -18,6 +30,8 @@ export interface Cliente {
   email?: string | null;
   vendedor: Vendedor;
 }
+
+export type ModoPrecio = 'lista' | 'descuento' | 'personalizado' | 'costo';
 
 export interface Producto {
   id: number;
@@ -55,11 +69,12 @@ export interface DetallePedido {
   cantidad_unidades: number;
   cantidad_kilos: number;
   precio_venta: number;
+  precio_lista?: number;
+  modo_precio?: ModoPrecio;
   descuento_por_kilo: number;
   total_venta: number;
   total_costo: number;
-  margen: number;
-  facturas: number[];
+  costo_por_kilo?: number;
   estado: 'Activo' | 'Cancelado';
 }
 
@@ -72,6 +87,8 @@ export interface Pedido {
   total: number;
   detalles: DetallePedido[];
   observaciones?: string;
+  tipo_recibo?: 'Boleta' | 'Factura';
+  pagado_banco?: number;
 }
 
 
@@ -99,17 +116,37 @@ export interface PagoFactura {
   monto_del_pago: number;
 }
 
+export interface NotaCredito {
+  id: number;
+  factura: string;
+  numero: string;
+  fecha: string;
+  neto: number;
+  iva: number;
+  total: number;
+  motivo: string;
+  foto?: string | null;
+}
+
 export interface Factura {
   proveedor: number;
   proveedor_nombre?: string;
   fecha: string;
+  fecha_vencimiento?: string | null;
+  foto?: string | null;
   numero_factura: string;
   detalles: DetalleFactura[];
   pago_factura?: PagoFactura | null;
+  notas_credito?: NotaCredito[];
+  total_notas_credito?: number;
+  total_a_pagar?: number;
   total: number;
   subtotal: number;
   iva: number;
 }
+
+// Lo que se le debe al proveedor: el total menos sus notas de crédito.
+export const totalAPagar = (f: Factura) => Number(f.total_a_pagar ?? f.total);
 
 export interface StockItem {
   id: number;
@@ -123,6 +160,8 @@ export interface StockItem {
   stock: number;
   reservas: number;
   kilos_actuales: number;
+  // Lotes vivos en orden FIFO (para estimar el costo de una venta).
+  lotes?: { unidades: number; costo_por_kilo: number | string }[];
 }
 
 export interface AjusteInventario {

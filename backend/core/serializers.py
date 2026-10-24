@@ -1,7 +1,8 @@
 from decimal import Decimal
 
+from django.db import models
 from rest_framework import serializers
-from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario
+from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario, NotaCredito, MovimientoBancario, AsignacionMovimiento, Cartola, Gasto
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -37,6 +38,12 @@ class VendedorSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'sigla']
 
 
+CAMPOS_FACTURACION_CLIENTE = [
+    'tipo_cliente', 'rut', 'razon_social', 'giro', 'direccion_facturacion',
+    'comuna', 'ciudad', 'email_facturacion', 'contacto',
+]
+
+
 class ClienteSerializer(serializers.ModelSerializer):
     # Esto se usa para la LECTURA (GET) - devuelve el objeto completo
     vendedor = VendedorSerializer(read_only=True)
@@ -50,7 +57,16 @@ class ClienteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Cliente
-        fields = ['id', 'nombre', 'vendedor', 'vendedor_id', 'direccion', 'telefono', 'email']
+        fields = ['id', 'nombre', 'vendedor', 'vendedor_id', 'direccion', 'telefono', 'email'] + CAMPOS_FACTURACION_CLIENTE
+
+    def validate(self, attrs):
+        tipo = attrs.get('tipo_cliente', getattr(self.instance, 'tipo_cliente', 'minorista'))
+        if tipo == 'mayorista':
+            rut = attrs.get('rut', getattr(self.instance, 'rut', ''))
+            razon = attrs.get('razon_social', getattr(self.instance, 'razon_social', ''))
+            if not rut or not razon:
+                raise serializers.ValidationError('Un cliente mayorista necesita RUT y razón social para facturarle')
+        return attrs
 
 class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -140,16 +156,35 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'descuento_por_kilo', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
+
+
+class DetallePedidoLigeroSerializer(serializers.ModelSerializer):
+    """Línea de pedido sin el desglose por factura (facturas_detalle), para la
+    lista de pedidos: ese desglose solo lo usa Movimientos y costaba queries."""
+    producto = ProductoSerializer()
+
+    class Meta:
+        model = DetallePedido
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'costo_por_kilo', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'estado']
+
 
 class PedidoSerializer(serializers.ModelSerializer):
-    detalles = DetallePedidoSerializer(many=True)
+    detalles = DetallePedidoLigeroSerializer(many=True)
     cliente = ClienteSerializer()
     vendedor = VendedorSerializer()
+    pagado_banco = serializers.SerializerMethodField()
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total', 'observaciones']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco']
+
+    def get_pagado_banco(self, obj):
+        # Lo cobrado según movimientos de la cartola asociados a este pedido.
+        cache = getattr(obj, '_prefetched_objects_cache', {})
+        if 'asignaciones_banco' in cache:
+            return sum((a.monto for a in obj.asignaciones_banco.all()), Decimal('0'))
+        return obj.asignaciones_banco.aggregate(t=models.Sum('monto'))['t'] or Decimal('0')
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles')
@@ -230,22 +265,44 @@ class DetalleFacturaSerializer(serializers.ModelSerializer):
         from .utils import pedidos_consumidores_detalle
         return pedidos_consumidores_detalle(obj)
 
+class NotaCreditoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NotaCredito
+        fields = ['id', 'factura', 'numero', 'fecha', 'neto', 'iva', 'total', 'motivo', 'foto', 'creada']
+        read_only_fields = ['creada']
+
+
 class FacturaSerializer(serializers.ModelSerializer):
     # Eliminamos el source porque ahora coincide con el field name
     detalles = DetalleFacturaSerializer(many=True, read_only=True)
     proveedor_nombre = serializers.ReadOnlyField(source='proveedor.nombre')
     pago_factura = PagoFacturaSerializer(read_only=True)
+    notas_credito = NotaCreditoSerializer(many=True, read_only=True)
+    total_notas_credito = serializers.SerializerMethodField()
+    # Lo que realmente se le debe al proveedor: total - notas de crédito.
+    total_a_pagar = serializers.SerializerMethodField()
 
     class Meta:
         model = Factura
         fields = [
-            'numero_factura', 
-            'proveedor', 
-            'proveedor_nombre', 
-            'fecha', 
-            'detalles', 
-            'total', 
-            'subtotal', 
-            'iva', 
-            'pago_factura'
+            'numero_factura',
+            'proveedor',
+            'proveedor_nombre',
+            'fecha',
+            'fecha_vencimiento',
+            'foto',
+            'detalles',
+            'total',
+            'subtotal',
+            'iva',
+            'pago_factura',
+            'notas_credito',
+            'total_notas_credito',
+            'total_a_pagar',
         ]
+
+    def get_total_notas_credito(self, obj):
+        return sum((nc.total for nc in obj.notas_credito.all()), Decimal('0'))
+
+    def get_total_a_pagar(self, obj):
+        return obj.total - self.get_total_notas_credito(obj)

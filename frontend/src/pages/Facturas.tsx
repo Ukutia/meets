@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Search, Plus, Trash2, Package, FileText, Pencil, Lock, AlertTriangle, BadgeCheck } from 'lucide-react';
+import { Search, Plus, Trash2, Package, FileText, Pencil, Lock, AlertTriangle, BadgeCheck, Camera, ReceiptText, ExternalLink } from 'lucide-react';
+import { DecimalInput } from '@/components/shared/DecimalInput';
+import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -22,12 +24,12 @@ import {
 } from '@/components/ui/dialog';
 import { useForm, Controller } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getFacturas, createFactura, updateFactura, getProveedores, getProductos, getMargenProductos, pagarFactura } from '@/services/api';
+import { getFacturas, createFactura, updateFactura, getProveedores, getProductos, getMargenProductos, pagarFactura, createNotaCredito, deleteNotaCredito } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { Factura, EstadoEdicionLinea } from '@/types';
+import { totalAPagar, type Factura, type EstadoEdicionLinea } from '@/types';
 import { useToast } from '@/hooks/use-toast';
-import { diasDesde, enRango, formatCLP, formatFecha, hoyISO } from '@/lib/utils';
+import { diasDesde, enRango, formatCLP, formatFecha, hoyISO, mediaUrl, parseDecimal } from '@/lib/utils';
 import { useSearchParams } from 'react-router-dom';
 import { StatCard } from '@/components/shared/StatCard';
 import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
@@ -47,6 +49,7 @@ interface FacturaForm {
   numero_factura: string;
   proveedor_id: string;
   fecha: string;
+  fecha_vencimiento: string;
   subtotal: string;
   iva: string;
   total: string;
@@ -85,6 +88,13 @@ export default function Facturas() {
   const [editDetalles, setEditDetalles] = useState<EditLinea[]>([]);
   const [pagoFecha, setPagoFecha] = useState('');
   const [pagoMonto, setPagoMonto] = useState('');
+  const [editVencimiento, setEditVencimiento] = useState('');
+  const [fotoNueva, setFotoNueva] = useState<File | null>(null);
+  const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [nc, setNc] = useState({ numero: '', fecha: hoyISO(), neto: '', motivo: '' });
+  const [ncFoto, setNcFoto] = useState<File | null>(null);
+  const [ncAbierta, setNcAbierta] = useState(false);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -100,6 +110,7 @@ export default function Facturas() {
       numero_factura: '',
       proveedor_id: '',
       fecha: hoyISO(),
+      fecha_vencimiento: '',
       subtotal: '0',
       iva: '0',
       total: '0',
@@ -152,11 +163,11 @@ export default function Facturas() {
 
   const agregarItem = () => {
     const prod = productos?.find(p => p.id.toString() === nuevoItem.producto_id);
-    const kilos = parseFloat(nuevoItem.cantidad_kilos);
-    const unidades = parseInt(nuevoItem.cantidad_unidades) || 0;
-    const costo = parseFloat(nuevoItem.costo_por_kilo);
+    const kilos = parseDecimal(nuevoItem.cantidad_kilos);
+    const unidades = Math.trunc(parseDecimal(nuevoItem.cantidad_unidades));
+    const costo = parseDecimal(nuevoItem.costo_por_kilo);
 
-    if (!prod || isNaN(kilos) || isNaN(costo)) {
+    if (!prod || kilos <= 0 || costo <= 0) {
       toast({ title: "Datos incompletos", description: "Verifica los datos del producto.", variant: "destructive" });
       return;
     }
@@ -184,11 +195,12 @@ export default function Facturas() {
 
   
   const createMutation = useMutation({
-    mutationFn: (values: FacturaForm) =>
-      createFactura({
+    mutationFn: (values: FacturaForm) => {
+      const datos = {
         numero_factura: values.numero_factura,
         proveedor: values.proveedor_id,
         fecha: values.fecha,
+        fecha_vencimiento: values.fecha_vencimiento || null,
         subtotal: Number(values.subtotal),
         iva: Number(values.iva),
         total: Number(values.total),
@@ -199,13 +211,24 @@ export default function Facturas() {
           costo_por_kilo: d.costo_por_kilo,
           costo_total: d.costo_total
         }))
-      }),
+      };
+      if (!fotoNueva) return createFactura(datos);
+      // Con foto: multipart, y los detalles viajan como JSON en texto.
+      const fd = new FormData();
+      Object.entries(datos).forEach(([k, v]) => {
+        if (v == null) return;
+        fd.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+      });
+      fd.append('foto', fotoNueva);
+      return createFactura(fd);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       toast({ title: 'Éxito', description: 'Factura registrada.' });
       form.reset({ ...form.formState.defaultValues, fecha: hoyISO() });
       setDetalles([]);
+      setFotoNueva(null);
       setDialogOpen(false);
     },
     onError: (err: any) => {
@@ -218,6 +241,7 @@ export default function Facturas() {
     setEditFactura(f);
     setEditProveedor(f.proveedor != null ? String(f.proveedor) : '');
     setEditFecha(f.fecha ? String(f.fecha).split('T')[0] : '');
+    setEditVencimiento(f.fecha_vencimiento ?? '');
     setEditDetalles((f.detalles || []).map((d: any) => ({
       id: d.id,
       producto: Number(d.producto),
@@ -252,6 +276,7 @@ export default function Facturas() {
       updateFactura(editFactura!.numero_factura, {
         proveedor: editProveedor,
         fecha: editFecha,
+        fecha_vencimiento: editVencimiento || null,
         detalles: editDetalles.map(l => ({
           id: l.id,
           producto: l.producto,
@@ -274,7 +299,7 @@ export default function Facturas() {
 
   const pagarMutation = useMutation({
     mutationFn: () =>
-      pagarFactura(selectedFactura!.numero_factura, pagoFecha, Number(pagoMonto)),
+      pagarFactura(selectedFactura!.numero_factura, pagoFecha, parseDecimal(pagoMonto)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       toast({ title: 'Éxito', description: 'Pago registrado.' });
@@ -285,11 +310,73 @@ export default function Facturas() {
     },
   });
 
+  // Refresca la lista y el detalle abierto con la factura recién guardada.
+  const refrescarFactura = async (numero: string) => {
+    await queryClient.invalidateQueries({ queryKey: ['facturas'] });
+    const lista = queryClient.getQueryData<Factura[]>(['facturas']);
+    const f = lista?.find(x => x.numero_factura === numero);
+    if (f) setSelectedFactura(f);
+  };
+
+  const subirFoto = async (archivo: File) => {
+    if (!selectedFactura) return;
+    setSubiendoFoto(true);
+    try {
+      const fd = new FormData();
+      fd.append('foto', archivo);
+      await updateFactura(selectedFactura.numero_factura, fd);
+      await refrescarFactura(selectedFactura.numero_factura);
+      toast({ title: 'Foto guardada' });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.response?.data?.error || 'No se pudo subir la foto', variant: 'destructive' });
+    } finally {
+      setSubiendoFoto(false);
+    }
+  };
+
+  const ncMutation = useMutation({
+    mutationFn: () => {
+      const fd = new FormData();
+      fd.append('numero', nc.numero.trim());
+      fd.append('fecha', nc.fecha);
+      fd.append('neto', String(parseDecimal(nc.neto)));
+      fd.append('motivo', nc.motivo);
+      if (ncFoto) fd.append('foto', ncFoto);
+      return createNotaCredito(selectedFactura!.numero_factura, fd);
+    },
+    onSuccess: async () => {
+      toast({ title: 'Nota de crédito registrada' });
+      setNc({ numero: '', fecha: hoyISO(), neto: '', motivo: '' });
+      setNcFoto(null);
+      setNcAbierta(false);
+      await refrescarFactura(selectedFactura!.numero_factura);
+    },
+    onError: (err: any) => {
+      toast({ title: 'Error', description: err.response?.data?.error || 'No se pudo registrar', variant: 'destructive' });
+    },
+  });
+
+  const borrarNc = (id: number) => confirm({
+    title: '¿Eliminar la nota de crédito?',
+    confirmLabel: 'Eliminar',
+    destructive: true,
+    onConfirm: async () => {
+      await deleteNotaCredito(id);
+      if (selectedFactura) await refrescarFactura(selectedFactura.numero_factura);
+    },
+  });
+
+  // Días hasta el vencimiento (negativo = vencida). Sin vencimiento se usa la antigüedad.
+  const diasParaVencer = (f: Factura) => (f.fecha_vencimiento ? -diasDesde(f.fecha_vencimiento) : null);
+
   // Al abrir el detalle de una factura sin pago, precarga fecha de hoy y el total como default.
   useEffect(() => {
     if (selectedFactura && !selectedFactura.pago_factura) {
       setPagoFecha(hoyISO());
-      setPagoMonto(String(selectedFactura.total));
+      setPagoMonto(String(Math.round(totalAPagar(selectedFactura))));
+      setNc({ numero: '', fecha: hoyISO(), neto: '', motivo: '' });
+      setNcFoto(null);
+      setNcAbierta(false);
     }
   }, [selectedFactura]);
 
@@ -308,9 +395,10 @@ export default function Facturas() {
   const resumen = useMemo(() => {
     const pendientes = filteredFacturas.filter((f) => !f.pago_factura);
     return {
-      compras: filteredFacturas.reduce((s, f) => s + Number(f.total), 0),
-      pendiente: pendientes.reduce((s, f) => s + Number(f.total), 0),
+      compras: filteredFacturas.reduce((s, f) => s + totalAPagar(f), 0),
+      pendiente: pendientes.reduce((s, f) => s + totalAPagar(f), 0),
       cantidadPendientes: pendientes.length,
+      vencidas: pendientes.filter(f => (diasParaVencer(f) ?? 1) < 0).length,
       masAntigua: pendientes.reduce<number | null>((max, f) => {
         const d = diasDesde(f.fecha);
         return max == null || d > max ? d : max;
@@ -323,6 +411,7 @@ export default function Facturas() {
 
   return (
     <div className="space-y-6">
+      {confirmDialog}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Facturas de Compra</h1>
@@ -366,6 +455,14 @@ export default function Facturas() {
                   <Label>Fecha de la factura</Label>
                   <Input type="date" {...form.register('fecha', { required: true })} />
                 </div>
+                <div className="space-y-2">
+                  <Label>Fecha de vencimiento</Label>
+                  <Input type="date" {...form.register('fecha_vencimiento')} />
+                </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="foto-factura">Foto o PDF de la factura (opcional)</Label>
+                  <Input id="foto-factura" type="file" accept="image/*,application/pdf" capture="environment" onChange={(e) => setFotoNueva(e.target.files?.[0] ?? null)} />
+                </div>
               </div>
 
               <div className="border rounded-xl p-4 bg-muted/30 space-y-4">
@@ -378,9 +475,9 @@ export default function Facturas() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="col-span-1 sm:col-span-2"><Input type="number" aria-label="Kilos" placeholder="Kg" value={nuevoItem.cantidad_kilos} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_kilos: e.target.value })} /></div>
-                  <div className="col-span-1 sm:col-span-2"><Input type="number" aria-label="Unidades" placeholder="Unid." value={nuevoItem.cantidad_unidades} onChange={e => setNuevoItem({ ...nuevoItem, cantidad_unidades: e.target.value })} /></div>
-                  <div className="col-span-1 sm:col-span-3"><Input type="number" aria-label="Costo por kilo sin IVA" placeholder="Costo/Kg neto" value={nuevoItem.costo_por_kilo} onChange={e => setNuevoItem({ ...nuevoItem, costo_por_kilo: e.target.value })} /></div>
+                  <div className="col-span-1 sm:col-span-2"><DecimalInput aria-label="Kilos" placeholder="Kg" value={nuevoItem.cantidad_kilos} onValueChange={t => setNuevoItem({ ...nuevoItem, cantidad_kilos: t })} /></div>
+                  <div className="col-span-1 sm:col-span-2"><DecimalInput decimales={false} aria-label="Unidades" placeholder="Unid." value={nuevoItem.cantidad_unidades} onValueChange={t => setNuevoItem({ ...nuevoItem, cantidad_unidades: t })} /></div>
+                  <div className="col-span-1 sm:col-span-3"><DecimalInput aria-label="Costo por kilo sin IVA" placeholder="Costo/Kg neto" value={nuevoItem.costo_por_kilo} onValueChange={t => setNuevoItem({ ...nuevoItem, costo_por_kilo: t })} /></div>
                   <div className="col-span-1"><Button type="button" onClick={agregarItem} className="w-full" aria-label="Agregar línea"><Plus className="h-4 w-4" /></Button></div>
                 </div>
 
@@ -403,9 +500,9 @@ export default function Facturas() {
                         return (
                         <tr key={i} className="border-b last:border-0">
                           <td className="p-2">{item.nombre_producto}</td>
-                          <td className="p-2 text-right">{item.cantidad_kilos} Kg</td>
+                          <td className="p-2 text-right">{item.cantidad_kilos.toLocaleString('es-CL')} Kg</td>
                           <td className="p-2 text-right text-muted-foreground">{peso != null ? `${peso.toFixed(2)} Kg` : '—'}</td>
-                          <td className="p-2 text-right font-semibold">${item.costo_total.toLocaleString()}</td>
+                          <td className="p-2 text-right font-semibold">{formatCLP(item.costo_total)}</td>
                           <td className="p-2 text-right">
                             {m.tieneInfo ? (
                               <div className={m.mejor ? 'text-green-600' : 'text-destructive'}>
@@ -431,8 +528,8 @@ export default function Facturas() {
               </div>
 
               <div className="flex justify-end border-t pt-4 gap-8">
-                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Subtotal</p><p className="font-bold">${Number(form.watch('subtotal')).toLocaleString()}</p></div>
-                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Total Factura</p><p className="font-black text-xl text-primary">${Number(form.watch('total')).toLocaleString()}</p></div>
+                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Subtotal</p><p className="font-bold">{formatCLP(form.watch('subtotal'))}</p></div>
+                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Total Factura</p><p className="font-black text-xl text-primary">{formatCLP(form.watch('total'))}</p></div>
               </div>
             </div>
             <DialogFooter>
@@ -458,11 +555,11 @@ export default function Facturas() {
           onClick={() => setPagoFilter('pendientes')}
         />
         <StatCard
-          title="Pendiente más antigua"
-          value={resumen.masAntigua != null ? `${resumen.masAntigua} días` : '—'}
+          title="Vencidas"
+          value={String(resumen.vencidas)}
           icon={Clock}
-          accent={resumen.masAntigua != null && resumen.masAntigua > 30 ? 'text-destructive' : undefined}
-          description="Desde la fecha de la factura"
+          accent={resumen.vencidas ? 'text-destructive' : undefined}
+          description={resumen.masAntigua != null ? `La pendiente más antigua es de hace ${resumen.masAntigua} días` : 'Sin pendientes'}
           className="col-span-2 lg:col-span-1"
         />
       </div>
@@ -515,6 +612,7 @@ export default function Facturas() {
             )}
             {filteredFacturas.map((f) => {
               const dias = diasDesde(f.fecha);
+              const vence = diasParaVencer(f);
               return (
                 <TableRow key={f.numero_factura} className="cursor-pointer" onClick={() => setSelectedFactura(f)}>
                   <TableCell className="font-mono font-semibold text-primary">#{f.numero_factura}</TableCell>
@@ -528,12 +626,22 @@ export default function Facturas() {
                       <Badge variant="outline" className="border-green-500 text-green-600">Pagada</Badge>
                     ) : (
                       <div className="flex flex-col items-start gap-0.5">
-                        <Badge variant="outline" className={`border-none ${dias > 30 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>Pendiente</Badge>
-                        <span className="text-[10px] text-muted-foreground">{dias === 0 ? 'hoy' : `hace ${dias} ${dias === 1 ? 'día' : 'días'}`}</span>
+                        <Badge variant="outline" className={`border-none ${(vence != null ? vence < 0 : dias > 30) ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {vence != null && vence < 0 ? 'Vencida' : 'Pendiente'}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">
+                          {vence == null
+                            ? (dias === 0 ? 'hoy' : `hace ${dias} ${dias === 1 ? 'día' : 'días'}`)
+                            : vence < 0 ? `venció hace ${-vence} ${vence === -1 ? 'día' : 'días'}`
+                            : vence === 0 ? 'vence hoy' : `vence en ${vence} ${vence === 1 ? 'día' : 'días'}`}
+                        </span>
                       </div>
                     )}
                   </TableCell>
-                  <TableCell className="text-right font-bold tabular-nums">{formatCLP(f.total)}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums">
+                    {formatCLP(totalAPagar(f))}
+                    {Number(f.total_notas_credito) > 0 && <div className="text-[10px] font-normal text-muted-foreground">con NC</div>}
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -565,6 +673,31 @@ export default function Facturas() {
                 <div>
                   <Label className="text-muted-foreground uppercase text-[10px] font-bold">Fecha de Ingreso</Label>
                   <p className="font-semibold text-base">{formatFecha(selectedFactura.fecha)}</p>
+                </div>
+                <div>
+                  <Label className="text-muted-foreground uppercase text-[10px] font-bold">Vencimiento</Label>
+                  <p className="font-semibold text-base">{selectedFactura.fecha_vencimiento ? formatFecha(selectedFactura.fecha_vencimiento) : '—'}</p>
+                </div>
+                <div>
+                  <Label className="text-muted-foreground uppercase text-[10px] font-bold">Documento</Label>
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    {selectedFactura.foto && (
+                      <a href={mediaUrl(selectedFactura.foto)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm font-medium text-primary underline">
+                        Ver foto <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                    <label className="inline-flex cursor-pointer items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+                      <Camera className="h-4 w-4" />
+                      {subiendoFoto ? 'Subiendo…' : selectedFactura.foto ? 'Cambiar' : 'Subir foto'}
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="sr-only"
+                        disabled={subiendoFoto}
+                        onChange={(e) => e.target.files?.[0] && subirFoto(e.target.files[0])}
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
 
@@ -638,6 +771,89 @@ export default function Facturas() {
                   <span>TOTAL:</span>
                   <span>${Number(selectedFactura.total).toLocaleString('es-CL')}</span>
                 </div>
+                {Number(selectedFactura.total_notas_credito) > 0 && (
+                  <>
+                    <div className="flex justify-between text-sm text-muted-foreground">
+                      <span>Notas de crédito:</span>
+                      <span>−{formatCLP(selectedFactura.total_notas_credito)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold">
+                      <span>A pagar:</span>
+                      <span>{formatCLP(totalAPagar(selectedFactura))}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Notas de crédito */}
+              <div className="space-y-3 rounded-lg border p-4">
+                <div className="flex items-center justify-between">
+                  <Label className="flex items-center gap-2"><ReceiptText className="h-4 w-4" /> Notas de crédito</Label>
+                  {!ncAbierta && (
+                    <Button variant="outline" size="sm" onClick={() => setNcAbierta(true)}>
+                      <Plus className="mr-1 h-4 w-4" /> Agregar
+                    </Button>
+                  )}
+                </div>
+                {(selectedFactura.notas_credito ?? []).length === 0 && !ncAbierta && (
+                  <p className="text-sm text-muted-foreground">Sin notas de crédito.</p>
+                )}
+                {(selectedFactura.notas_credito ?? []).map((n) => (
+                  <div key={n.id} className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-3 py-2 text-sm">
+                    <div className="min-w-0">
+                      <span className="font-medium">NC {n.numero}</span>
+                      <span className="text-muted-foreground"> · {formatFecha(n.fecha)}{n.motivo ? ` · ${n.motivo}` : ''}</span>
+                      {n.foto && (
+                        <a href={mediaUrl(n.foto)} target="_blank" rel="noreferrer" className="ml-2 text-primary underline">foto</a>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="font-semibold tabular-nums">−{formatCLP(n.total)}</span>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Eliminar nota de crédito" onClick={() => borrarNc(n.id)}>
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {ncAbierta && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">N° nota de crédito</Label>
+                      <Input value={nc.numero} onChange={(e) => setNc({ ...nc, numero: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Fecha</Label>
+                      <Input type="date" value={nc.fecha} onChange={(e) => setNc({ ...nc, fecha: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Monto neto (sin IVA)</Label>
+                      <DecimalInput value={nc.neto} onValueChange={(t) => setNc({ ...nc, neto: t })} />
+                      {parseDecimal(nc.neto) > 0 && (
+                        <p className="text-[11px] text-muted-foreground">
+                          + IVA {formatCLP(Math.round(parseDecimal(nc.neto) * 0.19))} = {formatCLP(Math.round(parseDecimal(nc.neto) * 1.19))}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Motivo</Label>
+                      <Input placeholder="Devolución, diferencia de peso…" value={nc.motivo} onChange={(e) => setNc({ ...nc, motivo: e.target.value })} />
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <Label className="text-xs text-muted-foreground">Foto (opcional)</Label>
+                      <Input type="file" accept="image/*,application/pdf" onChange={(e) => setNcFoto(e.target.files?.[0] ?? null)} />
+                    </div>
+                    <div className="flex gap-2 sm:col-span-2">
+                      <Button variant="ghost" onClick={() => setNcAbierta(false)}>Cancelar</Button>
+                      <Button
+                        className="flex-1"
+                        disabled={ncMutation.isPending || !nc.numero.trim() || parseDecimal(nc.neto) <= 0}
+                        onClick={() => ncMutation.mutate()}
+                      >
+                        Guardar nota de crédito
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Estado de pago */}
@@ -659,7 +875,7 @@ export default function Facturas() {
                     </div>
                     <div className="space-y-2">
                       <Label className="text-xs text-muted-foreground">Monto pagado</Label>
-                      <Input type="number" value={pagoMonto} onChange={(e) => setPagoMonto(e.target.value)} />
+                      <DecimalInput value={pagoMonto} onValueChange={setPagoMonto} />
                     </div>
                   </div>
                   <Button
@@ -719,6 +935,10 @@ export default function Facturas() {
                 <div className="space-y-2">
                   <Label>Fecha</Label>
                   <Input type="date" value={editFecha} onChange={(e) => setEditFecha(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Vencimiento</Label>
+                  <Input type="date" value={editVencimiento} onChange={(e) => setEditVencimiento(e.target.value)} />
                 </div>
               </div>
 
