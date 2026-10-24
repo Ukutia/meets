@@ -8,7 +8,10 @@ import type {
   Vendedor,
   Proveedor,
   HistorialPrecio,
-  AjusteInventario
+  AjusteInventario,
+  DatosFacturacion,
+  ModoPrecio,
+  NotaCredito,
 } from '@/types';
 
 
@@ -100,11 +103,23 @@ export const loginRequest = (credentials: { username: string; password: string }
 export const cambiarPassword = (password_actual: string, password_nueva: string) =>
   api.post('/auth/cambiar-password/', { password_actual, password_nueva });
 
-export const getPerfil = () =>
-  api.get<{ username: string; nombre: string; telefono: string; tiene_vendedor: boolean }>('/auth/perfil/');
+export interface Perfil {
+  username: string;
+  nombre: string;
+  telefono: string;
+  mensaje_whatsapp: string;
+  tiene_vendedor: boolean;
+  es_admin: boolean;
+  foto1: string | null;
+  foto2: string | null;
+  logo: string | null;
+}
 
-export const updateTelefonoPerfil = (telefono: string) =>
-  api.patch<{ telefono: string }>('/auth/perfil/', { telefono });
+export const getPerfil = () => api.get<Perfil>('/auth/perfil/');
+
+// Datos propios del usuario (teléfono, mensaje). Las fotos van con FormData.
+export const updatePerfil = (data: Partial<Pick<Perfil, 'telefono' | 'mensaje_whatsapp'>> | FormData) =>
+  api.patch<Perfil>('/auth/perfil/', data, data instanceof FormData ? { headers: { 'Content-Type': 'multipart/form-data' } } : undefined);
 
 export const refreshToken = (refresh: string) =>
   api.post(REFRESH_URL, { refresh });
@@ -131,28 +146,36 @@ export const getHistorialPrecio = (id: number) =>
 
 // Clientes
 export const getClientes = () => api.get<Cliente[]>('/clientes/');
-export const createCliente = (data: {
+type ClientePayload = {
   nombre: string;
   direccion: string;
   telefono?: string;
-  email?: string;
+  email?: string | null;
   vendedor_id: number;
-}) => api.post<Cliente>('/clientes/crear/', data);
+} & DatosFacturacion;
+
+export const createCliente = (data: ClientePayload) => api.post<Cliente>('/clientes/crear/', data);
 
 // Pedidos
 export const getPedidos = (incluirAnulados = false) =>
   api.get<Pedido[]>('/pedidos/', { params: incluirAnulados ? { incluir_anulados: '1' } : {} });
 export const getPedido = (id: number) => api.get<Pedido>(`/pedidos/${id}/`);
+export type PrecioLinea = {
+  modo_precio?: ModoPrecio;
+  descuento_por_kilo?: number;
+  precio_personalizado?: number;
+};
+
 export const createPedido = (data: {
   cliente: number;
   vendedor: number;
-  detalles: {
+  detalles: ({
     producto: number;
     cantidad_kilos: number;
-    descuento_por_kilo?: number;
     cantidad_unidades: number;
-  }[];
+  } & PrecioLinea)[];
   observaciones?: string;
+  tipo_recibo?: 'Boleta' | 'Factura';
 }) => api.post<Pedido>('/pedidos/crear/', data);
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
 export const cancelarProductoPedido = (pedidoId: number, detalleId: number) =>
@@ -161,16 +184,22 @@ export const agregarProductoPedido = (pedidoId: number, data: {
   producto_id: number;
   cantidad_kilos: number;
   cantidad_unidades: number;
-  descuento_por_kilo?: number;
-}) => api.post<Pedido>(`/pedidos/agregar-producto/`, { pedido_id: pedidoId, ...data });
+} & PrecioLinea) => api.post<Pedido>(`/pedidos/agregar-producto/`, { pedido_id: pedidoId, ...data });
 export const actualizarKilosPedido = (id: number, detalles: any[]) =>
   api.post(`/pedidos/actualizar_kilos/${id}/`, { detalles });
 
 // Facturas
+const multipart = { headers: { 'Content-Type': 'multipart/form-data' } };
+const opcionesPara = (data: unknown) => (data instanceof FormData ? multipart : undefined);
+
 export const getFacturas = () => api.get<Factura[]>('/facturas/');
-export const createFactura = (data: any) => api.post('/facturas/crear/', data);
+// Con foto se manda FormData (y los detalles como JSON en texto).
+export const createFactura = (data: any) => api.post('/facturas/crear/', data, opcionesPara(data));
 export const updateFactura = (numeroFactura: string, data: any) =>
-  api.put<Factura>(`/facturas/${encodeURIComponent(numeroFactura)}/`, data);
+  api.put<Factura>(`/facturas/${encodeURIComponent(numeroFactura)}/`, data, opcionesPara(data));
+export const createNotaCredito = (numeroFactura: string, data: FormData) =>
+  api.post<NotaCredito>(`/facturas/${encodeURIComponent(numeroFactura)}/notas-credito/`, data, multipart);
+export const deleteNotaCredito = (id: number) => api.delete(`/facturas/notas-credito/${id}/`);
 export const pagarFactura = (factura: string, fecha_de_pago: string, monto_del_pago: number) =>
   api.post(`/facturas/pagar/`, {
     factura,
@@ -196,13 +225,7 @@ export const getPedidoById = async (id: number) => {
   return response.data;
 };
 
-export const updateCliente = (id: number, data: {
-  nombre: string;
-  direccion: string;
-  telefono?: string;
-  email?: string;
-  vendedor_id: number;
-}) => api.put<Cliente>(`/clientes/${id}/`, data);
+export const updateCliente = (id: number, data: ClientePayload) => api.put<Cliente>(`/clientes/${id}/`, data);
 
 // Actualizar pedido (PUT o PATCH)
 export const updatePedido = async (id: number, data: any) => {
@@ -265,5 +288,26 @@ export const getRentabilidadHistorica = (productoId?: number | string) =>
   api.get('/reportes/rentabilidad-historica/', {
     params: productoId ? { producto: productoId } : undefined,
   });
+
+// --- Tesorería ---
+export const getCartolas = () => api.get('/tesoreria/cartolas/');
+export const analizarCartola = (data: { filas: unknown[][]; nombre_archivo: string } | FormData) =>
+  api.post('/tesoreria/cartolas/analizar/', data, { ...opcionesPara(data), timeout: 300_000 });
+export const importarCartola = (data: { nombre_archivo: string; banco: string; metodo: string; movimientos: unknown[] }) =>
+  api.post('/tesoreria/cartolas/importar/', data);
+export const deleteCartola = (id: number) => api.delete(`/tesoreria/cartolas/${id}/`);
+export const getMovimientosBanco = (params?: Record<string, string>) => api.get('/tesoreria/movimientos/', { params });
+export const updateMovimientoBanco = (id: number, data: { categoria?: string; comentario?: string }) =>
+  api.patch(`/tesoreria/movimientos/${id}/`, data);
+export const asignarMovimiento = (id: number, data: { pedido?: number; factura?: string; monto: number; marcar_pagado?: boolean }) =>
+  api.post(`/tesoreria/movimientos/${id}/asignar/`, data);
+export const deleteAsignacion = (id: number) => api.delete(`/tesoreria/asignaciones/${id}/`);
+export const getGastos = (params?: Record<string, string>) => api.get('/tesoreria/gastos/', { params });
+export const createGasto = (data: Record<string, unknown>) => api.post('/tesoreria/gastos/', data);
+export const updateGasto = (id: number, data: Record<string, unknown>) => api.put(`/tesoreria/gastos/${id}/`, data);
+export const deleteGasto = (id: number) => api.delete(`/tesoreria/gastos/${id}/`);
+export const getContabilidad = (params?: { desde?: string; hasta?: string }) => api.get('/tesoreria/contabilidad/', { params });
+export const updateConfiguracionContable = (data: { tasa_impuesto_renta?: number; tasa_ppm?: number }) =>
+  api.put('/tesoreria/configuracion/', data);
 
 export default api;

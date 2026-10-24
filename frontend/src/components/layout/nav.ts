@@ -12,6 +12,7 @@ import {
   Wallet,
   KeyRound,
   Plus,
+  Landmark,
 } from 'lucide-react';
 
 export type NavItem = { title: string; url: string; icon: React.ComponentType<{ className?: string }> };
@@ -45,7 +46,13 @@ export const NAV_GROUPS: NavGroup[] = [
       { title: 'Productos', url: '/productos', icon: Package },
     ],
   },
-  { label: 'Análisis', items: [{ title: 'Reportes', url: '/reportes', icon: TrendingUp }] },
+  {
+    label: 'Finanzas',
+    items: [
+      { title: 'Tesorería', url: '/tesoreria', icon: Landmark },
+      { title: 'Reportes', url: '/reportes', icon: TrendingUp },
+    ],
+  },
 ];
 
 const EXTRA: Record<string, { group: string; title: string; icon: NavItem['icon'] }> = {

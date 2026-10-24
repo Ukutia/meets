@@ -2,14 +2,15 @@ import { useMemo, useState } from 'react';
 import React from 'react';
 import {
   Plus, Search, MessageCircle, CheckCircle2,
-  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle, CheckSquare, X
 } from 'lucide-react';
+import { DecimalInput } from '@/components/shared/DecimalInput';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
-import { enRango, formatCLP } from '@/lib/utils';
+import { decimalATexto, enRango, formatCLP, parseDecimal } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +54,12 @@ export default function Pedidos() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterVendedor, setFilterVendedor] = useState('Todos');
   const [selectedIds, setSelectedIds] = useState<number[]>([]); // Para la selección múltiple
+  // En teléfono no hay espacio para la columna de checkboxes: se activa un modo
+  // selección (botón o mantener presionado un pedido) donde tocar selecciona.
+  const [modoSeleccion, setModoSeleccion] = useState(false);
+  const [marcandoPagados, setMarcandoPagados] = useState(false);
+  // Texto de los inputs del diálogo de edición (con coma), por id de línea.
+  const [textosEdicion, setTextosEdicion] = useState<Record<number, { kilos: string; unidades: string }>>({});
   const [nuevoProductoId, setNuevoProductoId] = useState('');
   const [nuevoProductoKilos, setNuevoProductoKilos] = useState('');
   const [nuevoProductoUnidades, setNuevoProductoUnidades] = useState('');
@@ -118,7 +125,7 @@ export default function Pedidos() {
       }),
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
-      setSelectedPedido(response.data);
+      abrirEdicion(response.data);
       setNuevoProductoId('');
       setNuevoProductoKilos('');
       setNuevoProductoUnidades('');
@@ -235,6 +242,60 @@ export default function Pedidos() {
   const toggleSelect = (id: number) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
+
+  const salirSeleccion = () => {
+    setModoSeleccion(false);
+    setSelectedIds([]);
+  };
+
+  // Mantener presionado un pedido en el teléfono entra al modo selección.
+  const pulsacion = React.useRef<number | null>(null);
+  const inicioPulsacion = (id: number) => {
+    pulsacion.current = window.setTimeout(() => {
+      pulsacion.current = null;
+      setModoSeleccion(true);
+      setSelectedIds(prev => prev.includes(id) ? prev : [...prev, id]);
+      navigator.vibrate?.(30);
+    }, 500);
+  };
+  const finPulsacion = () => {
+    if (pulsacion.current) window.clearTimeout(pulsacion.current);
+  };
+
+  const seleccionadosPorCobrar = useMemo(
+    () => (data ?? []).filter(p => selectedIds.includes(p.id) && (p.estado === 'Preparado' || p.estado === 'Reservado')),
+    [data, selectedIds]
+  );
+
+  const marcarSeleccionadosPagados = () => {
+    const pedidos = seleccionadosPorCobrar;
+    confirm({
+      title: `¿Marcar ${pedidos.length} pedido(s) como pagados?`,
+      description: `Suma ${formatCLP(pedidos.reduce((s, p) => s + Number(p.total), 0))}`,
+      confirmLabel: 'Marcar pagados',
+      onConfirm: async () => {
+        setMarcandoPagados(true);
+        try {
+          for (const p of pedidos) await updatePedido(p.id, { estado: 'Pagado' });
+          toast({ title: 'Listo', description: `${pedidos.length} pedido(s) marcados como pagados.` });
+          salirSeleccion();
+        } catch (e: any) {
+          toast({ title: 'Error', description: e?.response?.data?.error ?? 'No se pudieron marcar todos', variant: 'destructive' });
+        } finally {
+          setMarcandoPagados(false);
+          queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+        }
+      },
+    });
+  };
+
+  const abrirEdicion = (pedido: Pedido) => {
+    setTextosEdicion(Object.fromEntries(pedido.detalles.map(d => [d.id, {
+      kilos: decimalATexto(d.cantidad_kilos),
+      unidades: d.cantidad_unidades ? String(Math.trunc(Number(d.cantidad_unidades))) : '',
+    }])));
+    setSelectedPedido(pedido);
+  };
   const productosDisponiblesParaAgregar = useMemo(() => {
     const productos = productosData ?? [];
     const idsEnPedido = new Set(
@@ -253,7 +314,7 @@ export default function Pedidos() {
   const handleEditLocal = (index: number, field: string, value: any) => {
     if (!selectedPedido) return;
     if (selectedPedido.detalles[index]?.estado === 'Cancelado') return;
-    const valAsNum = typeof value === 'string' ? (value === '' ? 0 : parseFloat(value)) : value;
+    const valAsNum = typeof value === 'string' ? parseDecimal(value) : value;
     const nuevosDetalles = selectedPedido.detalles.map((det, i) => {
       if (i !== index) return det;
       if (field === 'cantidad_kilos') {
@@ -289,6 +350,15 @@ export default function Pedidos() {
         </div>
         <div className="flex items-center gap-2">
           <RangoFechaSelect value={rango} onChange={setRango} />
+          <Button
+            variant={modoSeleccion ? 'secondary' : 'outline'}
+            size="icon"
+            className="md:hidden"
+            aria-label={modoSeleccion ? 'Salir del modo selección' : 'Seleccionar varios'}
+            onClick={() => modoSeleccion ? salirSeleccion() : setModoSeleccion(true)}
+          >
+            {modoSeleccion ? <X className="h-4 w-4" /> : <CheckSquare className="h-4 w-4" />}
+          </Button>
           <Button onClick={() => navigate('/pedidos/nuevo')}>
             <Plus className="mr-1 h-4 w-4" /> Nuevo
           </Button>
@@ -363,7 +433,15 @@ export default function Pedidos() {
         <Table>
           <TableHeader className="bg-slate-50">
             <TableRow>
-              <TableHead className="w-8 px-2"></TableHead>
+              <TableHead className={`w-8 px-2 ${modoSeleccion ? '' : 'hidden md:table-cell'}`}>
+                <input
+                  type="checkbox"
+                  aria-label="Seleccionar todos"
+                  className="w-4 h-4 rounded border-slate-300"
+                  checked={filteredPedidos.length > 0 && filteredPedidos.every(p => selectedIds.includes(p.id))}
+                  onChange={(e) => setSelectedIds(e.target.checked ? filteredPedidos.map(p => p.id) : [])}
+                />
+              </TableHead>
               <TableHead className="w-8 px-2"></TableHead>
               <TableHead className="w-12 px-1">N°</TableHead>
               <TableHead className="px-2">Cliente</TableHead>
@@ -384,11 +462,18 @@ export default function Pedidos() {
             )}
             {filteredPedidos.map((pedido) => (
               <React.Fragment key={pedido.id}>
-                <TableRow className="border-b last:border-0" onClick={() => setExpandedId(expandedId === pedido.id ? null : pedido.id)}>
-                  <TableCell className="px-2" onClick={(e) => e.stopPropagation()}>
+                <TableRow
+                  className={`border-b last:border-0 select-none ${selectedIds.includes(pedido.id) ? 'bg-primary/5' : ''}`}
+                  onClick={() => modoSeleccion ? toggleSelect(pedido.id) : setExpandedId(expandedId === pedido.id ? null : pedido.id)}
+                  onTouchStart={() => !modoSeleccion && inicioPulsacion(pedido.id)}
+                  onTouchEnd={finPulsacion}
+                  onTouchMove={finPulsacion}
+                >
+                  <TableCell className={`px-2 ${modoSeleccion ? '' : 'hidden md:table-cell'}`} onClick={(e) => e.stopPropagation()}>
               <input 
                 type="checkbox" 
-                className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                aria-label={`Seleccionar pedido ${pedido.id}`}
+                className="w-5 h-5 md:w-4 md:h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                 checked={selectedIds.includes(pedido.id)}
                 onChange={() => toggleSelect(pedido.id)}
               />
@@ -418,7 +503,7 @@ export default function Pedidos() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-40">
-                        <DropdownMenuItem onClick={() => setSelectedPedido(pedido)}>
+                        <DropdownMenuItem onClick={() => abrirEdicion(pedido)}>
                           <Edit2 className="mr-2 h-4 w-4" /> Editar
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setSelectedPedidoGanancia(pedido)}>
@@ -492,23 +577,21 @@ export default function Pedidos() {
           </TableBody>
         </Table>
         {/* BARRA DE SUMA FLOTANTE (Desktop Only) */}
-  {selectedIds.length > 0 && (
-    <div className="flex fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white px-4 md:px-6 py-3 rounded-full shadow-2xl items-center gap-4 md:gap-6 animate-in slide-in-from-bottom-4 max-w-[calc(100vw-2rem)]">
-      <div className="flex flex-col border-r border-slate-700 pr-6">
-        <span className="text-[10px] text-slate-400 font-bold uppercase">Seleccionados</span>
-        <span className="font-mono font-bold">{selectedIds.length} pedidos</span>
+  {(selectedIds.length > 0 || modoSeleccion) && (
+    <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl animate-in slide-in-from-bottom-4">
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-bold uppercase text-slate-400">
+          {selectedIds.length === 0 ? 'Toca los pedidos' : `${selectedIds.length} seleccionado${selectedIds.length === 1 ? '' : 's'}`}
+        </div>
+        <div className="text-lg font-black tabular-nums text-blue-300">{formatCurrency(sumaSeleccionados)}</div>
       </div>
-      <div className="flex flex-col">
-        <span className="text-[10px] text-slate-400 font-bold uppercase">Suma Total</span>
-        <span className="text-xl font-black text-blue-400">{formatCurrency(sumaSeleccionados)}</span>
-      </div>
-      <Button 
-        variant="ghost" 
-        size="sm" 
-        className="text-slate-400 hover:text-white"
-        onClick={() => setSelectedIds([])}
-      >
-        Limpiar
+      {seleccionadosPorCobrar.length > 0 && (
+        <Button size="sm" className="bg-emerald-500 hover:bg-emerald-600" disabled={marcandoPagados} onClick={marcarSeleccionadosPagados}>
+          <CheckCircle2 className="mr-1 h-4 w-4" /> Pagados
+        </Button>
+      )}
+      <Button variant="ghost" size="sm" className="text-slate-300 hover:text-white hover:bg-slate-800" onClick={salirSeleccion}>
+        Listo
       </Button>
     </div>
   )}
@@ -542,7 +625,10 @@ export default function Pedidos() {
                       {cancelado ? (
                         <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px]">{formatCurrency(det.precio_venta)}/kg</Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {formatCurrency(det.precio_venta)}/kg
+                          {det.modo_precio === 'costo' ? ' · a costo' : det.modo_precio === 'personalizado' ? ' · precio especial' : Number(det.descuento_por_kilo) > 0 ? ` · −${formatCurrency(det.descuento_por_kilo)}` : ''}
+                        </Badge>
                       )}
                     </div>
                   </div>
@@ -550,23 +636,28 @@ export default function Pedidos() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
-                      <Input
-                        type="number"
+                      <DecimalInput
+                        decimales={false}
                         disabled={cancelado}
                         className="h-12 text-center text-lg font-bold bg-slate-50"
-                        value={det.cantidad_unidades || ''}
-                        onChange={(e) => handleEditLocal(idx, 'cantidad_unidades', e.target.value)}
+                        value={textosEdicion[det.id]?.unidades ?? ''}
+                        onValueChange={(t) => {
+                          setTextosEdicion(prev => ({ ...prev, [det.id]: { ...prev[det.id], unidades: t } }));
+                          handleEditLocal(idx, 'cantidad_unidades', t);
+                        }}
                       />
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
-                      <Input
-                        type="number"
-                        step="0.01"
+                      <DecimalInput
                         disabled={cancelado}
+                        placeholder="0,000"
                         className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
-                        value={det.cantidad_kilos || ''}
-                        onChange={(e) => handleEditLocal(idx, 'cantidad_kilos', e.target.value)}
+                        value={textosEdicion[det.id]?.kilos ?? ''}
+                        onValueChange={(t) => {
+                          setTextosEdicion(prev => ({ ...prev, [det.id]: { ...prev[det.id], kilos: t } }));
+                          handleEditLocal(idx, 'cantidad_kilos', t);
+                        }}
                       />
                     </div>
                   </div>
@@ -617,21 +708,20 @@ export default function Pedidos() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Unidades</label>
-                    <Input
-                      type="number"
+                    <DecimalInput
+                      decimales={false}
                       className="h-12 text-center text-lg font-bold bg-white"
                       value={nuevoProductoUnidades}
-                      onChange={(e) => setNuevoProductoUnidades(e.target.value)}
+                      onValueChange={setNuevoProductoUnidades}
                     />
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
-                    <Input
-                      type="number"
-                      step="0.01"
+                    <DecimalInput
+                      placeholder="0,000"
                       className="h-12 text-center text-lg font-bold bg-white"
                       value={nuevoProductoKilos}
-                      onChange={(e) => setNuevoProductoKilos(e.target.value)}
+                      onValueChange={setNuevoProductoKilos}
                     />
                   </div>
                 </div>
@@ -643,8 +733,8 @@ export default function Pedidos() {
                     agregarProductoMutation.mutate({
                       pedidoId: selectedPedido.id,
                       producto_id: parseInt(nuevoProductoId, 10),
-                      cantidad_kilos: nuevoProductoKilos ? parseFloat(nuevoProductoKilos) : 0,
-                      cantidad_unidades: nuevoProductoUnidades ? parseInt(nuevoProductoUnidades, 10) : 0,
+                      cantidad_kilos: parseDecimal(nuevoProductoKilos),
+                      cantidad_unidades: Math.trunc(parseDecimal(nuevoProductoUnidades)),
                     });
                   }}
                 >

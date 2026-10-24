@@ -37,6 +37,38 @@ export function formatCLP(val: number | string | null | undefined): string {
   return `$${Math.round(Number(val ?? 0) || 0).toLocaleString('es-CL')}`;
 }
 
+// --- Números con coma decimal ---
+// En toda la app se escribe con coma ("2,5 kg"). Si alguien escribe un punto se
+// toma como coma, así que NO hay separador de miles al tipear.
+export function normalizarDecimal(texto: string, decimales = true): string {
+  let s = texto.replace(/\./g, ',').replace(decimales ? /[^\d,]/g : /[^\d]/g, '');
+  const i = s.indexOf(',');
+  if (i !== -1) s = s.slice(0, i + 1) + s.slice(i + 1).replace(/,/g, '');
+  return s;
+}
+
+export function parseDecimal(texto: string | number | null | undefined): number {
+  if (typeof texto === 'number') return Number.isFinite(texto) ? texto : 0;
+  const n = parseFloat(String(texto ?? '').replace(/\./g, ',').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 2.5 -> "2,5" para mostrar un número guardado dentro de un input de texto.
+export function decimalATexto(n: number | string | null | undefined): string {
+  const v = Number(n ?? 0);
+  if (!v) return '';
+  return String(Math.round(v * 1000) / 1000).replace('.', ',');
+}
+
+// Archivos subidos (fotos de facturas, del flyer...). El backend responde
+// "/media/x.jpg" y los sirve en su mismo dominio, sin el /api de la API.
+export function mediaUrl(path: string | null | undefined): string {
+  if (!path) return '';
+  if (/^(https?:|data:|blob:)/.test(path)) return path;
+  const base = (import.meta.env.VITE_API_URL || 'http://localhost:8000/api').replace(/\/+$/, '').replace(/\/api$/, '');
+  return path.startsWith('/media/') ? `${base}${path}` : `${base}/media/${path.replace(/^\/+/, '')}`;
+}
+
 export function formatKg(val: number | string | null | undefined, decimales = 2): string {
   return `${(Number(val ?? 0) || 0).toLocaleString('es-CL', { maximumFractionDigits: decimales })} kg`;
 }

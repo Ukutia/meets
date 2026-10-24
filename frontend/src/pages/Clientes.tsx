@@ -178,7 +178,15 @@ export default function Clientes() {
               return (
                 <TableRow key={cliente.id}>
                   <TableCell>
-                    <div className="font-medium">{cliente.nombre}</div>
+                    <div className="font-medium">
+                      {cliente.nombre}
+                      {cliente.tipo_cliente === 'mayorista' && (
+                        <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary">Mayorista</span>
+                      )}
+                    </div>
+                    {cliente.tipo_cliente === 'mayorista' && cliente.rut && (
+                      <div className="text-xs text-muted-foreground">{cliente.razon_social} · {cliente.rut}</div>
+                    )}
                     {cliente.direccion && <div className="text-xs text-muted-foreground truncate max-w-[260px]">{cliente.direccion}</div>}
                   </TableCell>
                   <TableCell className="hidden md:table-cell whitespace-nowrap">

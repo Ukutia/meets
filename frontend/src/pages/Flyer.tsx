@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getFontEmbedCSS, toPng } from 'html-to-image';
+import { getFontEmbedCSS, toJpeg, toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
-import { ArrowDown, ArrowUp, Download, FileDown, Loader2, RotateCcw, Save, Share2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, Copy, Download, FileDown, ImagePlus, Loader2, MessageCircle, RotateCcw, Share2, Undo2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
-import { getPerfil, getStock, updateProducto, updateTelefonoPerfil } from '@/services/api';
+import { getPerfil, getStock, updatePerfil, updateProducto, type Perfil } from '@/services/api';
 import type { StockItem } from '@/types';
-import { FlyerCanvas, FLYER_HEIGHT, FLYER_WIDTH, type FlyerFila } from '@/components/flyer/FlyerCanvas';
+import { mediaUrl } from '@/lib/utils';
+import { FlyerCanvas, FLYER_HEIGHT, FLYER_WIDTH, type FlyerFila, type FotosFlyer } from '@/components/flyer/FlyerCanvas';
 
 // Ajustes de cada usuario para su flyer (quedan en su navegador). El "c/u" y el peso
-// fijo, en cambio, se guardan en el producto y valen para todos.
+// fijo, en cambio, se guardan en el producto y valen para todos. El teléfono, las
+// fotos y el mensaje de WhatsApp se guardan en el perfil de cada usuario.
 interface AjusteFila {
   incluir?: boolean;
   nombre?: string;
@@ -44,6 +47,15 @@ const CONFIG_INICIAL: ConfigFlyer = {
   orden: [],
   filas: {},
 };
+
+const MENSAJE_INICIAL =
+  '¡Hola! 👋 Te comparto la lista de precios de esta semana 🥩\nCarnes al vacío, frescas y a domicilio. Pide la tuya al {telefono} 📲';
+
+const FOTOS: { campo: keyof FotosFlyer; label: string }[] = [
+  { campo: 'foto1', label: 'Foto principal' },
+  { campo: 'foto2', label: 'Foto secundaria' },
+  { campo: 'logo', label: 'Logo' },
+];
 
 const leerConfig = (): ConfigFlyer => {
   try {
@@ -86,6 +98,21 @@ const imagenLista = (img: HTMLImageElement) =>
 
 const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible' && Number(item.disponibles) > 0;
 
+// JPEG -> PNG (el portapapeles solo acepta PNG).
+const aPng = (dataUrl: string) =>
+  new Promise<Blob>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d')!.drawImage(img, 0, 0);
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo convertir'))), 'image/png');
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+
 export default function Flyer() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -94,9 +121,16 @@ export default function Flyer() {
   const previewRef = useRef<HTMLDivElement>(null);
   const [config, setConfig] = useState<ConfigFlyer>(leerConfig);
   const [telefono, setTelefono] = useState('');
-  const [guardandoTel, setGuardandoTel] = useState(false);
+  const [mensaje, setMensaje] = useState('');
+  const [guardado, setGuardado] = useState<'telefono' | 'mensaje' | null>(null);
+  const [subiendo, setSubiendo] = useState<string | null>(null);
   const [exportando, setExportando] = useState(false);
   const [escala, setEscala] = useState(0.6);
+  // Imagen ya generada para compartir: generarla al tocar "Compartir" tarda y el
+  // navegador deja de considerarlo un toque del usuario, así que el share salía
+  // sin imagen. Se genera por adelantado cada vez que cambia el flyer.
+  const [lista, setLista] = useState<{ file: File; dataUrl: string } | null>(null);
+  const generacion = useRef(0);
 
   const { data: stock, isLoading, error } = useQuery({
     // Clave propia: el Dashboard guarda bajo ['stock'] la respuesta completa de axios, no la lista.
@@ -114,7 +148,9 @@ export default function Flyer() {
   });
 
   useEffect(() => {
-    if (perfil) setTelefono(perfil.telefono || '');
+    if (!perfil) return;
+    setTelefono(perfil.telefono || '');
+    setMensaje(perfil.mensaje_whatsapp || MENSAJE_INICIAL);
   }, [perfil]);
 
   useEffect(() => {
@@ -133,6 +169,11 @@ export default function Flyer() {
     obs.observe(el);
     return () => obs.disconnect();
   }, [isLoading]);
+
+  const fotos: FotosFlyer = useMemo(
+    () => ({ foto1: mediaUrl(perfil?.foto1), foto2: mediaUrl(perfil?.foto2), logo: mediaUrl(perfil?.logo) }),
+    [perfil?.foto1, perfil?.foto2, perfil?.logo]
+  );
 
   const productos = useMemo(() => {
     const lista = (stock ?? []).filter(
@@ -199,19 +240,35 @@ export default function Flyer() {
     setConfig((c) => ({ ...c, orden: [...ids, ...c.orden.filter((x) => !ids.includes(x))] }));
   };
 
-  const guardarTelefono = async () => {
-    setGuardandoTel(true);
+  // El teléfono y el mensaje se guardan solos al salir del campo, en el perfil de cada usuario.
+  const guardarPerfil = async (campo: 'telefono' | 'mensaje_whatsapp', valor: string) => {
+    if (!perfil || valor === (perfil[campo] || '')) return;
     try {
-      await updateTelefonoPerfil(telefono);
-      toast({ title: 'Teléfono guardado', description: 'Se usará por defecto en tus próximos flyers' });
+      const { data } = await updatePerfil({ [campo]: valor });
+      queryClient.setQueryData(['perfil'], data);
+      setGuardado(campo === 'telefono' ? 'telefono' : 'mensaje');
+      setTimeout(() => setGuardado(null), 2000);
     } catch (e: any) {
-      toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo guardar el teléfono', variant: 'destructive' });
-    } finally {
-      setGuardandoTel(false);
+      toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo guardar', variant: 'destructive' });
     }
   };
 
-  const generarPng = async () => {
+  const cambiarFoto = async (campo: keyof FotosFlyer, archivo: File | null) => {
+    const fd = new FormData();
+    if (archivo) fd.append(campo, archivo);
+    else fd.append(`quitar_${campo}`, 'true');
+    setSubiendo(campo);
+    try {
+      const { data } = await updatePerfil(fd);
+      queryClient.setQueryData<Perfil>(['perfil'], data);
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo cambiar la foto', variant: 'destructive' });
+    } finally {
+      setSubiendo(null);
+    }
+  };
+
+  const generarImagen = async (formato: 'png' | 'jpeg') => {
     if (!flyerRef.current) throw new Error('Flyer no disponible');
     const nodo = flyerRef.current;
     await document.fonts.ready;
@@ -226,52 +283,126 @@ export default function Flyer() {
     // una pasada previa barata las deja listas para la definitiva.
     const fontEmbedCSS = await getFontEmbedCSS(nodo);
     await toPng(nodo, { pixelRatio: 0.2, fontEmbedCSS });
-    return toPng(nodo, { pixelRatio: 3, fontEmbedCSS });
+    return formato === 'png'
+      ? toPng(nodo, { pixelRatio: 3, fontEmbedCSS })
+      : toJpeg(nodo, { pixelRatio: 2.5, quality: 0.92, fontEmbedCSS, backgroundColor: '#f4ebde' });
   };
 
   const nombreArchivo = `flyer-${new Date().toISOString().slice(0, 10)}`;
 
-  const exportar = async (tipo: 'png' | 'pdf' | 'compartir') => {
+  const firmaFlyer = JSON.stringify([filas, config.titulo1, config.titulo2, config.subtitulo, telefono, fotos]);
+  useEffect(() => {
+    setLista(null);
+    if (filas.length === 0) return;
+    const n = ++generacion.current;
+    const t = setTimeout(async () => {
+      try {
+        const dataUrl = await generarImagen('jpeg');
+        const blob = await (await fetch(dataUrl)).blob();
+        if (n === generacion.current) {
+          setLista({ dataUrl, file: new File([blob], `${nombreArchivo}.jpg`, { type: 'image/jpeg' }) });
+        }
+      } catch {
+        /* se genera al momento de compartir */
+      }
+    }, 1200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firmaFlyer]);
+
+  const mensajeFinal = mensaje.replace(/\{telefono\}/g, telefono.trim() || 'este número').trim();
+
+  const obtenerLista = async () => {
+    if (lista) return lista;
+    const dataUrl = await generarImagen('jpeg');
+    const blob = await (await fetch(dataUrl)).blob();
+    return { dataUrl, file: new File([blob], `${nombreArchivo}.jpg`, { type: 'image/jpeg' }) };
+  };
+
+  const manejarError = (e: any) => {
+    if (e?.name === 'AbortError') return;
+    toast({
+      title: 'Error',
+      description: e?.message === 'Las fotos aún no terminan de cargar' ? 'Las fotos aún se están cargando, intenta en unos segundos.' : 'No se pudo generar el flyer',
+      variant: 'destructive',
+    });
+  };
+
+  const descargar = (dataUrl: string, ext: string) => {
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${nombreArchivo}.${ext}`;
+    a.click();
+  };
+
+  const exportar = async (tipo: 'png' | 'pdf') => {
     setExportando(true);
     try {
-      const dataUrl = await generarPng();
-      const descargar = () => {
-        const a = document.createElement('a');
-        a.href = dataUrl;
-        a.download = `${nombreArchivo}.png`;
-        a.click();
-      };
+      const dataUrl = await generarImagen('png');
       if (tipo === 'png') {
-        descargar();
-      } else if (tipo === 'pdf') {
+        descargar(dataUrl, 'png');
+      } else {
         const pdf = new jsPDF({ unit: 'px', format: [FLYER_WIDTH, FLYER_HEIGHT], hotfixes: ['px_scaling'] });
         pdf.addImage(dataUrl, 'PNG', 0, 0, FLYER_WIDTH, FLYER_HEIGHT);
         pdf.save(`${nombreArchivo}.pdf`);
-      } else {
-        const blob = await (await fetch(dataUrl)).blob();
-        const file = new File([blob], `${nombreArchivo}.png`, { type: 'image/png' });
-        if (navigator.canShare?.({ files: [file] })) {
-          try {
-            await navigator.share({ files: [file] });
-          } catch (e: any) {
-            // Si generar tardó, iOS ya no lo considera un toque del usuario: se descarga.
-            if (e?.name !== 'NotAllowedError') throw e;
-            descargar();
-          }
-        } else {
-          descargar();
-        }
       }
     } catch (e: any) {
-      if (e?.name !== 'AbortError') {
-        toast({
-          title: 'Error',
-          description: e?.message === 'Las fotos aún no terminan de cargar' ? 'Las fotos aún se están cargando, intenta en unos segundos.' : 'No se pudo generar el flyer',
-          variant: 'destructive',
-        });
-      }
+      manejarError(e);
     } finally {
       setExportando(false);
+    }
+  };
+
+  const copiarImagen = async (datos?: { dataUrl: string }) => {
+    const fuente = datos ?? (await obtenerLista());
+    // El blob va como promesa: Safari exige crear el ClipboardItem dentro del toque.
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': aPng(fuente.dataUrl) })]);
+  };
+
+  // Compartir con la hoja del sistema (WhatsApp, Instagram...). Si la imagen ya
+  // está generada se comparte de inmediato, dentro del mismo toque.
+  const compartir = async (conMensaje: boolean) => {
+    const datos = lista;
+    setExportando(true);
+    try {
+      const d = datos ?? (await obtenerLista());
+      const payload: ShareData = conMensaje ? { files: [d.file], text: mensajeFinal } : { files: [d.file] };
+      if (navigator.canShare?.(payload)) {
+        try {
+          await navigator.share(payload);
+          return;
+        } catch (e: any) {
+          if (e?.name === 'AbortError') return;
+          if (e?.name !== 'NotAllowedError') throw e;
+        }
+      }
+      // Sin hoja para compartir archivos (computador): se copia la imagen y se abre
+      // WhatsApp con el mensaje, para pegarla en el chat.
+      if (conMensaje) {
+        try {
+          await copiarImagen(d);
+          toast({ title: 'Imagen copiada', description: 'Pégala en el chat de WhatsApp junto al mensaje.' });
+        } catch {
+          descargar(d.dataUrl, 'jpg');
+          toast({ title: 'Imagen descargada', description: 'Adjúntala en el chat de WhatsApp.' });
+        }
+        window.open(`https://wa.me/?text=${encodeURIComponent(mensajeFinal)}`, '_blank');
+      } else {
+        descargar(d.dataUrl, 'jpg');
+      }
+    } catch (e: any) {
+      manejarError(e);
+    } finally {
+      setExportando(false);
+    }
+  };
+
+  const copiar = async () => {
+    try {
+      await copiarImagen();
+      toast({ title: 'Imagen copiada' });
+    } catch (e: any) {
+      manejarError(e);
     }
   };
 
@@ -281,34 +412,43 @@ export default function Flyer() {
   if (error) return <ErrorMessage message="No se pudieron cargar los productos" />;
 
   return (
-    <div className="space-y-6 pb-24 sm:pb-0">
+    <div className="space-y-6 pb-28 sm:pb-0">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Flyer de Precios</h1>
           <p className="text-muted-foreground">Se arma con los productos y precios actuales de la plataforma.</p>
         </div>
         <div className="hidden flex-wrap gap-2 sm:flex">
-          <Button onClick={() => exportar('png')} disabled={sinFilas}>
-            {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-            Descargar PNG
+          <Button className="bg-[#25D366] text-white hover:bg-[#1ebe5b]" onClick={() => compartir(true)} disabled={sinFilas}>
+            {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MessageCircle className="mr-2 h-4 w-4" />}
+            Enviar por WhatsApp
+          </Button>
+          <Button variant="outline" onClick={() => exportar('png')} disabled={sinFilas}>
+            <Download className="mr-2 h-4 w-4" /> PNG
           </Button>
           <Button variant="outline" onClick={() => exportar('pdf')} disabled={sinFilas}>
             <FileDown className="mr-2 h-4 w-4" /> PDF
           </Button>
-          <Button variant="outline" onClick={() => exportar('compartir')} disabled={sinFilas}>
+          <Button variant="outline" onClick={copiar} disabled={sinFilas}>
+            <Copy className="mr-2 h-4 w-4" /> Copiar
+          </Button>
+          <Button variant="outline" onClick={() => compartir(false)} disabled={sinFilas}>
             <Share2 className="mr-2 h-4 w-4" /> Compartir
           </Button>
         </div>
       </div>
 
-      {/* En teléfono: compartir (WhatsApp, etc.) es la acción principal */}
-      <div className="fixed inset-x-0 bottom-0 z-40 flex gap-2 border-t bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
-        <Button className="flex-1" onClick={() => exportar('compartir')} disabled={sinFilas}>
-          {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Share2 className="mr-2 h-4 w-4" />}
-          Compartir
+      {/* En teléfono: WhatsApp es la acción principal */}
+      <div className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-[1fr_auto_auto] gap-2 border-t bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
+        <Button className="bg-[#25D366] text-white hover:bg-[#1ebe5b]" onClick={() => compartir(true)} disabled={sinFilas}>
+          {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MessageCircle className="mr-2 h-4 w-4" />}
+          WhatsApp
         </Button>
-        <Button variant="outline" className="flex-1" onClick={() => exportar('png')} disabled={sinFilas}>
-          <Download className="mr-2 h-4 w-4" /> Descargar
+        <Button variant="outline" size="icon" aria-label="Compartir imagen" onClick={() => compartir(false)} disabled={sinFilas}>
+          <Share2 className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon" aria-label="Descargar" onClick={() => exportar('png')} disabled={sinFilas}>
+          <Download className="h-4 w-4" />
         </Button>
       </div>
 
@@ -345,17 +485,86 @@ export default function Flyer() {
                 </Select>
               </div>
               <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="tel">Teléfono</Label>
-                <div className="flex gap-2">
-                  <Input id="tel" placeholder="+56 9 1234 5678" value={telefono} onChange={(e) => setTelefono(e.target.value)} />
-                  {perfil?.tiene_vendedor && (
-                    <Button variant="outline" onClick={guardarTelefono} disabled={guardandoTel || telefono === (perfil.telefono || '')}>
-                      {guardandoTel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                      <span className="ml-2 hidden sm:inline">Guardar como mío</span>
-                    </Button>
-                  )}
-                </div>
+                <Label htmlFor="tel" className="flex items-center justify-between">
+                  Mi teléfono
+                  {guardado === 'telefono' && <span className="flex items-center gap-1 text-xs font-normal text-green-600"><Check className="h-3 w-3" /> Guardado</span>}
+                </Label>
+                <Input
+                  id="tel"
+                  inputMode="tel"
+                  placeholder="+56 9 1234 5678"
+                  value={telefono}
+                  onChange={(e) => setTelefono(e.target.value)}
+                  onBlur={() => guardarPerfil('telefono', telefono.trim())}
+                />
+                <p className="text-xs text-muted-foreground">Es solo tuyo: cada usuario tiene su teléfono en su flyer.</p>
               </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="msg" className="flex items-center justify-between">
+                  Mensaje para WhatsApp
+                  {guardado === 'mensaje' && <span className="flex items-center gap-1 text-xs font-normal text-green-600"><Check className="h-3 w-3" /> Guardado</span>}
+                </Label>
+                <Textarea
+                  id="msg"
+                  rows={3}
+                  value={mensaje}
+                  onChange={(e) => setMensaje(e.target.value)}
+                  onBlur={() => guardarPerfil('mensaje_whatsapp', mensaje)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Se envía junto al flyer. <code className="rounded bg-muted px-1">{'{telefono}'}</code> se reemplaza por tu teléfono.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Mis fotos</CardTitle>
+              <CardDescription>Reemplaza las fotos del flyer por las tuyas. Solo cambian tu flyer.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-3 gap-3">
+              {FOTOS.map(({ campo, label }) => {
+                const propia = perfil?.[campo];
+                return (
+                  <div key={campo} className="space-y-1.5">
+                    <div className="relative aspect-[4/3] overflow-hidden rounded-lg border bg-muted">
+                      <img
+                        src={propia ? mediaUrl(propia) : `/flyer/${campo === 'logo' ? 'logo.png' : `${campo}.jpg`}`}
+                        alt={label}
+                        className={`h-full w-full ${campo === 'logo' ? 'object-contain p-2' : 'object-cover'}`}
+                      />
+                      {subiendo === campo && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        </div>
+                      )}
+                    </div>
+                    <p className="truncate text-xs font-medium">{label}</p>
+                    <div className="flex gap-1">
+                      <label className="inline-flex h-8 flex-1 cursor-pointer items-center justify-center gap-1 rounded-md border text-xs hover:bg-muted">
+                        <ImagePlus className="h-3.5 w-3.5" /> Cambiar
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="sr-only"
+                          disabled={!!subiendo}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = '';
+                            if (f) cambiarFoto(campo, f);
+                          }}
+                        />
+                      </label>
+                      {propia && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Volver a la ${label.toLowerCase()} original`} onClick={() => cambiarFoto(campo, null)}>
+                          <Undo2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </CardContent>
           </Card>
 
@@ -468,10 +677,14 @@ export default function Flyer() {
                   subtitulo={config.subtitulo}
                   telefono={telefono}
                   filas={filas}
+                  fotos={fotos}
                 />
               </div>
             </div>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {lista ? 'Listo para compartir.' : filas.length ? 'Preparando la imagen…' : ''}
+          </p>
         </div>
       </div>
     </div>

@@ -12,7 +12,8 @@ export default defineConfig(({ mode }) => ({
     // --- ESTA ES LA PARTE QUE SOLUCIONA EL ERROR ---
     allowedHosts: [
       "meets-production-398c.up.railway.app", // Tu host específico
-      ".railway.app"                         // Permite cualquier subdominio de Railway
+      ".railway.app",                        // Permite cualquier subdominio de Railway
+      ".alcorte.cl",                         // Dominio propio (alcorte.cl y www)
     ],
     // ----------------------------------------------
     watch: {

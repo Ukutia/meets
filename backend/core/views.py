@@ -1,13 +1,14 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto
-from .serializers import MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito
+from .serializers import NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
+from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
 from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import IsAuthenticated
@@ -50,7 +51,8 @@ class CrearProducto(APIView):
 class PedidoListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        pedidos = Pedido.objects.all().order_by('-fecha')
+        pedidos = Pedido.objects.select_related('cliente__vendedor', 'vendedor').prefetch_related(
+            'detalles__producto', 'asignaciones_banco').order_by('-fecha')
         if request.query_params.get('incluir_anulados') != '1':
             pedidos = pedidos.exclude(estado="Anulado")
         serializer = PedidoSerializer(pedidos, many=True)
@@ -59,12 +61,104 @@ class PedidoListView(APIView):
 def parse_descuento_por_kilo(valor):
     """Descuento por kilo de UNA linea: vacio -> 0; invalido o negativo -> ValidationError."""
     try:
-        descuento = Decimal(str(valor or 0))
+        descuento = Decimal(str(valor or 0).replace(',', '.'))
     except (InvalidOperation, ValueError):
         raise ValidationError("El descuento por kilo no es válido")
     if descuento < 0:
         raise ValidationError("El descuento por kilo no puede ser negativo")
     return descuento
+
+
+MODOS_PRECIO = ('lista', 'descuento', 'personalizado', 'costo')
+
+
+def parse_precio_linea(d):
+    """Lee cómo quiere fijarse el precio de UNA línea del pedido. El precio del
+    producto es el default; además se puede vender a costo, con un precio
+    escrito a mano o con un descuento en pesos POR KILO (no %, no al total)."""
+    descuento = parse_descuento_por_kilo(d.get('descuento_por_kilo'))
+    modo = d.get('modo_precio') or ('descuento' if descuento > 0 else 'lista')
+    if modo not in MODOS_PRECIO:
+        raise ValidationError("Modo de precio inválido")
+    personalizado = None
+    if modo == 'personalizado':
+        try:
+            personalizado = Decimal(str(d.get('precio_personalizado') or '').replace(',', '.'))
+        except (InvalidOperation, ValueError):
+            raise ValidationError("El precio personalizado no es válido")
+        if personalizado <= 0:
+            raise ValidationError("El precio personalizado debe ser mayor a 0")
+    return {'modo': modo, 'descuento': descuento, 'personalizado': personalizado}
+
+
+def precio_segun_modo(producto, cfg, costo_por_kilo, lista=None):
+    """Precio por kilo (CON IVA, como todo precio de venta) según el modo.
+
+    'costo' = costo neto ponderado de los lotes * 1,19: el precio de venta trae
+    IVA y el costo de compra no, así que vender exactamente al costo neto ya
+    sería perder el IVA. Se redondea al peso hacia arriba."""
+    if lista is None:
+        lista = producto.precio_por_kilo
+    modo = cfg['modo']
+    if modo == 'costo':
+        if costo_por_kilo is None:
+            raise ValidationError(f"'{producto.nombre}' no tiene costo de compra para venderlo a costo")
+        return (Decimal(costo_por_kilo) * IVA_RATE).quantize(Decimal('1'), rounding=ROUND_CEILING)
+    if modo == 'personalizado':
+        return cfg['personalizado']
+    if modo == 'descuento':
+        return max(lista - cfg['descuento'], Decimal('0.00'))
+    return lista
+
+
+def crear_linea_pedido(pedido, producto, unidades, kilos, cfg):
+    """Crea una línea de venta consumiendo stock FIFO. La usan CrearPedido y
+    AgregarProductoPedido para que ambas queden idénticas.
+
+    El precio se fija DESPUÉS de vincular los lotes, porque el modo 'costo'
+    necesita el costo/kg ponderado de esos lotes."""
+    stock_producto = EntradaProducto.objects.filter(producto=producto).aggregate(
+        total=Sum('cantidad_unidades'))['total'] or 0
+    if unidades > stock_producto:
+        raise ValidationError(f"No hay suficiente stock disponible de '{producto.nombre}'")
+
+    _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
+
+    detalle = DetallePedido.objects.create(
+        pedido=pedido,
+        producto=producto,
+        cantidad_kilos=kilos,
+        cantidad_unidades=unidades,
+        precio_venta=producto.precio_por_kilo,
+        precio_lista=producto.precio_por_kilo,
+        modo_precio=cfg['modo'],
+    )
+    detalle.facturas.set(facturas_usadas)
+    for factura_id, cantidad in facturas_cantidades.items():
+        FacturaDetallePedido.objects.create(
+            detallepedido=detalle, factura_id=factura_id, cantidad_unidades=cantidad
+        )
+
+    cpk = costo_por_kilo_ponderado(detalle)
+    if cpk is not None:
+        detalle.costo_por_kilo = cpk
+    detalle.precio_venta = precio_segun_modo(producto, cfg, cpk)
+    detalle.descuento_por_kilo = max(producto.precio_por_kilo - detalle.precio_venta, Decimal('0.00'))
+    detalle.total_venta = kilos * detalle.precio_venta
+
+    if kilos > 0:
+        # Pedido pesado: los kilos REALES salen ahora del ledger. Sin pesar
+        # (Reservado) no se descuenta nada todavía: lo hará la edición del
+        # pedido cuando se registre la báscula.
+        descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
+
+    detalle.save()
+    return detalle
+
+
+def recalcular_total_pedido(pedido):
+    pedido.total = pedido.detalles.exclude(estado="Cancelado").aggregate(
+        total=Sum('total_venta'))['total'] or Decimal('0.00')
 
 
 class CrearPedido(APIView):
@@ -106,107 +200,53 @@ class CrearPedido(APIView):
         if not isinstance(detalles, list) or len(detalles) == 0:
             return Response({'error': 'Los detalles deben ser una lista no vacía'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Descuento por kilo: opcional y POR PRODUCTO (cada detalle trae el
-        # suyo). Se resta del precio por kilo vigente de ese producto solo en
-        # este pedido; no es un descuento global.
+        # Precio POR PRODUCTO: lista (default), descuento $/kg, personalizado o a costo.
         try:
-            descuentos = [parse_descuento_por_kilo(d.get('descuento_por_kilo')) for d in detalles]
+            configs = [parse_precio_linea(d) for d in detalles]
         except ValidationError as e:
             return Response({'error': str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
+
+        tipo_recibo = data.get('tipo_recibo') or ('Factura' if cliente.tipo_cliente == 'mayorista' else 'Boleta')
+        if tipo_recibo not in ('Boleta', 'Factura'):
+            tipo_recibo = 'Boleta'
 
         try:
             with transaction.atomic():
                 pedido = Pedido.objects.create(
                     cliente_id=cliente_id,
                     observaciones=(data.get('observaciones') or '').strip(),
+                    tipo_recibo=tipo_recibo,
                 )
-                total_pedido = Decimal('0.00')
+                todo_pesado = True
 
-                for detalle, descuento_por_kilo in zip(detalles, descuentos):
+                for detalle, cfg in zip(detalles, configs):
                     producto_id = detalle.get('producto')
-                    kilos = Decimal(str(detalle.get('cantidad_kilos', 0)))
-                    unidades = int(detalle.get('cantidad_unidades', 0))
-
-
-                    producto = Producto.objects.get(id=producto_id)
-
-                    # Stock real disponible = unidades remanentes en EntradaProducto.
-                    # DetalleFactura es el historico completo de compras y NUNCA se
-                    # decrementa al vender, asi que usarlo aca dejaba pasar ventas de
-                    # productos ya agotados (la validacion siempre veia "stock" aunque
-                    # ya no quedara ninguna EntradaProducto para cubrir el costo).
-                    stockProducto = EntradaProducto.objects.filter(producto=producto).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
-
-                    if unidades > stockProducto:
-                        raise ValidationError("No hay suficiente stock disponible para el producto")
-
                     if not producto_id:
                         raise ValidationError("El ID del producto es obligatorio")
-
                     try:
                         producto = Producto.objects.get(id=producto_id)
                     except Producto.DoesNotExist:
-                        return Response({'error': f"Producto con ID {producto_id} no existe"}, status=status.HTTP_404_NOT_FOUND)
+                        raise ValidationError(f"Producto con ID {producto_id} no existe")
 
+                    kilos = Decimal(str(detalle.get('cantidad_kilos') or 0).replace(',', '.'))
+                    unidades = int(Decimal(str(detalle.get('cantidad_unidades') or 0).replace(',', '.')))
+                    if kilos <= 0:
+                        kilos = Decimal('0.00')
+                        todo_pesado = False
 
+                    crear_linea_pedido(pedido, producto, unidades, kilos, cfg)
 
-                    # Descontar el stock (FIFO) por las unidades vendidas. El costo
-                    # /kg de la linea se calcula despues como promedio ponderado de
-                    # los lotes vinculados (costo_por_kilo_ponderado), coherente con
-                    # el desglose por factura que se muestra en Movimientos.
-                    _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
-
-                    precio_venta = max(producto.precio_por_kilo - descuento_por_kilo, Decimal('0.00'))
-
-                    if kilos == 0:
-                        kilos = Decimal('0.00')  # Si no hay kilos, se deja en 0
-                        total_venta = Decimal('0.00')
-                        pedido.estado = "Reservado"
-                    else:
-                        total_venta = kilos * precio_venta
-                        total_pedido += total_venta
-                        pedido.estado = "Preparado"
-                        # El pedido viene pesado: los kilos REALES salen ahora
-                        # del ledger. Si viene sin pesar (Reservado) no se
-                        # descuenta nada todavia — lo hara ActualizarKilosPedido
-                        # cuando se registre la bascula.
-                        descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
-
-                    detalle_pedido = DetallePedido.objects.create(
-                        pedido=pedido,
-                        producto=producto,
-                        cantidad_kilos=kilos,
-                        cantidad_unidades=unidades,
-                        total_venta=total_venta,
-                        precio_venta=precio_venta,
-                        descuento_por_kilo=descuento_por_kilo
-                    )
-
-                    # Agregar las facturas usadas al detalle del pedido
-                    detalle_pedido.facturas.set(facturas_usadas)
-
-                    # Agregar la cantidad de unidades usadas de cada factura
-                    for factura_id, cantidad in facturas_cantidades.items():
-                        FacturaDetallePedido.objects.create(
-                            detallepedido=detalle_pedido,
-                            factura_id=factura_id,
-                            cantidad_unidades=cantidad
-                        )
-
-                    # Ya con las facturas vinculadas, fijar el costo/kg ponderado y
-                    # re-guardar (save() deriva total_costo = costo/kg * kilos).
-                    cpk = costo_por_kilo_ponderado(detalle_pedido)
-                    if cpk is not None:
-                        detalle_pedido.costo_por_kilo = cpk
-                        detalle_pedido.save()
+                # Antes el estado quedaba según la ÚLTIMA línea: un pedido con una
+                # línea sin pesar podía quedar "Preparado" (por cobrar).
+                pedido.estado = "Preparado" if todo_pesado else "Reservado"
                 pedido.vendedor = vendedor
-                pedido.total = total_pedido
+                recalcular_total_pedido(pedido)
                 pedido.save()
 
                 return Response(PedidoSerializer(pedido).data, status=status.HTTP_201_CREATED)
 
         except ValidationError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return _error_de_validacion(e)
         except Exception as e:
             return Response({'error': f'Error al crear el pedido o detalles: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -217,21 +257,47 @@ class PedidoDetailView(APIView):
         try:
             pedido = Pedido.objects.get(pk=pk)
             data = request.data
-            
+
+            # Un pedido anulado ya devolvió todo su stock: editarlo volvería a
+            # mover el ledger contra líneas que ya no existen en bodega.
+            if pedido.estado == "Anulado":
+                return Response({'error': 'El pedido está Anulado y no se puede editar'}, status=status.HTTP_400_BAD_REQUEST)
+
             with transaction.atomic():
-                # 1. Actualizar el estado si viene (Pagado, Anulado, etc.)
+                # 1. Actualizar el estado si viene (Pagado, Preparado, ...).
+                # Anular por aquí no devolvía el stock: se usa la misma reversión
+                # que CancelarPedido.
                 if 'estado' in data:
-                    pedido.estado = data['estado']
+                    nuevo_estado = data['estado']
+                    if nuevo_estado not in dict(Pedido._meta.get_field('estado').choices):
+                        raise ValidationError("Estado inválido")
+                    if nuevo_estado == "Anulado":
+                        for detalle in pedido.detalles.exclude(estado="Cancelado"):
+                            revertir_stock_detalle(detalle)
+                        pedido.estado = "Anulado"
+                        pedido.save()
+                        return Response(PedidoSerializer(pedido).data, status=status.HTTP_200_OK)
+                    pedido.estado = nuevo_estado
+                if data.get('tipo_recibo') in ('Boleta', 'Factura'):
+                    pedido.tipo_recibo = data['tipo_recibo']
+                if 'observaciones' in data:
+                    pedido.observaciones = (data.get('observaciones') or '').strip()
 
                 # 2. Actualizar detalles (kilos y unidades)
                 detalles_data = data.get('detalles', [])
-                nuevo_total_pedido = 0
 
                 for det in detalles_data:
                     # Extraemos el ID del producto (manejando si viene como objeto o ID)
                     prod_id = det['producto']['id'] if isinstance(det['producto'], dict) else det['producto']
 
-                    detalle_obj = DetallePedido.objects.get(pedido=pedido, producto_id=prod_id)
+                    # Por id de línea si viene: un pedido puede tener el mismo
+                    # producto dos veces (una línea cancelada y otra re-agregada)
+                    # y .get(producto) explotaba con MultipleObjectsReturned.
+                    if det.get('id'):
+                        detalle_obj = DetallePedido.objects.get(pedido=pedido, id=det['id'])
+                    else:
+                        detalle_obj = DetallePedido.objects.get(
+                            pedido=pedido, producto_id=prod_id, estado="Activo")
 
                     # Una línea Cancelada ya devolvió su stock/costo al ledger
                     # (ver CancelarProductoPedido) y no participa del total del
@@ -243,7 +309,9 @@ class PedidoDetailView(APIView):
                     kilos_anteriores = Decimal(str(detalle_obj.cantidad_kilos or 0))
 
                     # Actualizamos valores
-                    detalle_obj.cantidad_kilos = Decimal(str(det.get('cantidad_kilos', 0)))
+                    detalle_obj.cantidad_kilos = Decimal(str(det.get('cantidad_kilos') or 0).replace(',', '.'))
+                    if detalle_obj.cantidad_kilos < 0:
+                        raise ValidationError("Los kilos no pueden ser negativos")
 
                     # Los kilos del ledger siguen al peso real de la linea: solo
                     # se mueve la diferencia contra lo que ya estaba registrado.
@@ -253,8 +321,10 @@ class PedidoDetailView(APIView):
                             detalle_obj.producto, delta_kilos, permitir_faltante=True)
                     elif delta_kilos < 0:
                         restituir_kilos_fifo(detalle_obj.producto, -delta_kilos)
-                    unidades_raw = det.get('cantidad_unidades', 0)
-                    nuevas_unidades = int(float(str(unidades_raw)))
+                    unidades_raw = det.get('cantidad_unidades') or 0
+                    nuevas_unidades = int(Decimal(str(unidades_raw).replace(',', '.')))
+                    if nuevas_unidades < 0:
+                        raise ValidationError("Las unidades no pueden ser negativas")
                     detalle_obj.cantidad_unidades = nuevas_unidades
 
                     delta_unidades = nuevas_unidades - unidades_anteriores
@@ -291,23 +361,38 @@ class PedidoDetailView(APIView):
                         # total al recalcularse con los kilos nuevos abajo.
                         restituir_unidades_fifo(detalle_obj.producto, -delta_unidades)
 
+                    # Cambio de precio de la línea (opcional): mismo criterio que al crear.
+                    if det.get('modo_precio'):
+                        # Lista y descuento se miden contra el precio de lista
+                        # que tenía el producto cuando se hizo la venta.
+                        cfg = parse_precio_linea(det)
+                        lista = detalle_obj.precio_lista or detalle_obj.producto.precio_por_kilo
+                        detalle_obj.modo_precio = cfg['modo']
+                        detalle_obj.precio_venta = precio_segun_modo(
+                            detalle_obj.producto, cfg, detalle_obj.costo_por_kilo, lista)
+                        detalle_obj.descuento_por_kilo = max(lista - detalle_obj.precio_venta, Decimal('0.00'))
+                    elif detalle_obj.modo_precio == 'costo' and delta_unidades > 0:
+                        # A costo sigue al costo ponderado si entraron lotes nuevos.
+                        detalle_obj.precio_venta = precio_segun_modo(
+                            detalle_obj.producto, {'modo': 'costo'}, detalle_obj.costo_por_kilo)
+
                     # Recalculamos subtotal de la línea
                     detalle_obj.total_venta = detalle_obj.cantidad_kilos * detalle_obj.precio_venta
                     detalle_obj.save()
 
-                    nuevo_total_pedido += detalle_obj.total_venta
-                
-                # 3. Guardar total general
-                if detalles_data:
-                    pedido.total = nuevo_total_pedido
-                
+                # 3. Total general: SIEMPRE sobre todas las líneas activas. Antes se
+                # sumaban solo las líneas que venían en el payload, así que una
+                # edición parcial dejaba el total del pedido más bajo que sus líneas.
+                recalcular_total_pedido(pedido)
                 pedido.save()
-                
+
             serializer = PedidoSerializer(pedido)
             return Response(serializer.data, status=status.HTTP_200_OK)
-            
+
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return _error_de_validacion(e)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -324,25 +409,28 @@ class ActualizarKilosPedido(APIView):
     def post(self, request, pedido_id, *args, **kwargs):
         try:
             pedido = Pedido.objects.get(id=pedido_id)
+            if pedido.estado == "Anulado":
+                return Response({'error': 'El pedido está Anulado'}, status=status.HTTP_400_BAD_REQUEST)
             detalles_data = request.data.get('detalles', [])
-            total_pedido = 0
             with transaction.atomic():
                 for detalle_data in detalles_data:
                     producto_id = detalle_data.get('producto')
                     cantidad_kilos = detalle_data.get('cantidad_kilos')
 
-                    detalle = DetallePedido.objects.get(pedido=pedido, producto_id=producto_id)
-
-                    # Una línea Cancelada ya devolvió su stock al ledger y no
-                    # participa del total del pedido: no se le registra pesaje.
-                    if detalle.estado == "Cancelado":
+                    # Las líneas Canceladas ya devolvieron su stock: no se pesan.
+                    detalle = DetallePedido.objects.filter(
+                        pedido=pedido, producto_id=producto_id, estado="Activo").first()
+                    if detalle is None:
                         continue
 
                     kilos_anteriores = Decimal(str(detalle.cantidad_kilos or 0))
-                    kilos_nuevos = Decimal(str(cantidad_kilos or 0))
+                    kilos_nuevos = Decimal(str(cantidad_kilos or 0).replace(',', '.'))
                     delta = kilos_nuevos - kilos_anteriores
 
-                    detalle.cantidad_kilos = cantidad_kilos
+                    # Antes solo se guardaban los kilos y total_venta quedaba en 0:
+                    # el pedido pesado seguía sumando $0 en ventas.
+                    detalle.cantidad_kilos = kilos_nuevos
+                    detalle.total_venta = kilos_nuevos * detalle.precio_venta
                     detalle.save()
 
                     # Solo la DIFERENCIA toca el stock, para que repesar una
@@ -353,8 +441,7 @@ class ActualizarKilosPedido(APIView):
                     elif delta < 0:
                         restituir_kilos_fifo(detalle.producto, -delta)
 
-                    total_pedido += detalle.total_venta
-                pedido.total = total_pedido
+                recalcular_total_pedido(pedido)
                 pedido.save()
 
                 
@@ -384,29 +471,14 @@ class CrearCliente(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
-        nombre = data.get('nombre')
-        direccion = data.get('direccion')
-        telefono = data.get('telefono')
-        email = data.get('email')
-        vendedor_id = data.get('vendedor_id')
-
-        if not nombre or not direccion or not vendedor_id:
+        if not data.get('nombre') or not data.get('direccion') or not data.get('vendedor_id'):
             return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            vendedor = Vendedor.objects.get(id=vendedor_id)
-            cliente = Cliente.objects.create(
-                nombre=nombre,
-                direccion=direccion,
-                telefono=telefono,
-                email=email,
-                vendedor=vendedor
-            )
-            return Response(ClienteSerializer(cliente).data, status=status.HTTP_201_CREATED)
-        except Vendedor.DoesNotExist:
-            return Response({'error': 'Vendedor no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = ClienteSerializer(data=data)
+        if not serializer.is_valid():
+            return Response({'error': _primer_error(serializer.errors)}, status=status.HTTP_400_BAD_REQUEST)
+        cliente = serializer.save()
+        return Response(ClienteSerializer(cliente).data, status=status.HTTP_201_CREATED)
 
 class CrearFacturaEntrada(APIView):
     permission_classes = [IsAuthenticated]
@@ -419,16 +491,26 @@ class CrearFacturaEntrada(APIView):
             proveedor = Proveedor.objects.get(id=proveedor_id)
 
             # 2. Crear la Factura
+            if Factura.objects.filter(numero_factura=data.get('numero_factura')).exists():
+                raise ValidationError("Ya existe una factura con ese número")
             factura = Factura.objects.create(
                 numero_factura=data.get('numero_factura'),
                 proveedor=proveedor,
-                fecha=data.get('fecha', timezone.now()),
+                fecha=data.get('fecha') or timezone.now().date(),
+                fecha_vencimiento=data.get('fecha_vencimiento') or None,
                 subtotal=Decimal(str(data.get('subtotal', 0))),
                 iva=Decimal(str(data.get('iva', 0))),
                 total=Decimal(str(data.get('total', 0)))
             )
 
             detalles_data = data.get('detalles', [])
+            if isinstance(detalles_data, str):
+                # Llega como texto JSON cuando la factura viene con foto (multipart).
+                import json
+                detalles_data = json.loads(detalles_data)
+            if request.FILES.get('foto'):
+                factura.foto = request.FILES['foto']
+                factura.save(update_fields=['foto'])
             
             for item in detalles_data:
                 producto = Producto.objects.get(id=item.get('producto'))
@@ -463,15 +545,21 @@ class CrearFacturaEntrada(APIView):
 
             return Response({'message': 'Éxito'}, status=status.HTTP_201_CREATED)
 
+        except ValidationError as e:
+            transaction.set_rollback(True)
+            return _error_de_validacion(e)
         except Exception as e:
-            # Este print saldrá en tu terminal de VS Code / Servidor
+            # Sin esto la factura quedaba creada a medias: el decorador atomic
+            # solo revierte si la excepción sale de la vista, y aquí se atrapa.
+            transaction.set_rollback(True)
             print(f"DEBUG ERROR: {str(e)}")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 class FacturaListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        facturas = Factura.objects.all()
+        facturas = Factura.objects.select_related('proveedor', 'pago_factura').prefetch_related(
+            'notas_credito', 'detalles__producto')
         serializer = FacturaSerializer(facturas, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -504,8 +592,19 @@ class UpdateFacturaEntrada(APIView):
                     factura.proveedor = Proveedor.objects.get(id=proveedor_id)
                 if data.get('fecha'):
                     factura.fecha = data.get('fecha')
+                if 'fecha_vencimiento' in data:
+                    factura.fecha_vencimiento = data.get('fecha_vencimiento') or None
+                if request.FILES.get('foto'):
+                    factura.foto = request.FILES['foto']
+                elif data.get('quitar_foto') in (True, 'true', '1'):
+                    factura.foto = None
 
-                for item in data.get('detalles', []):
+                detalles_put = data.get('detalles', [])
+                if isinstance(detalles_put, str):
+                    import json
+                    detalles_put = json.loads(detalles_put)
+
+                for item in detalles_put:
                     detalle_id = item.get('id')
                     if detalle_id is not None:
                         detalle = DetalleFactura.objects.get(id=detalle_id, factura=factura)
@@ -545,12 +644,15 @@ class UpdateFacturaEntrada(APIView):
                         detalle, consumidas, kilos_originales, nuevos_kilos, nuevas_unidades, nuevo_costo
                     )
 
-                # Recalcular totales igual que en creación (subtotal + IVA 19%).
-                subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
-                iva = (subtotal * Decimal('0.19')).quantize(Decimal('0.01'))
-                factura.subtotal = subtotal.quantize(Decimal('0.01'))
-                factura.iva = iva
-                factura.total = (subtotal + iva).quantize(Decimal('0.01'))
+                # Recalcular totales igual que en creación (subtotal + IVA 19%),
+                # solo si se tocaron líneas: subir la foto o cambiar el
+                # vencimiento no debe mover los montos ya registrados.
+                if detalles_put:
+                    subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
+                    iva = (subtotal * Decimal('0.19')).quantize(Decimal('0.01'))
+                    factura.subtotal = subtotal.quantize(Decimal('0.01'))
+                    factura.iva = iva
+                    factura.total = (subtotal + iva).quantize(Decimal('0.01'))
                 factura.save()
 
             factura.refresh_from_db()
@@ -618,6 +720,49 @@ class UpdateFacturaEntrada(APIView):
                 cantidad_unidades=unidades_restantes,
                 costo_por_kilo=nuevo_costo,
             )
+
+class NotaCreditoView(APIView):
+    """Crea (POST, multipart si trae foto) o borra (DELETE) notas de crédito de
+    una factura de compra. Se ingresa el neto; el IVA es el 19% salvo que se
+    indique otro (algunas NC vienen con el IVA ya calculado por el proveedor)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, numero_factura):
+        factura = Factura.objects.filter(numero_factura=numero_factura).first()
+        if not factura:
+            return Response({'error': 'Factura no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data
+        numero = str(data.get('numero') or '').strip()
+        if not numero or not data.get('fecha'):
+            return Response({'error': 'Indica número y fecha de la nota de crédito'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            neto = Decimal(str(data.get('neto')).replace(',', '.'))
+            iva = (Decimal(str(data.get('iva')).replace(',', '.')) if data.get('iva') not in (None, '')
+                   else (neto * Decimal('0.19')).quantize(Decimal('1')))
+        except (InvalidOperation, ValueError):
+            return Response({'error': 'Monto inválido'}, status=status.HTTP_400_BAD_REQUEST)
+        if neto <= 0:
+            return Response({'error': 'El neto debe ser mayor a 0'}, status=status.HTTP_400_BAD_REQUEST)
+        total = neto + iva
+        ya_acreditado = factura.total_notas_credito()
+        if ya_acreditado + total > factura.total + Decimal('1'):
+            return Response({'error': 'Las notas de crédito superarían el total de la factura'}, status=status.HTTP_400_BAD_REQUEST)
+        if factura.notas_credito.filter(numero=numero).exists():
+            return Response({'error': 'Esa nota de crédito ya está registrada'}, status=status.HTTP_400_BAD_REQUEST)
+        nc = NotaCredito.objects.create(
+            factura=factura, numero=numero, fecha=data.get('fecha'), neto=neto, iva=iva, total=total,
+            motivo=str(data.get('motivo') or '')[:255], foto=request.FILES.get('foto'),
+        )
+        return Response(NotaCreditoSerializer(nc).data, status=status.HTTP_201_CREATED)
+
+
+class NotaCreditoDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        NotaCredito.objects.filter(pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class CrearPagoFactura(APIView):
     permission_classes = [IsAuthenticated]
@@ -787,53 +932,15 @@ class AgregarProductoPedido(APIView):
                 except Producto.DoesNotExist:
                     return Response({'error': f"Producto con ID {producto_id} no existe"}, status=status.HTTP_404_NOT_FOUND)
 
-                kilos = Decimal(str(request.data.get('cantidad_kilos', 0)))
-                unidades = int(float(str(request.data.get('cantidad_unidades', 0))))
-
-                stock_producto = EntradaProducto.objects.filter(producto=producto).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
-                if unidades > stock_producto:
-                    raise ValidationError("No hay suficiente stock disponible para el producto")
-
-                _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
-
-                # Igual que en CrearPedido: el descuento por kilo es propio de
-                # esta línea (opcional, 0 si no viene).
-                descuento_por_kilo = parse_descuento_por_kilo(request.data.get('descuento_por_kilo'))
-                precio_venta = max(producto.precio_por_kilo - descuento_por_kilo, Decimal('0.00'))
-
-                if kilos > 0:
-                    total_venta = kilos * precio_venta
-                    descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
-                else:
+                kilos = Decimal(str(request.data.get('cantidad_kilos') or 0).replace(',', '.'))
+                unidades = int(Decimal(str(request.data.get('cantidad_unidades') or 0).replace(',', '.')))
+                if kilos <= 0:
                     kilos = Decimal('0.00')
-                    total_venta = Decimal('0.00')
 
-                detalle_pedido = DetallePedido.objects.create(
-                    pedido=pedido,
-                    producto=producto,
-                    cantidad_kilos=kilos,
-                    cantidad_unidades=unidades,
-                    total_venta=total_venta,
-                    precio_venta=precio_venta,
-                    descuento_por_kilo=descuento_por_kilo
-                )
-
-                detalle_pedido.facturas.set(facturas_usadas)
-                for factura_id, cantidad in facturas_cantidades.items():
-                    FacturaDetallePedido.objects.create(
-                        detallepedido=detalle_pedido,
-                        factura_id=factura_id,
-                        cantidad_unidades=cantidad
-                    )
-
-                cpk = costo_por_kilo_ponderado(detalle_pedido)
-                if cpk is not None:
-                    detalle_pedido.costo_por_kilo = cpk
-                    detalle_pedido.save()
-
-                # Recalcular el total del pedido con las líneas activas.
-                lineas_activas = pedido.detalles.exclude(estado="Cancelado")
-                pedido.total = lineas_activas.aggregate(total=Sum('total_venta'))['total'] or Decimal('0.00')
+                # Igual que en CrearPedido (misma función): precio propio de esta línea.
+                cfg = parse_precio_linea(request.data)
+                crear_linea_pedido(pedido, producto, unidades, kilos, cfg)
+                recalcular_total_pedido(pedido)
 
                 # Si el pedido ya estaba Preparado/Pagado y la línea nueva viene
                 # sin pesar, no lo degradamos; si estaba Reservado y esta línea
@@ -848,7 +955,7 @@ class AgregarProductoPedido(APIView):
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         except ValidationError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return _error_de_validacion(e)
         except Exception as e:
             return Response({'error': f'Error al agregar el producto: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -912,6 +1019,15 @@ class StockProductos(APIView):
             # Stock físico = disponibles + lo reservado (que sigue en la repisa).
             stock_fisico = disponibles + unidades_reservadas
 
+            # Lotes vivos en orden FIFO: con esto Nuevo Pedido estima el costo/kg
+            # exacto que tendrá la línea (mismo ponderado por unidades que
+            # costo_por_kilo_ponderado) y avisa si un precio queda bajo costo.
+            lotes = [
+                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
+                for e in EntradaProducto.objects.filter(producto=producto, cantidad_unidades__gt=0)
+                .order_by('fecha_entrada')
+            ]
+
             stock_data.append({
                 'id': producto.id,
                 'producto': producto.nombre,
@@ -923,7 +1039,8 @@ class StockProductos(APIView):
                 'estado': producto.estado,
                 'stock': stock_fisico,
                 'reservas': unidades_reservadas,
-                'kilos_actuales': round(kilos_actuales, 2)
+                'kilos_actuales': round(kilos_actuales, 2),
+                'lotes': lotes,
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
@@ -1513,7 +1630,7 @@ class ReporteGananciasView(APIView):
             costo_neto=Coalesce(Sum('total_costo'), Decimal('0')),
             kilos=Coalesce(Sum('cantidad_kilos'), Decimal('0')),
         )
-        ventas_neto, ganancia, iva_debito, iva_credito, iva_a_pagar = _desglose_iva(
+        ventas_neto, ganancia, *_ = _desglose_iva(
             totales['ventas'], totales['costo_neto']
         )
         margen_pct = float(ganancia / ventas_neto * 100) if ventas_neto else 0.0
@@ -1551,18 +1668,28 @@ class ReporteGananciasView(APIView):
             )
             .order_by('mes')
         )
+        # IVA como en el F29: crédito de las COMPRAS del mes (facturas - notas de
+        # crédito + gastos con factura) y con remanente arrastrado. Antes el
+        # crédito salía del costo de lo vendido, que no es lo que se declara.
+        f29, _cfg = resumen_mensual(request.query_params.get('desde'), request.query_params.get('hasta'))
+        f29_por_mes = {f['mes']: f for f in f29}
         por_mes = []
         for r in por_mes_raw:
-            ventas_n, gan, debito, credito, neto = _desglose_iva(r['ventas'], r['costo_neto'])
+            ventas_n, gan, *_ = _desglose_iva(r['ventas'], r['costo_neto'])
+            mes = r['mes'].strftime('%Y-%m') if r['mes'] else None
+            iva = f29_por_mes.get(mes, {})
             por_mes.append({
-                'mes': r['mes'].strftime('%Y-%m') if r['mes'] else None,
+                'mes': mes,
                 'ganancia': gan,
                 'ventas': ventas_n,
                 'costo': r['costo_neto'],
-                'iva_debito': debito,
-                'iva_credito': credito,
-                'iva_a_pagar': neto,
+                'iva_debito': iva.get('iva_debito', Decimal('0')),
+                'iva_credito': iva.get('iva_credito', Decimal('0')),
+                'iva_a_pagar': iva.get('iva_a_pagar', Decimal('0')) - iva.get('remanente', Decimal('0')),
             })
+        iva_debito = sum((f['iva_debito'] for f in f29), Decimal('0'))
+        iva_credito = sum((f['iva_credito'] for f in f29), Decimal('0'))
+        iva_a_pagar = sum((f['iva_a_pagar'] for f in f29), Decimal('0')) - (f29[-1]['remanente'] if f29 else 0)
 
         # --- Por vendedor ---
         por_vendedor_raw = list(
@@ -1607,9 +1734,9 @@ class ReportePerdidasView(APIView):
 
     CRITERIO DE VALORIZACIÓN (decisión de negocio):
     AjusteInventario no tiene costo unitario propio, por lo que cada merma se
-    valoriza con el costo_por_kilo de la ÚLTIMA FACTURA de compra del producto
-    (el costo de reposición más reciente), AJUSTADO por IVA_RATE ya que ese
-    costo se ingresa sin IVA y el costo real de reponer el producto lo incluye.
+    valoriza con el costo_por_kilo NETO de la ÚLTIMA FACTURA de compra del
+    producto (el costo de reposición más reciente). Sin IVA, igual que la
+    ganancia: el IVA de la compra es crédito fiscal recuperable.
 
     El costo sale de DetalleFactura, NO de EntradaProducto: EntradaProducto es
     un ledger de stock que se decrementa y se BORRA por FIFO cuando un lote se
@@ -1625,34 +1752,19 @@ class ReportePerdidasView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ultimo_costo_sq = DetalleFactura.objects.filter(
-            producto=OuterRef('producto')
-        ).order_by('-factura__fecha', '-id').values('costo_por_kilo')[:1]
-
-        mermas = (
-            AjusteInventario.objects.filter(tipo='merma')
-            .annotate(costo_unit=Coalesce(
-                Subquery(ultimo_costo_sq, output_field=DecimalField(max_digits=10, decimal_places=2)),
-                Decimal('0'),
-            ))
-            .select_related('producto')
-        )
-        # Mismo filtro opcional de rango que ReporteGananciasView.
+        # Valorización compartida con Tesorería (contabilidad.mermas_valorizadas):
+        # costo NETO de la última compra; las mermas solo en piezas se estiman
+        # con el peso promedio por pieza. Antes se multiplicaba por 1,19 (la
+        # pérdida salía inflada) y las mermas en piezas valían $0.
         desde = request.query_params.get('desde')
         hasta = request.query_params.get('hasta')
-        if desde:
-            mermas = mermas.filter(fecha__gte=desde)
-        if hasta:
-            mermas = mermas.filter(fecha__lte=hasta)
 
         por_producto = {}
         por_mes = {}
         total_valor = Decimal('0')
         total_kilos = Decimal('0')
 
-        for m in mermas:
-            kilos = abs(m.cantidad or Decimal('0'))
-            valor = kilos * m.costo_unit * IVA_RATE
+        for m, kilos, valor in mermas_valorizadas(desde, hasta):
             total_valor += valor
             total_kilos += kilos
 
@@ -1962,28 +2074,55 @@ class CambiarPasswordView(APIView):
 
 
 class PerfilView(APIView):
-    """Datos del usuario logueado. El teléfono vive en su perfil de Vendedor."""
+    """Datos propios del usuario logueado para su flyer: teléfono, fotos y el
+    mensaje de WhatsApp. Viven en PerfilUsuario (uno por usuario, tenga o no
+    perfil de vendedor), así cada uno tiene los suyos y no hay uno general."""
     permission_classes = [IsAuthenticated]
+    FOTOS = ('foto1', 'foto2', 'logo')
 
-    def _vendedor(self, user):
-        return getattr(user, 'vendedor_profile', None)
+    def _perfil(self, user):
+        perfil, creado = PerfilUsuario.objects.get_or_create(user=user)
+        vendedor = getattr(user, 'vendedor_profile', None)
+        if creado and vendedor and vendedor.telefono:
+            # Hereda el teléfono que antes se guardaba en el Vendedor.
+            perfil.telefono = vendedor.telefono
+            perfil.save(update_fields=['telefono'])
+        return perfil, vendedor
 
-    def get(self, request):
-        vendedor = self._vendedor(request.user)
+    def _respuesta(self, request, perfil, vendedor):
         return Response({
             'username': request.user.username,
             'nombre': vendedor.nombre if vendedor else request.user.username,
-            'telefono': vendedor.telefono if vendedor else '',
+            'telefono': perfil.telefono,
+            'mensaje_whatsapp': perfil.mensaje_whatsapp,
             'tiene_vendedor': vendedor is not None,
+            'es_admin': request.user.is_staff,
+            **{f: (getattr(perfil, f).url if getattr(perfil, f) else None) for f in self.FOTOS},
         }, status=status.HTTP_200_OK)
 
+    def get(self, request):
+        perfil, vendedor = self._perfil(request.user)
+        return self._respuesta(request, perfil, vendedor)
+
     def patch(self, request):
-        vendedor = self._vendedor(request.user)
-        if vendedor is None:
-            return Response({'error': 'Tu usuario no tiene un perfil de vendedor asociado'}, status=status.HTTP_400_BAD_REQUEST)
-        telefono = str(request.data.get('telefono', '')).strip()
-        if len(telefono) > 30:
-            return Response({'error': 'El teléfono es demasiado largo'}, status=status.HTTP_400_BAD_REQUEST)
-        vendedor.telefono = telefono
-        vendedor.save(update_fields=['telefono'])
-        return Response({'telefono': vendedor.telefono}, status=status.HTTP_200_OK)
+        perfil, vendedor = self._perfil(request.user)
+        if 'telefono' in request.data:
+            telefono = str(request.data.get('telefono') or '').strip()
+            if len(telefono) > 30:
+                return Response({'error': 'El teléfono es demasiado largo'}, status=status.HTTP_400_BAD_REQUEST)
+            perfil.telefono = telefono
+        if 'mensaje_whatsapp' in request.data:
+            perfil.mensaje_whatsapp = str(request.data.get('mensaje_whatsapp') or '')[:2000]
+        for campo in self.FOTOS:
+            if request.FILES.get(campo):
+                archivo = request.FILES[campo]
+                if not (archivo.content_type or '').startswith('image/'):
+                    return Response({'error': 'La foto debe ser una imagen'}, status=status.HTTP_400_BAD_REQUEST)
+                if archivo.size > 8 * 1024 * 1024:
+                    return Response({'error': 'La foto pesa más de 8 MB'}, status=status.HTTP_400_BAD_REQUEST)
+                setattr(perfil, campo, archivo)
+            elif request.data.get(f'quitar_{campo}') in (True, 'true', '1'):
+                # Vuelve a la foto original del flyer.
+                setattr(perfil, campo, None)
+        perfil.save()
+        return self._respuesta(request, perfil, vendedor)
