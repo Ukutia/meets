@@ -20,6 +20,7 @@ import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
+import Precios from "./pages/Precios";
 
 const queryClient = new QueryClient();
 
@@ -175,6 +176,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Flyer />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/precios"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Precios />
                   </Layout>
                 </ProtectedRoute>
               }
