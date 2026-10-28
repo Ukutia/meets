@@ -201,6 +201,7 @@ class Pedido(models.Model):
     estado = models.CharField(
         max_length=20,
         choices=[
+            ("Pre-reserva", "Pre-reserva"),
             ("Reservado", "Reservado"),
             ("Preparado", "Preparado"),
             ("Anulado", "Anulado"),
@@ -271,6 +272,13 @@ class DetallePedido(models.Model):
         verbose_name="Estado de la línea",
         help_text="Cancelado = el producto fue quitado del pedido y su stock/costo ya fue revertido"
     )
+    # Pre-reserva: unidades de cantidad_unidades que se vendieron SIN stock.
+    # No tienen lote (FacturaDetallePedido) todavía; cuando entra una factura
+    # con el producto se les asignan unidades FIFO (asignar_pre_reservas en
+    # utils.py) y el número baja hasta 0.
+    unidades_pendientes = models.IntegerField(default=0, verbose_name="Unidades en pre-reserva (sin stock)")
+    # La línea se abastece del stock congelado del producto en vez del inventario normal.
+    congelado = models.BooleanField(default=False, verbose_name="Sale del stock congelado")
 
 
     def save(self, *args, **kwargs):
@@ -426,9 +434,34 @@ class EntradaProducto(models.Model):
     # Con default=timezone.now se mantiene el mismo comportamiento al crear sin
     # fecha, pero la fecha explicita si se respeta.
     fecha_entrada = models.DateTimeField(default=timezone.now)
+    # Lote pasado a congelado: es un stock aparte del inventario normal. Las
+    # ventas y ajustes normales no lo tocan; solo las líneas con congelado=True.
+    congelado = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.producto.nombre} - {self.cantidad_kilos} kg - {self.costo_por_kilo} por kilo"
+
+
+class MovimientoCongelado(models.Model):
+    """Registro de stock pasado de inventario a congelado (o de vuelta). El
+    movimiento real lo hace mover_stock_congelado (utils.py) sobre los lotes."""
+    DIRECCIONES = [
+        ("congelar", "Inventario -> Congelado"),
+        ("descongelar", "Congelado -> Inventario"),
+    ]
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name="movimientos_congelado")
+    direccion = models.CharField(max_length=12, choices=DIRECCIONES)
+    cantidad_unidades = models.IntegerField()
+    cantidad_kilos = models.DecimalField(max_digits=10, decimal_places=2)
+    razon = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+    def __str__(self):
+        return f"{self.get_direccion_display()} {self.producto.nombre}: {self.cantidad_unidades} un / {self.cantidad_kilos} kg"
 
 
 class NotaCredito(models.Model):

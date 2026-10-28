@@ -4,7 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura
+from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido
 
 
 def costo_por_kilo_ponderado(detalle):
@@ -34,7 +34,7 @@ def costo_por_kilo_ponderado(detalle):
     return suma_costo / suma_unidades
 
 
-def consumir_fifo(producto, unidades_a_consumir):
+def consumir_fifo(producto, unidades_a_consumir, congelado=False):
     """Descuenta ``unidades_a_consumir`` de ``EntradaProducto`` (FIFO por
     fecha_entrada), ponderando el costo por KILOS estimados de cada lote (no
     por cantidad de unidades: costo_por_kilo es un precio por kilo, y las
@@ -53,13 +53,16 @@ def consumir_fifo(producto, unidades_a_consumir):
     venta. ``kilos_consumidos`` se sigue calculando y devolviendo porque el
     COSTEO lo necesita, pero es un valor de costo, no de stock.
 
+    ``congelado`` elige el pool: inventario normal (default) o stock congelado.
+
     Devuelve (costo_total, kilos_consumidos, facturas_usadas, facturas_cantidades).
     Lanza ValidationError si no hay stock suficiente.
     """
     if unidades_a_consumir <= 0:
         return Decimal('0.00'), Decimal('0.00'), [], {}
 
-    entradas = EntradaProducto.objects.filter(producto=producto).order_by('fecha_entrada')
+    entradas = EntradaProducto.objects.filter(
+        producto=producto, congelado=congelado).order_by('fecha_entrada')
     costo_total = Decimal('0.00')
     kilos_consumidos = Decimal('0.00')
     cantidad_restante_unidades = Decimal(unidades_a_consumir)
@@ -109,7 +112,7 @@ def consumir_fifo(producto, unidades_a_consumir):
     return costo_total, kilos_consumidos, facturas_usadas, facturas_cantidades
 
 
-def descontar_kilos_fifo(producto, kilos_a_descontar, permitir_faltante=False):
+def descontar_kilos_fifo(producto, kilos_a_descontar, permitir_faltante=False, congelado=False):
     """Descuenta SOLO kilos de ``EntradaProducto`` (FIFO por fecha_entrada) sin
     tocar las unidades.
 
@@ -137,7 +140,8 @@ def descontar_kilos_fifo(producto, kilos_a_descontar, permitir_faltante=False):
         return Decimal('0.00'), Decimal('0.00')
 
     entradas = list(
-        EntradaProducto.objects.filter(producto=producto).order_by('fecha_entrada')
+        EntradaProducto.objects.filter(
+            producto=producto, congelado=congelado).order_by('fecha_entrada')
     )
     disponibles = sum((e.cantidad_kilos for e in entradas), Decimal('0.00'))
     if disponibles < kilos_a_descontar and not permitir_faltante:
@@ -161,7 +165,7 @@ def descontar_kilos_fifo(producto, kilos_a_descontar, permitir_faltante=False):
     return kilos_a_descontar - restante, restante
 
 
-def restituir_kilos_fifo(producto, kilos_a_devolver):
+def restituir_kilos_fifo(producto, kilos_a_devolver, congelado=False):
     """Devuelve kilos al ledger, al lote vivo MAS ANTIGUO (para que vuelvan a
     la misma posicion FIFO de la que salieron).
 
@@ -173,7 +177,7 @@ def restituir_kilos_fifo(producto, kilos_a_devolver):
         return Decimal('0.00')
 
     entrada = (
-        EntradaProducto.objects.filter(producto=producto)
+        EntradaProducto.objects.filter(producto=producto, congelado=congelado)
         .order_by('fecha_entrada')
         .first()
     )
@@ -190,7 +194,7 @@ def restituir_kilos_fifo(producto, kilos_a_devolver):
     return kilos_a_devolver
 
 
-def restituir_unidades_fifo(producto, unidades_a_devolver):
+def restituir_unidades_fifo(producto, unidades_a_devolver, congelado=False):
     """Devuelve unidades al ledger, al lote vivo MAS ANTIGUO (mismo criterio que
     ``restituir_kilos_fifo``), para que vuelvan a la misma posicion FIFO de la
     que salieron.
@@ -204,7 +208,7 @@ def restituir_unidades_fifo(producto, unidades_a_devolver):
         return 0
 
     entrada = (
-        EntradaProducto.objects.filter(producto=producto)
+        EntradaProducto.objects.filter(producto=producto, congelado=congelado)
         .order_by('fecha_entrada')
         .first()
     )
@@ -236,7 +240,7 @@ def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar):
         return
 
     entrada = (
-        EntradaProducto.objects.filter(producto=producto)
+        EntradaProducto.objects.filter(producto=producto, congelado=False)
         .order_by('fecha_entrada')
         .first()
     )
@@ -339,7 +343,7 @@ def revertir_stock_detalle(detalle):
 
         # Buscar fecha para mantener FIFO
         entrada_ref = EntradaProducto.objects.filter(
-            producto=detalle.producto
+            producto=detalle.producto, congelado=detalle.congelado
         ).order_by('fecha_entrada').first()
 
         if entrada_ref:
@@ -362,7 +366,8 @@ def revertir_stock_detalle(detalle):
             cantidad_kilos=kilos_a_devolver,
             cantidad_unidades=unidades_a_devolver,
             costo_por_kilo=costo_unitario_compra,  # <--- COSTO RECUPERADO
-            fecha_entrada=nueva_fecha
+            fecha_entrada=nueva_fecha,
+            congelado=detalle.congelado,
         )
 
         restante -= unidades_a_devolver
@@ -381,3 +386,186 @@ def pedidos_consumidores_detalle(detalle):
         .values_list('detallepedido__pedido_id', flat=True)
         .distinct()
     )
+
+
+def unidades_en_stock(producto, congelado=False):
+    """Unidades vivas del producto en un pool (inventario normal o congelado)."""
+    return EntradaProducto.objects.filter(
+        producto=producto, congelado=congelado
+    ).aggregate(total=Sum('cantidad_unidades'))['total'] or 0
+
+
+def vincular_lotes(detalle, facturas_usadas, facturas_cantidades):
+    """Registra en la línea de venta los lotes que devolvió ``consumir_fifo``,
+    sumando a un vínculo existente si la línea ya había tomado de esa factura."""
+    detalle.facturas.add(*facturas_usadas)
+    for factura_id, cantidad in facturas_cantidades.items():
+        link, created = FacturaDetallePedido.objects.get_or_create(
+            detallepedido=detalle, factura_id=factura_id,
+            defaults={'cantidad_unidades': cantidad}
+        )
+        if not created:
+            link.cantidad_unidades += cantidad
+            link.save()
+
+
+def actualizar_estado_pre_reserva(pedido):
+    """Un pedido está en Pre-reserva mientras alguna línea activa tenga
+    unidades sin stock; cuando ya no queda ninguna pasa a Reservado. No guarda:
+    el llamador hace pedido.save()."""
+    if pedido.estado == "Anulado":
+        return
+    pendiente = pedido.detalles.filter(estado="Activo", unidades_pendientes__gt=0).exists()
+    if pendiente:
+        pedido.estado = "Pre-reserva"
+    elif pedido.estado == "Pre-reserva":
+        pedido.estado = "Reservado"
+
+
+def asignar_pre_reservas(producto):
+    """Asigna stock del inventario normal a las pre-reservas del producto, la
+    más antigua primero, consumiendo FIFO como cualquier venta. Se llama al
+    ingresar (o editar) una factura de compra.
+
+    Una línea puede quedar asignada a medias si no alcanza; el pedido pasa de
+    Pre-reserva a Reservado cuando ninguna de sus líneas tiene pendientes.
+
+    Devuelve [{'pedido': id, 'producto': nombre, 'unidades': n, 'completa': bool}].
+    """
+    from .views import precio_segun_modo  # evita import circular
+
+    asignaciones = []
+    lineas = (
+        DetallePedido.objects.select_related('pedido')
+        .filter(producto=producto, estado="Activo", unidades_pendientes__gt=0)
+        .exclude(pedido__estado="Anulado")
+        .order_by('pedido__fecha', 'pedido_id', 'id')
+    )
+    for detalle in lineas:
+        disponibles = unidades_en_stock(producto)
+        if disponibles <= 0:
+            break
+        unidades = min(detalle.unidades_pendientes, int(disponibles))
+
+        _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
+        vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
+
+        cpk = costo_por_kilo_ponderado(detalle)
+        if cpk is not None:
+            detalle.costo_por_kilo = cpk
+            if detalle.modo_precio == 'costo':
+                detalle.precio_venta = precio_segun_modo(producto, {'modo': 'costo'}, cpk)
+                detalle.descuento_por_kilo = max(
+                    (detalle.precio_lista or producto.precio_por_kilo) - detalle.precio_venta,
+                    Decimal('0.00'))
+                detalle.total_venta = (detalle.cantidad_kilos or 0) * detalle.precio_venta
+        detalle.unidades_pendientes -= unidades
+        detalle.save()
+
+        pedido = detalle.pedido
+        actualizar_estado_pre_reserva(pedido)
+        pedido.total = pedido.detalles.exclude(estado="Cancelado").aggregate(
+            total=Sum('total_venta'))['total'] or Decimal('0.00')
+        pedido.save()
+
+        asignaciones.append({
+            'pedido': pedido.id,
+            'producto': producto.nombre,
+            'unidades': unidades,
+            'completa': detalle.unidades_pendientes == 0,
+        })
+    return asignaciones
+
+
+def mover_stock_congelado(producto, unidades, kilos=None, a_congelado=True):
+    """Pasa stock del inventario normal a congelado (o de vuelta), lote por
+    lote en orden FIFO. Cada lote movido conserva su factura, costo y fecha,
+    así el costeo y el orden FIFO siguen igual en el pool de destino.
+
+    ``kilos`` es opcional: si no viene, cada lote aporta el peso promedio de
+    sus unidades; si viene (pesaje real), se reparte entre los lotes en esa
+    misma proporción. Nunca se sacan de un lote más kilos de los que tiene.
+
+    Devuelve (unidades_movidas, kilos_movidos). Lanza ValidationError si el
+    pool de origen no alcanza.
+    """
+    unidades = int(unidades or 0)
+    if unidades <= 0:
+        raise ValidationError("Indica cuántas unidades mover")
+    origen_congelado = not a_congelado
+    origen = list(
+        EntradaProducto.objects.filter(
+            producto=producto, congelado=origen_congelado, cantidad_unidades__gt=0
+        ).order_by('fecha_entrada')
+    )
+    disponibles = sum(e.cantidad_unidades for e in origen)
+    if unidades > disponibles:
+        donde = "congelado" if origen_congelado else "inventario"
+        raise ValidationError(
+            f"No hay suficiente stock en {donde} de '{producto.nombre}': hay "
+            f"{disponibles} unidades y se intentan mover {unidades}"
+        )
+
+    # Plan: cuántas unidades y kilos estimados salen de cada lote.
+    plan = []
+    restante = unidades
+    for entrada in origen:
+        if restante <= 0:
+            break
+        tomadas = min(entrada.cantidad_unidades, restante)
+        promedio = Decimal(entrada.cantidad_kilos) / entrada.cantidad_unidades
+        plan.append([entrada, tomadas, min(promedio * tomadas, Decimal(entrada.cantidad_kilos))])
+        restante -= tomadas
+
+    estimado = sum((p[2] for p in plan), Decimal('0'))
+    if kilos is not None:
+        kilos = Decimal(str(kilos))
+        if kilos < 0:
+            raise ValidationError("Los kilos no pueden ser negativos")
+        kilos_origen = sum((Decimal(p[0].cantidad_kilos) for p in plan), Decimal('0'))
+        if kilos > kilos_origen:
+            raise ValidationError(
+                f"Los lotes de donde salen esas unidades tienen {kilos_origen} kg; "
+                f"no se pueden mover {kilos} kg"
+            )
+        if estimado > 0:
+            for p in plan:
+                p[2] = (kilos * p[2] / estimado).quantize(Decimal('0.01'))
+        else:
+            for p in plan:
+                p[2] = (kilos / len(plan)).quantize(Decimal('0.01'))
+        # El redondeo no puede dejar el total distinto a lo pesado.
+        plan[-1][2] += kilos - sum((p[2] for p in plan), Decimal('0'))
+        for p in plan:
+            p[2] = min(max(p[2], Decimal('0')), Decimal(p[0].cantidad_kilos))
+    else:
+        for p in plan:
+            p[2] = p[2].quantize(Decimal('0.01'))
+
+    kilos_movidos = Decimal('0')
+    for entrada, tomadas, kilos_lote in plan:
+        destino = EntradaProducto.objects.filter(
+            producto=producto, congelado=a_congelado, factura_id=entrada.factura_id,
+            costo_por_kilo=entrada.costo_por_kilo, fecha_entrada=entrada.fecha_entrada,
+        ).first()
+        if destino:
+            destino.cantidad_unidades += tomadas
+            destino.cantidad_kilos = Decimal(destino.cantidad_kilos) + kilos_lote
+            destino.save()
+        else:
+            EntradaProducto.objects.create(
+                factura_id=entrada.factura_id, producto=producto,
+                cantidad_unidades=tomadas, cantidad_kilos=kilos_lote,
+                costo_por_kilo=entrada.costo_por_kilo,
+                fecha_entrada=entrada.fecha_entrada, congelado=a_congelado,
+            )
+
+        entrada.cantidad_unidades -= tomadas
+        entrada.cantidad_kilos = Decimal(entrada.cantidad_kilos) - kilos_lote
+        if entrada.cantidad_unidades <= 0 and entrada.cantidad_kilos <= 0:
+            entrada.delete()
+        else:
+            entrada.save()
+        kilos_movidos += kilos_lote
+
+    return unidades, kilos_movidos

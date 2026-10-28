@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView, NotaCreditoView, NotaCreditoDetailView
+from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView, NotaCreditoView, NotaCreditoDetailView, MovimientoCongeladoView
 from . import views_tesoreria as tes
 
 urlpatterns = [
@@ -35,6 +35,7 @@ urlpatterns = [
     path('inventario/ajustes/', AjusteInventarioListView.as_view(), name='ajustes-inventario-list'),
     path('inventario/ajustes/crear/', CrearAjusteInventario.as_view(), name='crear_ajuste_inventario'),
     path('inventario/ajustes/<int:pk>/', AjusteInventarioDetailView.as_view(), name='ajuste-inventario-detail'),
+    path('inventario/congelado/', MovimientoCongeladoView.as_view(), name='movimientos_congelado'),
     path('pagos-vendedor/', PagoVendedorView.as_view(), name='pagos_vendedor'),
     path('pagos-vendedor/<int:pk>/', PagoVendedorDetailView.as_view(), name='pago_vendedor_detail'),
     path('reportes/ganancias/', ReporteGananciasView.as_view(), name='reporte_ganancias'),

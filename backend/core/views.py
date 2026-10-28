@@ -1,10 +1,10 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito
-from .serializers import NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado
+from .serializers import MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -111,38 +111,56 @@ def precio_segun_modo(producto, cfg, costo_por_kilo, lista=None):
     return lista
 
 
-def crear_linea_pedido(pedido, producto, unidades, kilos, cfg):
+def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, permitir_pre_reserva=False):
     """Crea una línea de venta consumiendo stock FIFO. La usan CrearPedido y
     AgregarProductoPedido para que ambas queden idénticas.
 
+    ``congelado`` saca las unidades del stock congelado en vez del inventario.
+
+    Con ``permitir_pre_reserva`` las unidades que no alcanzan a cubrirse con
+    stock quedan como pre-reserva (unidades_pendientes): se toma lo que haya y
+    el resto se asigna al entrar la próxima factura (asignar_pre_reservas).
+    Solo para el inventario normal y sin pesar: no se puede pesar carne que
+    todavía no llega.
+
     El precio se fija DESPUÉS de vincular los lotes, porque el modo 'costo'
     necesita el costo/kg ponderado de esos lotes."""
-    stock_producto = EntradaProducto.objects.filter(producto=producto).aggregate(
-        total=Sum('cantidad_unidades'))['total'] or 0
+    stock_producto = unidades_en_stock(producto, congelado)
+    pendientes = 0
     if unidades > stock_producto:
-        raise ValidationError(f"No hay suficiente stock disponible de '{producto.nombre}'")
+        if not permitir_pre_reserva or congelado:
+            donde = " congelado" if congelado else ""
+            raise ValidationError(f"No hay suficiente stock{donde} disponible de '{producto.nombre}'")
+        if kilos > 0:
+            raise ValidationError(
+                f"'{producto.nombre}' no tiene stock suficiente: una pre-reserva no se puede pesar")
+        pendientes = unidades - int(stock_producto)
 
-    _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
+    _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(
+        producto, unidades - pendientes, congelado=congelado)
 
     detalle = DetallePedido.objects.create(
         pedido=pedido,
         producto=producto,
         cantidad_kilos=kilos,
         cantidad_unidades=unidades,
+        unidades_pendientes=pendientes,
+        congelado=congelado,
         precio_venta=producto.precio_por_kilo,
         precio_lista=producto.precio_por_kilo,
         modo_precio=cfg['modo'],
     )
-    detalle.facturas.set(facturas_usadas)
-    for factura_id, cantidad in facturas_cantidades.items():
-        FacturaDetallePedido.objects.create(
-            detallepedido=detalle, factura_id=factura_id, cantidad_unidades=cantidad
-        )
+    vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
 
     cpk = costo_por_kilo_ponderado(detalle)
     if cpk is not None:
         detalle.costo_por_kilo = cpk
-    detalle.precio_venta = precio_segun_modo(producto, cfg, cpk)
+    if cfg['modo'] == 'costo' and cpk is None and pendientes:
+        # Pre-reserva sin ningún lote todavía: el costo se conoce al asignarle
+        # la factura (asignar_pre_reservas fija ahí el precio a costo).
+        detalle.precio_venta = producto.precio_por_kilo
+    else:
+        detalle.precio_venta = precio_segun_modo(producto, cfg, cpk)
     detalle.descuento_por_kilo = max(producto.precio_por_kilo - detalle.precio_venta, Decimal('0.00'))
     detalle.total_venta = kilos * detalle.precio_venta
 
@@ -150,10 +168,14 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg):
         # Pedido pesado: los kilos REALES salen ahora del ledger. Sin pesar
         # (Reservado) no se descuenta nada todavía: lo hará la edición del
         # pedido cuando se registre la báscula.
-        descontar_kilos_fifo(producto, kilos, permitir_faltante=True)
+        descontar_kilos_fifo(producto, kilos, permitir_faltante=True, congelado=congelado)
 
     detalle.save()
     return detalle
+
+
+def _es_verdadero(valor):
+    return valor in (True, 'true', 'True', '1', 1)
 
 
 def recalcular_total_pedido(pedido):
@@ -206,6 +228,10 @@ class CrearPedido(APIView):
         except ValidationError as e:
             return Response({'error': str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Sin este flag, pedir más de lo que hay sigue siendo un error: la
+        # pre-reserva tiene que pedirse a propósito desde Nuevo Pedido.
+        permitir_pre_reserva = _es_verdadero(data.get('permitir_pre_reserva'))
+
         tipo_recibo = data.get('tipo_recibo') or ('Factura' if cliente.tipo_cliente == 'mayorista' else 'Boleta')
         if tipo_recibo not in ('Boleta', 'Factura'):
             tipo_recibo = 'Boleta'
@@ -234,11 +260,16 @@ class CrearPedido(APIView):
                         kilos = Decimal('0.00')
                         todo_pesado = False
 
-                    crear_linea_pedido(pedido, producto, unidades, kilos, cfg)
+                    crear_linea_pedido(
+                        pedido, producto, unidades, kilos, cfg,
+                        congelado=_es_verdadero(detalle.get('congelado')),
+                        permitir_pre_reserva=permitir_pre_reserva,
+                    )
 
                 # Antes el estado quedaba según la ÚLTIMA línea: un pedido con una
                 # línea sin pesar podía quedar "Preparado" (por cobrar).
                 pedido.estado = "Preparado" if todo_pesado else "Reservado"
+                actualizar_estado_pre_reserva(pedido)
                 pedido.vendedor = vendedor
                 recalcular_total_pedido(pedido)
                 pedido.save()
@@ -307,24 +338,18 @@ class PedidoDetailView(APIView):
 
                     unidades_anteriores = int(detalle_obj.cantidad_unidades or 0)
                     kilos_anteriores = Decimal(str(detalle_obj.cantidad_kilos or 0))
+                    congelado = detalle_obj.congelado
+
+                    unidades_raw = det.get('cantidad_unidades') or 0
+                    nuevas_unidades = int(Decimal(str(unidades_raw).replace(',', '.')))
+                    if nuevas_unidades < 0:
+                        raise ValidationError("Las unidades no pueden ser negativas")
 
                     # Actualizamos valores
                     detalle_obj.cantidad_kilos = Decimal(str(det.get('cantidad_kilos') or 0).replace(',', '.'))
                     if detalle_obj.cantidad_kilos < 0:
                         raise ValidationError("Los kilos no pueden ser negativos")
 
-                    # Los kilos del ledger siguen al peso real de la linea: solo
-                    # se mueve la diferencia contra lo que ya estaba registrado.
-                    delta_kilos = detalle_obj.cantidad_kilos - kilos_anteriores
-                    if delta_kilos > 0:
-                        descontar_kilos_fifo(
-                            detalle_obj.producto, delta_kilos, permitir_faltante=True)
-                    elif delta_kilos < 0:
-                        restituir_kilos_fifo(detalle_obj.producto, -delta_kilos)
-                    unidades_raw = det.get('cantidad_unidades') or 0
-                    nuevas_unidades = int(Decimal(str(unidades_raw).replace(',', '.')))
-                    if nuevas_unidades < 0:
-                        raise ValidationError("Las unidades no pueden ser negativas")
                     detalle_obj.cantidad_unidades = nuevas_unidades
 
                     delta_unidades = nuevas_unidades - unidades_anteriores
@@ -334,18 +359,18 @@ class PedidoDetailView(APIView):
                         # venden sin descontar nunca el inventario (bug de origen:
                         # ver Pedido #34, que tenia 4 unidades vendidas pero solo 2
                         # con factura de compra asociada).
+                        # Si no alcanza y la línea ya es pre-reserva (o se pide
+                        # explícitamente), lo que falta queda pendiente.
+                        a_consumir = delta_unidades
+                        if detalle_obj.unidades_pendientes > 0 or _es_verdadero(data.get('permitir_pre_reserva')):
+                            if not congelado:
+                                hay = int(unidades_en_stock(detalle_obj.producto))
+                                a_consumir = min(delta_unidades, hay)
+                                detalle_obj.unidades_pendientes += delta_unidades - a_consumir
                         _c, _k, facturas_usadas_delta, facturas_cantidades_delta = consumir_fifo(
-                            detalle_obj.producto, delta_unidades
+                            detalle_obj.producto, a_consumir, congelado=congelado
                         )
-                        detalle_obj.facturas.add(*facturas_usadas_delta)
-                        for factura_id, cantidad in facturas_cantidades_delta.items():
-                            link, created = FacturaDetallePedido.objects.get_or_create(
-                                detallepedido=detalle_obj, factura_id=factura_id,
-                                defaults={'cantidad_unidades': cantidad}
-                            )
-                            if not created:
-                                link.cantidad_unidades += cantidad
-                                link.save()
+                        vincular_lotes(detalle_obj, facturas_usadas_delta, facturas_cantidades_delta)
 
                         # Recalcular el costo/kg de la linea como el promedio
                         # ponderado de los lotes vinculados (incluye los nuevos).
@@ -359,7 +384,28 @@ class PedidoDetailView(APIView):
                         # unidad de tapabarriga al editar y no volvio al stock).
                         # El costo/kg de la linea se mantiene: solo cambia el
                         # total al recalcularse con los kilos nuevos abajo.
-                        restituir_unidades_fifo(detalle_obj.producto, -delta_unidades)
+                        # Primero se descuentan las de pre-reserva: esas nunca
+                        # salieron del stock.
+                        quitar = -delta_unidades
+                        de_pendientes = min(quitar, detalle_obj.unidades_pendientes)
+                        detalle_obj.unidades_pendientes -= de_pendientes
+                        if quitar - de_pendientes > 0:
+                            restituir_unidades_fifo(
+                                detalle_obj.producto, quitar - de_pendientes, congelado=congelado)
+
+                    if detalle_obj.unidades_pendientes > 0 and detalle_obj.cantidad_kilos > 0:
+                        raise ValidationError(
+                            f"'{detalle_obj.producto.nombre}' tiene {detalle_obj.unidades_pendientes} "
+                            "unidad(es) en pre-reserva sin stock: no se puede pesar hasta que llegue la factura")
+
+                    # Los kilos del ledger siguen al peso real de la linea: solo
+                    # se mueve la diferencia contra lo que ya estaba registrado.
+                    delta_kilos = detalle_obj.cantidad_kilos - kilos_anteriores
+                    if delta_kilos > 0:
+                        descontar_kilos_fifo(
+                            detalle_obj.producto, delta_kilos, permitir_faltante=True, congelado=congelado)
+                    elif delta_kilos < 0:
+                        restituir_kilos_fifo(detalle_obj.producto, -delta_kilos, congelado=congelado)
 
                     # Cambio de precio de la línea (opcional): mismo criterio que al crear.
                     if det.get('modo_precio'):
@@ -384,6 +430,12 @@ class PedidoDetailView(APIView):
                 # sumaban solo las líneas que venían en el payload, así que una
                 # edición parcial dejaba el total del pedido más bajo que sus líneas.
                 recalcular_total_pedido(pedido)
+                if pedido.estado in ("Preparado", "Pagado") and pedido.detalles.filter(
+                        estado="Activo", unidades_pendientes__gt=0).exists():
+                    raise ValidationError(
+                        "El pedido tiene unidades en pre-reserva sin stock: no puede pasar a "
+                        f"{pedido.estado} hasta que llegue la factura")
+                actualizar_estado_pre_reserva(pedido)
                 pedido.save()
 
             serializer = PedidoSerializer(pedido)
@@ -426,6 +478,10 @@ class ActualizarKilosPedido(APIView):
                     kilos_anteriores = Decimal(str(detalle.cantidad_kilos or 0))
                     kilos_nuevos = Decimal(str(cantidad_kilos or 0).replace(',', '.'))
                     delta = kilos_nuevos - kilos_anteriores
+                    if kilos_nuevos > 0 and detalle.unidades_pendientes > 0:
+                        raise ValidationError(
+                            f"'{detalle.producto.nombre}' tiene unidades en pre-reserva sin stock: "
+                            "no se puede pesar hasta que llegue la factura")
 
                     # Antes solo se guardaban los kilos y total_venta quedaba en 0:
                     # el pedido pesado seguía sumando $0 en ventas.
@@ -437,9 +493,10 @@ class ActualizarKilosPedido(APIView):
                     # linea no descuente dos veces. Un delta negativo (correccion
                     # a la baja) devuelve los kilos que nunca salieron.
                     if delta > 0:
-                        descontar_kilos_fifo(detalle.producto, delta, permitir_faltante=True)
+                        descontar_kilos_fifo(detalle.producto, delta, permitir_faltante=True,
+                                             congelado=detalle.congelado)
                     elif delta < 0:
-                        restituir_kilos_fifo(detalle.producto, -delta)
+                        restituir_kilos_fifo(detalle.producto, -delta, congelado=detalle.congelado)
 
                 recalcular_total_pedido(pedido)
                 pedido.save()
@@ -449,6 +506,8 @@ class ActualizarKilosPedido(APIView):
             return Response({'status': 'Kilos actualizados exitosamente'}, status=status.HTTP_200_OK)
         except Pedido.DoesNotExist:
             return Response({'error': 'Pedido no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return _error_de_validacion(e)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -543,7 +602,14 @@ class CrearFacturaEntrada(APIView):
                     fecha_entrada=factura.fecha
                 )
 
-            return Response({'message': 'Éxito'}, status=status.HTTP_201_CREATED)
+            # Con el stock ya cargado, las pre-reservas de estos productos
+            # toman sus unidades (la más antigua primero) y pasan a Reservado.
+            pre_reservas = []
+            for producto_id in {item.get('producto') for item in detalles_data}:
+                pre_reservas += asignar_pre_reservas(Producto.objects.get(id=producto_id))
+
+            return Response({'message': 'Éxito', 'pre_reservas_asignadas': pre_reservas},
+                            status=status.HTTP_201_CREATED)
 
         except ValidationError as e:
             transaction.set_rollback(True)
@@ -604,6 +670,7 @@ class UpdateFacturaEntrada(APIView):
                     import json
                     detalles_put = json.loads(detalles_put)
 
+                productos_tocados = set()
                 for item in detalles_put:
                     detalle_id = item.get('id')
                     if detalle_id is not None:
@@ -614,6 +681,12 @@ class UpdateFacturaEntrada(APIView):
                     info = estado_consumo_detalle(detalle)
                     estado = info['estado']
                     consumidas = info['consumidas']
+                    # Lo que de este lote se pasó a congelado sigue vivo, pero en
+                    # otro pool: la edición no lo toca y la cantidad no puede
+                    # quedar por debajo de vendido + congelado.
+                    congeladas = EntradaProducto.objects.filter(
+                        factura=detalle.factura_id, producto=detalle.producto_id, congelado=True
+                    ).aggregate(t=Sum('cantidad_unidades'))['t'] or 0
 
                     # Línea totalmente consumida: no se toca cantidad ni costo.
                     if estado == 'bloqueada':
@@ -629,6 +702,12 @@ class UpdateFacturaEntrada(APIView):
                             f"El producto '{detalle.producto.nombre}' ya tiene {consumidas} "
                             f"unidad(es) vendida(s); la cantidad no puede ser menor a ese valor."
                         )
+                    if congeladas and nuevas_unidades < consumidas + congeladas:
+                        raise ValidationError(
+                            f"El producto '{detalle.producto.nombre}' tiene {congeladas} unidad(es) "
+                            f"congelada(s) y {consumidas} vendida(s); la cantidad no puede ser menor "
+                            f"a {consumidas + congeladas}."
+                        )
 
                     kilos_originales = detalle.cantidad_kilos
 
@@ -641,8 +720,10 @@ class UpdateFacturaEntrada(APIView):
 
                     # Reconciliar el stock vivo (EntradaProducto) con lo restante.
                     self._reconciliar_entrada(
-                        detalle, consumidas, kilos_originales, nuevos_kilos, nuevas_unidades, nuevo_costo
+                        detalle, consumidas + congeladas, kilos_originales, nuevos_kilos,
+                        nuevas_unidades, nuevo_costo
                     )
+                    productos_tocados.add(detalle.producto)
 
                 # Recalcular totales igual que en creación (subtotal + IVA 19%),
                 # solo si se tocaron líneas: subir la foto o cambiar el
@@ -654,6 +735,10 @@ class UpdateFacturaEntrada(APIView):
                     factura.iva = iva
                     factura.total = (subtotal + iva).quantize(Decimal('0.01'))
                 factura.save()
+
+                # Si la edición sumó unidades, pueden cubrir pre-reservas.
+                for producto in productos_tocados:
+                    asignar_pre_reservas(producto)
 
             factura.refresh_from_db()
             return Response(FacturaSerializer(factura).data, status=status.HTTP_200_OK)
@@ -686,15 +771,22 @@ class UpdateFacturaEntrada(APIView):
         la edicion (nuevos_kilos - kilos_originales), que es lo unico que de
         verdad cambio en la factura.
         """
+        # Solo el inventario normal: lo congelado de este lote se dejó fuera
+        # sumándolo a ``consumidas`` (ver put).
         entradas = list(
             EntradaProducto.objects.filter(
-                factura=detalle.factura_id, producto=detalle.producto_id
+                factura=detalle.factura_id, producto=detalle.producto_id, congelado=False
             ).order_by('fecha_entrada')
         )
 
         unidades_restantes = nuevas_unidades - consumidas
         if unidades_restantes < 0:
             unidades_restantes = 0
+
+        # El costo corregido también vale para la parte congelada del lote.
+        EntradaProducto.objects.filter(
+            factura=detalle.factura_id, producto=detalle.producto_id, congelado=True
+        ).update(costo_por_kilo=nuevo_costo)
 
         kilos_vivos_actuales = sum((e.cantidad_kilos for e in entradas), Decimal('0.00'))
         delta_kilos = nuevos_kilos - kilos_originales
@@ -710,7 +802,7 @@ class UpdateFacturaEntrada(APIView):
             principal.save()
             for extra in entradas[1:]:
                 extra.delete()
-        else:
+        elif unidades_restantes > 0 or kilos_restantes > 0:
             # No debería ocurrir en 'libre'/'parcial' (siempre queda stock vivo),
             # pero por robustez recreamos la entrada.
             EntradaProducto.objects.create(
@@ -890,6 +982,10 @@ class CancelarProductoPedido(APIView):
                 if not lineas_activas.exists():
                     # No queda nada vivo en el pedido: se anula completo.
                     pedido.estado = "Anulado"
+                else:
+                    # Si la línea cancelada era la única pre-reserva, el pedido
+                    # vuelve a Reservado.
+                    actualizar_estado_pre_reserva(pedido)
 
                 pedido.save()
 
@@ -939,7 +1035,11 @@ class AgregarProductoPedido(APIView):
 
                 # Igual que en CrearPedido (misma función): precio propio de esta línea.
                 cfg = parse_precio_linea(request.data)
-                crear_linea_pedido(pedido, producto, unidades, kilos, cfg)
+                linea = crear_linea_pedido(
+                    pedido, producto, unidades, kilos, cfg,
+                    congelado=_es_verdadero(request.data.get('congelado')),
+                    permitir_pre_reserva=_es_verdadero(request.data.get('permitir_pre_reserva')),
+                )
                 recalcular_total_pedido(pedido)
 
                 # Si el pedido ya estaba Preparado/Pagado y la línea nueva viene
@@ -947,6 +1047,11 @@ class AgregarProductoPedido(APIView):
                 # trae peso, sigue el mismo criterio que CrearPedido.
                 if pedido.estado == "Reservado" and kilos > 0:
                     pedido.estado = "Preparado"
+                if linea.unidades_pendientes > 0 and pedido.estado in ("Preparado", "Pagado"):
+                    raise ValidationError(
+                        f"No hay stock suficiente de '{producto.nombre}' y el pedido ya está "
+                        f"{pedido.estado}: una pre-reserva solo puede ir en un pedido sin preparar")
+                actualizar_estado_pre_reserva(pedido)
 
                 pedido.save()
 
@@ -1001,30 +1106,48 @@ class StockProductos(APIView):
             # CrearPedido igual rechazaba por "No hay suficiente stock".
             # Usar la misma fuente que el chequeo real hace que ambos numeros
             # NUNCA puedan divergir.
-            reales = EntradaProducto.objects.filter(producto=producto).aggregate(
+            # El stock congelado es un pool aparte: no cuenta como disponible
+            # para vender normal y se muestra en sus propias columnas.
+            reales = EntradaProducto.objects.filter(producto=producto, congelado=False).aggregate(
                 u=Sum('cantidad_unidades'),
                 k=Sum('cantidad_kilos'),
             )
             disponibles = reales['u'] or 0
             kilos_actuales = reales['k'] or 0
+            congelado = EntradaProducto.objects.filter(producto=producto, congelado=True).aggregate(
+                u=Sum('cantidad_unidades'),
+                k=Sum('cantidad_kilos'),
+            )
 
             # Reservas: pedidos no anulados sin kilos (ya descontaron unidades
             # del ledger real, pero siguen fisicamente en bodega esperando).
-            unidades_reservadas = DetallePedido.objects.filter(
+            # Las pre-reservas no: esas unidades todavía no existen.
+            lineas_sin_pesar = DetallePedido.objects.filter(
                 producto=producto, cantidad_kilos=0
-            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado").aggregate(
-                u=Sum('cantidad_unidades')
-            )['u'] or 0
+            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
+            totales_reserva = lineas_sin_pesar.aggregate(
+                u=Sum('cantidad_unidades'), p=Sum('unidades_pendientes'))
+            pre_reservas = totales_reserva['p'] or 0
+            unidades_reservadas = (totales_reserva['u'] or 0) - pre_reservas
+            reservas_congelado = lineas_sin_pesar.filter(congelado=True).aggregate(
+                u=Sum('cantidad_unidades'))['u'] or 0
 
             # Stock físico = disponibles + lo reservado (que sigue en la repisa).
-            stock_fisico = disponibles + unidades_reservadas
+            stock_fisico = disponibles + unidades_reservadas - reservas_congelado
 
             # Lotes vivos en orden FIFO: con esto Nuevo Pedido estima el costo/kg
             # exacto que tendrá la línea (mismo ponderado por unidades que
             # costo_por_kilo_ponderado) y avisa si un precio queda bajo costo.
             lotes = [
                 {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
-                for e in EntradaProducto.objects.filter(producto=producto, cantidad_unidades__gt=0)
+                for e in EntradaProducto.objects.filter(
+                    producto=producto, cantidad_unidades__gt=0, congelado=False)
+                .order_by('fecha_entrada')
+            ]
+            lotes_congelado = [
+                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
+                for e in EntradaProducto.objects.filter(
+                    producto=producto, cantidad_unidades__gt=0, congelado=True)
                 .order_by('fecha_entrada')
             ]
 
@@ -1041,6 +1164,11 @@ class StockProductos(APIView):
                 'reservas': unidades_reservadas,
                 'kilos_actuales': round(kilos_actuales, 2),
                 'lotes': lotes,
+                'pre_reservas': pre_reservas,
+                'congelado_unidades': congelado['u'] or 0,
+                'congelado_kilos': round(congelado['k'] or 0, 2),
+                'congelado_reservas': reservas_congelado,
+                'lotes_congelado': lotes_congelado,
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
@@ -1545,6 +1673,59 @@ class AjusteInventarioDetailView(APIView):
             return _error_de_validacion(e)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MovimientoCongeladoView(APIView):
+    """GET: historial de movimientos entre inventario y congelado.
+    POST: {producto, cantidad_unidades, cantidad_kilos?, direccion, razon?}
+    mueve los lotes (ver mover_stock_congelado) y deja el registro.
+
+    ``direccion``: 'congelar' (inventario -> congelado, default) o
+    'descongelar' (congelado -> inventario). Si se descongela, el stock que
+    vuelve al inventario puede cubrir pre-reservas pendientes."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        movimientos = MovimientoCongelado.objects.select_related('producto', 'usuario')
+        producto_id = request.query_params.get('producto')
+        if producto_id:
+            movimientos = movimientos.filter(producto_id=producto_id)
+        return Response(MovimientoCongeladoSerializer(movimientos, many=True).data)
+
+    def post(self, request):
+        data = request.data
+        direccion = data.get('direccion') or 'congelar'
+        if direccion not in dict(MovimientoCongelado.DIRECCIONES):
+            return Response({'error': 'Dirección inválida'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            producto = Producto.objects.get(id=data.get('producto'))
+        except (Producto.DoesNotExist, ValueError, TypeError):
+            return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            unidades = int(Decimal(str(data.get('cantidad_unidades') or 0).replace(',', '.')))
+            kilos_raw = data.get('cantidad_kilos')
+            kilos = (Decimal(str(kilos_raw).replace(',', '.'))
+                     if kilos_raw not in (None, '') else None)
+        except (InvalidOperation, ValueError):
+            return Response({'error': 'Cantidad inválida'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                unidades, kilos_movidos = mover_stock_congelado(
+                    producto, unidades, kilos, a_congelado=(direccion == 'congelar'))
+                movimiento = MovimientoCongelado.objects.create(
+                    producto=producto, direccion=direccion,
+                    cantidad_unidades=unidades, cantidad_kilos=kilos_movidos,
+                    razon=(data.get('razon') or '').strip(),
+                    usuario=request.user if request.user.is_authenticated else None,
+                )
+                pre_reservas = asignar_pre_reservas(producto) if direccion == 'descongelar' else []
+        except ValidationError as e:
+            return _error_de_validacion(e)
+
+        respuesta = MovimientoCongeladoSerializer(movimiento).data
+        respuesta['pre_reservas_asignadas'] = pre_reservas
+        return Response(respuesta, status=status.HTTP_201_CREATED)
 
 
 # ============================================================================

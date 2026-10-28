@@ -19,3 +19,4 @@ admin.site.register(models.AjusteInventario)
 admin.site.register(models.HistorialPrecioProducto)
 
 
+admin.site.register(models.MovimientoCongelado)

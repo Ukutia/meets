@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.db import models
 from rest_framework import serializers
-from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario, NotaCredito, MovimientoBancario, AsignacionMovimiento, Cartola, Gasto
+from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario, MovimientoCongelado, NotaCredito, MovimientoBancario, AsignacionMovimiento, Cartola, Gasto
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -95,6 +95,18 @@ class AjusteInventarioSerializer(serializers.ModelSerializer):
         fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'cantidad_unidades', 'tipo', 'razon', 'fecha']
 
 
+class MovimientoCongeladoSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+    usuario_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MovimientoCongelado
+        fields = ['id', 'producto', 'producto_nombre', 'direccion', 'cantidad_unidades', 'cantidad_kilos', 'razon', 'usuario_nombre', 'fecha']
+
+    def get_usuario_nombre(self, obj):
+        return obj.usuario.username if obj.usuario else None
+
+
 class DetallePedidoSerializer(serializers.ModelSerializer):
     producto = ProductoSerializer()
     cliente_nombre = serializers.ReadOnlyField(source='pedido.cliente.nombre')
@@ -156,7 +168,7 @@ class DetallePedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'margen', 'costo_por_kilo', 'facturas', 'facturas_detalle', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'pedido', 'cliente_nombre', 'vendedor_nombre', 'estado_pedido', 'estado', 'unidades_pendientes', 'congelado']
 
 
 class DetallePedidoLigeroSerializer(serializers.ModelSerializer):
@@ -166,7 +178,7 @@ class DetallePedidoLigeroSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DetallePedido
-        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'costo_por_kilo', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'estado']
+        fields = ['id', 'producto', 'cantidad_unidades', 'cantidad_kilos', 'total_venta', 'total_costo', 'costo_por_kilo', 'precio_venta', 'precio_lista', 'modo_precio', 'descuento_por_kilo', 'fecha', 'estado', 'unidades_pendientes', 'congelado']
 
 
 class PedidoSerializer(serializers.ModelSerializer):
