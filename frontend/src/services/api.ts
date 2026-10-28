@@ -5,6 +5,8 @@ import type {
   Pedido,
   Factura,
   StockItem,
+  MovimientoCongelado,
+  PreReservaAsignada,
   Vendedor,
   Proveedor,
   HistorialPrecio,
@@ -184,6 +186,8 @@ export const agregarProductoPedido = (pedidoId: number, data: {
   producto_id: number;
   cantidad_kilos: number;
   cantidad_unidades: number;
+  congelado?: boolean;
+  permitir_pre_reserva?: boolean;
 } & PrecioLinea) => api.post<Pedido>(`/pedidos/agregar-producto/`, { pedido_id: pedidoId, ...data });
 export const actualizarKilosPedido = (id: number, detalles: any[]) =>
   api.post(`/pedidos/actualizar_kilos/${id}/`, { detalles });
@@ -245,6 +249,15 @@ export const getDetallePedidos = async () => {
 
 // Stock
 export const getStock = () => api.get<StockItem[]>('/stock/');
+export const getMovimientosCongelado = (producto?: number) =>
+  api.get<MovimientoCongelado[]>('/inventario/congelado/', { params: producto ? { producto } : undefined });
+export const moverStockCongelado = (data: {
+  producto: number;
+  cantidad_unidades: number;
+  cantidad_kilos?: number;
+  direccion: 'congelar' | 'descongelar';
+  razon?: string;
+}) => api.post<MovimientoCongelado & { pre_reservas_asignadas?: PreReservaAsignada[] }>('/inventario/congelado/', data);
 
 // Ajustes de Inventario (Mermas / Excesos / Ajustes manuales)
 export const getAjustesInventario = (params?: { producto?: number; tipo?: string }) =>

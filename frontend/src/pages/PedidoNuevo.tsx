@@ -31,16 +31,25 @@ interface DetalleProducto {
   modo: ModoPrecio;
   descuentoTexto: string;
   precioTexto: string;
-  stock_disponible: number;
+  stock_normal: number;
+  stock_congelado: number;
   peso_minimo: number;
-  lotes: StockItem['lotes'];
+  lotes_normal: StockItem['lotes'];
+  lotes_congelado: StockItem['lotes'];
+  congelado: boolean;
 }
+
+const disponibleDe = (d: DetalleProducto) => (d.congelado ? d.stock_congelado : d.stock_normal);
 
 // Valores calculados de una línea (todo deriva del texto que escribe el usuario).
 function calcular(d: DetalleProducto) {
   const kilos = parseDecimal(d.kilosTexto);
   const unidades = Math.trunc(parseDecimal(d.unidadesTexto));
-  const costoNeto = costoFifo(d.lotes, unidades);
+  const costoNeto = costoFifo(d.congelado ? d.lotes_congelado : d.lotes_normal, unidades);
+  const disponibles = disponibleDe(d);
+  // Solo Inventario admite pre-reserva; esas unidades sin stock no se pueden pesar.
+  const pendientes = !d.congelado && unidades > disponibles ? unidades - Math.max(disponibles, 0) : 0;
+  const excedeCongelado = d.congelado && unidades > disponibles;
   const precio = precioSegunModo(d.modo, d.precio_lista, {
     descuento: parseDecimal(d.descuentoTexto),
     personalizado: parseDecimal(d.precioTexto),
@@ -49,7 +58,8 @@ function calcular(d: DetalleProducto) {
   const piso = costoNeto != null ? pisoSinPerdida(costoNeto) : null;
   const bajoCosto = piso != null && precio < piso;
   const pesoInvalido = unidades > 0 && kilos > 0 && kilos / unidades < d.peso_minimo;
-  return { kilos, unidades, costoNeto, precio, piso, bajoCosto, pesoInvalido, subtotal: kilos * precio };
+  const pesoConPendientes = pendientes > 0 && kilos > 0;
+  return { kilos, unidades, pendientes, excedeCongelado, costoNeto, precio, piso, bajoCosto, pesoInvalido, pesoConPendientes, subtotal: kilos * precio };
 }
 
 export default function PedidoNuevo() {
@@ -105,20 +115,24 @@ export default function PedidoNuevo() {
     if (!producto) return;
     const item = stockDe(producto);
     const disponibles = item?.disponibles ?? 0;
+    const congelados = Math.max((item?.congelado_unidades ?? 0) - (item?.congelado_reservas ?? 0), 0);
     setDetalles((prev) => [
       ...prev,
       {
         producto_id: producto.id,
         producto_nombre: producto.nombre,
         kilosTexto: '',
-        unidadesTexto: disponibles > 0 ? '1' : '0',
+        unidadesTexto: '1',
         precio_lista: Number(producto.precio_por_kilo) || 0,
         modo: 'lista',
         descuentoTexto: '',
         precioTexto: '',
-        stock_disponible: disponibles,
+        stock_normal: disponibles,
+        stock_congelado: congelados,
         peso_minimo: Number(producto.peso_minimo) || 0,
-        lotes: item?.lotes,
+        lotes_normal: item?.lotes,
+        lotes_congelado: item?.lotes_congelado,
+        congelado: false,
       },
     ]);
     setProductoSeleccionado('');
@@ -132,7 +146,9 @@ export default function PedidoNuevo() {
   const totalLista = detalles.reduce((s, d, i) => s + calculados[i].kilos * d.precio_lista, 0);
   const lineasBajoCosto = detalles.filter((_, i) => calculados[i].bajoCosto);
   const lineaConPesoInvalido = detalles.findIndex((_, i) => calculados[i].pesoInvalido);
-  const excedeStock = detalles.find((d, i) => calculados[i].unidades > d.stock_disponible);
+  const excedeStock = detalles.find((_, i) => calculados[i].excedeCongelado);
+  const lineasPendientes = detalles.filter((_, i) => calculados[i].pendientes > 0);
+  const lineaPesoPendiente = detalles.findIndex((_, i) => calculados[i].pesoConPendientes);
 
   const pedidoMutation = useMutation({
     mutationFn: () => {
@@ -147,16 +163,23 @@ export default function PedidoNuevo() {
           cantidad_kilos: calculados[i].kilos,
           cantidad_unidades: calculados[i].unidades,
           modo_precio: d.modo,
+          congelado: d.congelado,
           descuento_por_kilo: d.modo === 'descuento' ? parseDecimal(d.descuentoTexto) : 0,
           precio_personalizado: d.modo === 'personalizado' ? parseDecimal(d.precioTexto) : undefined,
         })),
         observaciones: observaciones.trim(),
+        ...(lineasPendientes.length > 0 ? { permitir_pre_reserva: true } : {}),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
-      toast({ title: 'Pedido creado', description: 'El pedido se registró correctamente.' });
+      toast({
+        title: lineasPendientes.length > 0 ? 'Pre-reserva creada' : 'Pedido creado',
+        description: lineasPendientes.length > 0
+          ? 'Las unidades sin stock quedan pendientes y se asignarán cuando ingrese una factura.'
+          : 'El pedido se registró correctamente.',
+      });
       navigate('/pedidos');
     },
     onError: (error: any) => {
@@ -190,7 +213,12 @@ export default function PedidoNuevo() {
         return;
       }
       if (excedeStock) {
-        toast({ title: 'Sin stock suficiente', description: `${excedeStock.producto_nombre}: hay ${excedeStock.stock_disponible} unidades.`, variant: 'destructive' });
+        toast({ title: 'Sin stock suficiente', description: `${excedeStock.producto_nombre}: hay ${excedeStock.stock_congelado} unidades congeladas.`, variant: 'destructive' });
+        return;
+      }
+      if (lineaPesoPendiente !== -1) {
+        const d = detalles[lineaPesoPendiente];
+        toast({ title: 'No se puede pesar', description: `${d.producto_nombre} tiene unidades en pre-reserva: deja los kilos vacíos.`, variant: 'destructive' });
         return;
       }
       if (lineaConPesoInvalido !== -1) {
@@ -289,7 +317,7 @@ export default function PedidoNuevo() {
                   <SelectContent>
                     {productosDisponibles.map((p) => (
                       <SelectItem key={p.id} value={p.id.toString()}>
-                        {p.nombre} · {formatCLP(p.precio_por_kilo)}/kg · {stockDe(p)?.disponibles ?? 0} disp.
+                        {p.nombre} · {formatCLP(p.precio_por_kilo)}/kg · {stockDe(p)?.disponibles ?? 0} disp.{(stockDe(p)?.congelado_unidades ?? 0) > 0 ? ` · ${stockDe(p)?.congelado_unidades} cong.` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -351,6 +379,13 @@ export default function PedidoNuevo() {
               </div>
             </div>
 
+            {lineasPendientes.length > 0 && (
+              <p className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                El pedido quedará en Pre-reserva: hay unidades sin stock ({lineasPendientes.map((d) => d.producto_nombre).join(', ')}).
+              </p>
+            )}
+
             {lineasBajoCosto.length > 0 && (
               <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -376,6 +411,8 @@ export default function PedidoNuevo() {
                       <TableRow key={d.producto_id}>
                         <TableCell className="font-medium">
                           {d.producto_nombre}
+                          {d.congelado && <Badge variant="outline" className="ml-2 text-[10px] text-sky-700 border-sky-200 bg-sky-50">Congelado</Badge>}
+                          {c.pendientes > 0 && <span className="block text-xs text-amber-700">{c.pendientes} en pre-reserva (sin stock)</span>}
                           {d.modo !== 'lista' && (
                             <span className="block text-xs text-muted-foreground">{MODOS_PRECIO.find((m) => m.value === d.modo)?.label}</span>
                           )}
@@ -453,18 +490,35 @@ function LineaProducto({
 }) {
   const margen = c.costoNeto != null ? gananciaPorKilo(c.precio, c.costoNeto) : null;
   return (
-    <div className={cn('rounded-xl border p-3 space-y-3', (c.pesoInvalido || c.bajoCosto) && 'border-destructive/50 bg-destructive/5')}>
+    <div className={cn('rounded-xl border p-3 space-y-3', (c.pesoInvalido || c.bajoCosto || c.excedeCongelado) && 'border-destructive/50 bg-destructive/5', c.pendientes > 0 && 'border-amber-300 bg-amber-50/50')}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-semibold leading-tight">{d.producto_nombre}</p>
           <p className="text-xs text-muted-foreground">
-            {d.stock_disponible} disponibles · normal {formatCLP(d.precio_lista)}/kg
+            {disponibleDe(d)} disponibles{d.congelado ? ' (congelado)' : ''} · normal {formatCLP(d.precio_lista)}/kg
           </p>
         </div>
         <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Quitar ${d.producto_nombre}`} onClick={onRemove}>
           <XCircle className="h-4 w-4 text-destructive" />
         </Button>
       </div>
+
+      {d.stock_congelado > 0 && (
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">Origen</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            value={d.congelado ? 'congelado' : 'inventario'}
+            onValueChange={(v) => v && onChange({ congelado: v === 'congelado', kilosTexto: '' })}
+            className="justify-start"
+          >
+            <ToggleGroupItem value="inventario" className="text-xs">Inventario ({d.stock_normal})</ToggleGroupItem>
+            <ToggleGroupItem value="congelado" className="text-xs">Congelado ({d.stock_congelado})</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
@@ -473,7 +527,7 @@ function LineaProducto({
             decimales={false}
             value={d.unidadesTexto}
             onValueChange={(t) => onChange({ unidadesTexto: t })}
-            className={cn('h-11 text-center text-base font-semibold', c.unidades > d.stock_disponible && 'border-destructive')}
+            className={cn('h-11 text-center text-base font-semibold', c.excedeCongelado && 'border-destructive')}
             aria-label={`Unidades de ${d.producto_nombre}`}
           />
         </div>
@@ -483,11 +537,20 @@ function LineaProducto({
             value={d.kilosTexto}
             onValueChange={(t) => onChange({ kilosTexto: t })}
             placeholder="0,000"
-            className={cn('h-11 text-center text-base font-semibold', c.pesoInvalido && 'border-destructive')}
+            className={cn('h-11 text-center text-base font-semibold', (c.pesoInvalido || c.pesoConPendientes) && 'border-destructive')}
             aria-label={`Kilos de ${d.producto_nombre}`}
           />
         </div>
       </div>
+      {c.pendientes > 0 && (
+        <p className="flex items-start gap-1.5 text-xs font-semibold text-amber-700">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {c.pendientes} {c.pendientes === 1 ? 'unidad queda' : 'unidades quedan'} en pre-reserva (sin stock). Esta línea no se puede pesar hasta que llegue stock.
+        </p>
+      )}
+      {c.excedeCongelado && (
+        <p className="text-xs font-semibold text-destructive">Solo hay {disponibleDe(d)} unidades congeladas disponibles.</p>
+      )}
       {c.pesoInvalido && (
         <p className="text-xs font-semibold text-destructive">Peso bajo el mínimo ({d.peso_minimo.toLocaleString('es-CL')} kg por unidad)</p>
       )}

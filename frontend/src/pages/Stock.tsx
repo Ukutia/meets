@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Search, AlertTriangle, Package, Scale, TrendingUp, Coins } from 'lucide-react';
+import { Search, AlertTriangle, Package, Scale, TrendingUp, Coins, Snowflake } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { DecimalInput } from '@/components/shared/DecimalInput';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { useToast } from '@/hooks/use-toast';
+import { resumenPreReservas } from '@/lib/preReservas';
 import { Input } from '@/components/ui/input';
 import {
   Table,
@@ -11,13 +19,13 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useQuery } from '@tanstack/react-query';
-import { getStock, getMargenProductos } from '@/services/api';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { getStock, getMargenProductos, getMovimientosCongelado, moverStockCongelado } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { StatCard } from '@/components/shared/StatCard';
 import type { MargenProducto, StockItem } from '@/types';
-import { formatCLP } from '@/lib/utils';
+import { formatCLP, parseDecimal } from '@/lib/utils';
 import {
   Tooltip,
   TooltipContent,
@@ -28,11 +36,18 @@ import {
 // Mismo umbral que las alertas del Resumen.
 const UMBRAL_STOCK_BAJO = 10;
 
-type Filtro = 'todos' | 'bajo' | 'reservado';
+type Filtro = 'todos' | 'bajo' | 'reservado' | 'congelado' | 'prereserva';
 
 export default function Stock() {
   const [search, setSearch] = useState('');
   const [filtro, setFiltro] = useState<Filtro>('todos');
+  const [moverItem, setMoverItem] = useState<StockItem | null>(null);
+  const [direccion, setDireccion] = useState<'congelar' | 'descongelar'>('congelar');
+  const [unidadesTxt, setUnidadesTxt] = useState('');
+  const [kilosTxt, setKilosTxt] = useState('');
+  const [razon, setRazon] = useState('');
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['stock'],
@@ -43,6 +58,10 @@ export default function Stock() {
   const { data: margenes } = useQuery({
     queryKey: ['margen-productos'],
     queryFn: async () => (await getMargenProductos()).data as MargenProducto[],
+  });
+  const { data: movimientos } = useQuery({
+    queryKey: ['movimientos-congelado'],
+    queryFn: async () => (await getMovimientosCongelado()).data,
   });
   const costoPorId = useMemo(() => {
     const m = new Map<number, number>();
@@ -59,9 +78,11 @@ export default function Stock() {
       .filter((item) =>
         filtro === 'bajo' ? item.estado === 'disponible' && item.disponibles < UMBRAL_STOCK_BAJO
         : filtro === 'reservado' ? item.reservas > 0
+        : filtro === 'congelado' ? (item.congelado_unidades ?? 0) > 0
+        : filtro === 'prereserva' ? (item.pre_reservas ?? 0) > 0
         : true
       )
-      .sort((a, b) => b.stock - a.stock);
+      .sort((a, b) => (b.stock + (b.congelado_unidades ?? 0)) - (a.stock + (a.congelado_unidades ?? 0)));
   }, [stock, search, filtro]);
 
   const totales = useMemo(() => {
@@ -80,6 +101,56 @@ export default function Stock() {
     return { venta, costo, kilos, sinCosto };
   }, [filteredStock, costoPorId]);
 
+  const totalCongelado = stock.reduce((s, i) => s + (i.congelado_unidades ?? 0), 0);
+  const kilosCongelado = stock.reduce((s, i) => s + Number(i.congelado_kilos ?? 0), 0);
+  const totalPreReservas = stock.reduce((s, i) => s + (i.pre_reservas ?? 0), 0);
+
+  const abrirMover = (item: StockItem) => {
+    setMoverItem(item);
+    setDireccion('congelar');
+    setUnidadesTxt('');
+    setKilosTxt('');
+    setRazon('');
+  };
+
+  const moverMutation = useMutation({
+    mutationFn: () => {
+      if (!moverItem) throw new Error('Sin producto');
+      const kilos = parseDecimal(kilosTxt);
+      return moverStockCongelado({
+        producto: moverItem.id,
+        cantidad_unidades: Math.trunc(parseDecimal(unidadesTxt)),
+        ...(kilos > 0 ? { cantidad_kilos: kilos } : {}),
+        direccion: direccion,
+        razon: razon.trim() || undefined,
+      });
+    },
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      queryClient.invalidateQueries({ queryKey: ['movimientos-congelado'] });
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      const asignadas = resumenPreReservas(response.data?.pre_reservas_asignadas);
+      toast({
+        title: direccion === 'congelar' ? 'Stock congelado' : 'Stock descongelado',
+        description: asignadas || 'El movimiento quedó registrado.',
+        className: 'whitespace-pre-line',
+      });
+      setMoverItem(null);
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'No se pudo mover el stock',
+        description: err?.response?.data?.error ?? err?.message ?? 'Intenta nuevamente.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const disponibleOrigen = moverItem
+    ? direccion === 'congelar' ? moverItem.disponibles : Math.max((moverItem.congelado_unidades ?? 0) - (moverItem.congelado_reservas ?? 0), 0)
+    : 0;
+  const unidadesMover = Math.trunc(parseDecimal(unidadesTxt));
+
   const itemsBajos = stock.filter((item) => item.estado === 'disponible' && item.disponibles < UMBRAL_STOCK_BAJO).length;
 
   if (isLoading) return <LoadingSpinner />;
@@ -92,7 +163,7 @@ export default function Stock() {
         <p className="text-muted-foreground">Unidades disponibles, reservadas por pedidos y kilos en bodega.</p>
       </div>
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
         <StatCard
           title="Valor a costo"
           value={formatCLP(totales.costo)}
@@ -111,6 +182,14 @@ export default function Stock() {
           value={`${totales.kilos.toLocaleString('es-CL', { maximumFractionDigits: 1 })} kg`}
           icon={Scale}
           accent="text-blue-600"
+        />
+        <StatCard
+          title="Congelado"
+          value={`${totalCongelado} un.`}
+          icon={Snowflake}
+          accent="text-sky-600"
+          description={`${kilosCongelado.toLocaleString('es-CL', { maximumFractionDigits: 1 })} kg · ${totalPreReservas} un. en pre-reserva`}
+          onClick={() => setFiltro(filtro === 'congelado' ? 'todos' : 'congelado')}
         />
         <StatCard
           title="Stock bajo"
@@ -138,6 +217,8 @@ export default function Stock() {
             <SelectItem value="todos">Todos los cortes</SelectItem>
             <SelectItem value="bajo">Solo stock bajo</SelectItem>
             <SelectItem value="reservado">Con reservas</SelectItem>
+            <SelectItem value="congelado">Con stock congelado</SelectItem>
+            <SelectItem value="prereserva">Con pre-reservas</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -149,17 +230,20 @@ export default function Stock() {
               <TableHead>Producto</TableHead>
               <TableHead className="text-center">Disponibles</TableHead>
               <TableHead className="text-center">Reservas</TableHead>
+              <TableHead className="text-center">Pre-reservas</TableHead>
+              <TableHead className="text-center">Congelado</TableHead>
               <TableHead className="text-center hidden md:table-cell">Stock físico</TableHead>
               <TableHead className="text-right">Kilos</TableHead>
               <TableHead className="text-right hidden md:table-cell">Peso prom.</TableHead>
               <TableHead className="text-right hidden lg:table-cell">Costo/kg</TableHead>
               <TableHead className="text-right">Precio/kg</TableHead>
+              <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredStock.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">No hay cortes con estos filtros.</TableCell>
+                <TableCell colSpan={11} className="h-24 text-center text-muted-foreground">No hay cortes con estos filtros.</TableCell>
               </TableRow>
             )}
             {filteredStock.map((item) => {
@@ -184,6 +268,24 @@ export default function Stock() {
                       {item.reservas}
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-center">
+                    <Badge variant="outline" className={(item.pre_reservas ?? 0) > 0 ? 'text-amber-700 border-amber-300 bg-amber-50' : 'text-muted-foreground'}>
+                      {item.pre_reservas ?? 0}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-center tabular-nums whitespace-nowrap">
+                    {(item.congelado_unidades ?? 0) > 0 ? (
+                      <>
+                        <span className="font-bold text-sky-700">{item.congelado_unidades}</span>
+                        <span className="block text-[10px] text-muted-foreground">
+                          {Number(item.congelado_kilos ?? 0).toFixed(2)} kg
+                          {(item.congelado_reservas ?? 0) > 0 && ` · ${item.congelado_reservas} res.`}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">0</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-center font-medium hidden md:table-cell tabular-nums">{item.stock}</TableCell>
                   <TableCell className="text-right font-medium tabular-nums whitespace-nowrap">
                     {Number(item.kilos_actuales).toFixed(2)} <span className="text-[10px] text-muted-foreground">kg</span>
@@ -205,12 +307,91 @@ export default function Stock() {
                     {costo != null ? formatCLP(costo) : '—'}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{formatCLP(item.precio_por_kilo)}</TableCell>
+                  <TableCell>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Congelar o descongelar ${item.producto}`} onClick={() => abrirMover(item)}>
+                      <Snowflake className="h-4 w-4 text-sky-600" />
+                    </Button>
+                  </TableCell>
                 </TableRow>
               );
             })}
           </TableBody>
         </Table>
       </div>
+
+      {movimientos && movimientos.length > 0 && (
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Últimos movimientos de congelado</h2>
+          <div className="rounded-lg border bg-card divide-y">
+            {movimientos.slice(0, 8).map((m) => (
+              <div key={m.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className={m.direccion === 'congelar' ? 'text-sky-700 border-sky-200 bg-sky-50' : 'text-orange-700 border-orange-200 bg-orange-50'}>
+                    {m.direccion === 'congelar' ? 'Congelar' : 'Descongelar'}
+                  </Badge>
+                  <span className="font-medium">{m.producto_nombre}</span>
+                  <span className="text-muted-foreground tabular-nums">{m.cantidad_unidades} un. · {Number(m.cantidad_kilos).toFixed(2)} kg</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {m.razon ? `${m.razon} · ` : ''}{m.usuario_nombre ? `${m.usuario_nombre} · ` : ''}
+                  {new Date(m.fecha).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Dialog open={!!moverItem} onOpenChange={(o) => !o && setMoverItem(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Snowflake className="h-5 w-5 text-sky-600" /> Congelar / Descongelar</DialogTitle>
+            <DialogDescription>
+              {moverItem?.producto} · {moverItem?.disponibles} disponibles en inventario · {moverItem?.congelado_unidades ?? 0} congeladas
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              value={direccion}
+              onValueChange={(v) => v && setDireccion(v as 'congelar' | 'descongelar')}
+              className="justify-start"
+            >
+              <ToggleGroupItem value="congelar">Congelar</ToggleGroupItem>
+              <ToggleGroupItem value="descongelar">Descongelar</ToggleGroupItem>
+            </ToggleGroup>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Unidades</Label>
+                <DecimalInput decimales={false} value={unidadesTxt} onValueChange={setUnidadesTxt} className="text-center font-semibold" aria-label="Unidades a mover" />
+                <p className="text-[11px] text-muted-foreground">Máximo {disponibleOrigen}</p>
+              </div>
+              <div className="space-y-1">
+                <Label>Kilos (opcional)</Label>
+                <DecimalInput value={kilosTxt} onValueChange={setKilosTxt} placeholder="0,000" className="text-center font-semibold" aria-label="Kilos a mover" />
+                <p className="text-[11px] text-muted-foreground">Vacío = se estima por el peso promedio del lote</p>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label>Razón (opcional)</Label>
+              <Textarea value={razon} onChange={(e) => setRazon(e.target.value)} placeholder="Ej: sobrante de la semana" rows={2} />
+            </div>
+            {direccion === 'descongelar' && (
+              <p className="text-xs text-muted-foreground">Al descongelar, las pre-reservas pendientes de este corte se llenan automáticamente (las más antiguas primero).</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoverItem(null)}>Cancelar</Button>
+            <Button
+              onClick={() => moverMutation.mutate()}
+              disabled={moverMutation.isPending || unidadesMover <= 0 || unidadesMover > disponibleOrigen}
+            >
+              {moverMutation.isPending ? 'Guardando...' : direccion === 'congelar' ? 'Congelar' : 'Descongelar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

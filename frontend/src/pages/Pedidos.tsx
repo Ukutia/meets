@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const ESTADOS = [
+  { value: 'Pre-reserva', label: 'Pre-reservas' },
   { value: 'Reservado', label: 'Por pesar' },
   { value: 'Preparado', label: 'Por cobrar' },
   { value: 'Pagado', label: 'Pagados' },
@@ -89,8 +90,16 @@ export default function Pedidos() {
     mutationFn: (payload: { id: number, data: any }) => updatePedido(payload.id, payload.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      queryClient.invalidateQueries({ queryKey: ['stock'] });
       toast({ title: "Actualizado", description: "Pedido actualizado correctamente." });
       setSelectedPedido(null);
+    },
+    onError: (err: any) => {
+      toast({
+        title: "No se pudo actualizar",
+        description: err?.response?.data?.error ?? 'Error al actualizar el pedido',
+        variant: "destructive",
+      });
     },
   });
 
@@ -122,6 +131,8 @@ export default function Pedidos() {
         producto_id: payload.producto_id,
         cantidad_kilos: payload.cantidad_kilos,
         cantidad_unidades: payload.cantidad_unidades,
+        // Sin kilos (por pesar) lo que no alcance en stock queda en pre-reserva.
+        ...(payload.cantidad_kilos > 0 ? {} : { permitir_pre_reserva: true }),
       }),
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
@@ -129,7 +140,12 @@ export default function Pedidos() {
       setNuevoProductoId('');
       setNuevoProductoKilos('');
       setNuevoProductoUnidades('');
-      toast({ title: "Producto agregado", description: "Se agregó el producto al pedido." });
+      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      const pendiente = (response.data as Pedido).detalles?.some((d) => Number(d.unidades_pendientes) > 0);
+      toast({
+        title: "Producto agregado",
+        description: pendiente ? "Se agregó al pedido; las unidades sin stock quedan en pre-reserva." : "Se agregó el producto al pedido.",
+      });
     },
     onError: (err: any) => {
       toast({
@@ -162,6 +178,7 @@ export default function Pedidos() {
     switch (estado) {
       case 'Preparado': return 'bg-amber-100 text-amber-700 border-amber-200';
       case 'Pagado': return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+      case 'Pre-reserva': return 'bg-orange-100 text-orange-700 border-orange-200';
       case 'Reservado': return 'bg-blue-100 text-blue-700 border-blue-200';
       case 'Anulado': return 'bg-red-100 text-red-700 border-red-200';
       default: return 'bg-slate-100 text-slate-700';
@@ -308,7 +325,7 @@ export default function Pedidos() {
 
   const todosPesados = useMemo(() => {
     const activos = selectedPedido?.detalles.filter(det => det.estado !== 'Cancelado') ?? [];
-    return activos.length > 0 && activos.every(det => Number(det.cantidad_kilos) > 0);
+    return activos.length > 0 && activos.every(det => Number(det.cantidad_kilos) > 0 && !(Number(det.unidades_pendientes) > 0));
   }, [selectedPedido?.detalles]);
 
   const handleEditLocal = (index: number, field: string, value: any) => {
@@ -512,7 +529,7 @@ export default function Pedidos() {
                         <DropdownMenuItem onClick={() => cobrarPedido(pedido)} className="text-green-600">
                           <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
                         </DropdownMenuItem>
-                        {pedido.estado !== 'Pagado' && pedido.estado !== 'Anulado' && (
+                        {pedido.estado !== 'Pagado' && pedido.estado !== 'Anulado' && pedido.estado !== 'Pre-reserva' && (
                           <DropdownMenuItem
                             onClick={() => confirm({
                               title: `¿Marcar el pedido #${pedido.id} como pagado?`,
@@ -561,6 +578,14 @@ export default function Pedidos() {
                               <span className="text-[10px] text-slate-400 font-medium">
                                 {det.estado === 'Cancelado' ? 'Cancelado' : `${det.cantidad_unidades} un.`}
                               </span>
+                              {det.estado !== 'Cancelado' && (det.congelado || Number(det.unidades_pendientes) > 0) && (
+                                <span className="flex flex-wrap gap-1 mt-0.5">
+                                  {det.congelado && <Badge className="text-[9px] px-1 py-0 h-4 border-none bg-sky-100 text-sky-700">Congelado</Badge>}
+                                  {Number(det.unidades_pendientes) > 0 && (
+                                    <Badge className="text-[9px] px-1 py-0 h-4 border-none bg-orange-100 text-orange-700">{det.unidades_pendientes} sin stock</Badge>
+                                  )}
+                                </span>
+                              )}
                             </div>
                             <div className="text-right">
                               <span className="text-xs font-bold text-blue-600 block">{det.cantidad_kilos} kg</span>
@@ -622,6 +647,10 @@ export default function Pedidos() {
                   <div className="flex justify-between items-start">
                     <h3 className={`font-bold text-slate-900 ${cancelado ? 'line-through' : ''}`}>{det.producto.nombre}</h3>
                     <div className="flex items-center gap-1.5">
+                      {!cancelado && det.congelado && <Badge className="text-[10px] bg-sky-100 text-sky-700 border-none">Congelado</Badge>}
+                      {!cancelado && Number(det.unidades_pendientes) > 0 && (
+                        <Badge className="text-[10px] bg-orange-100 text-orange-700 border-none">{det.unidades_pendientes} sin stock · pre-reserva</Badge>
+                      )}
                       {cancelado ? (
                         <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
                       ) : (
@@ -650,8 +679,8 @@ export default function Pedidos() {
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
                       <DecimalInput
-                        disabled={cancelado}
-                        placeholder="0,000"
+                        disabled={cancelado || Number(det.unidades_pendientes) > 0}
+                        placeholder={Number(det.unidades_pendientes) > 0 ? 'Sin stock' : '0,000'}
                         className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
                         value={textosEdicion[det.id]?.kilos ?? ''}
                         onValueChange={(t) => {

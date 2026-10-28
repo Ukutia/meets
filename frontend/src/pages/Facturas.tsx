@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/dialog';
 import { useForm, Controller } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { resumenPreReservas } from '@/lib/preReservas';
 import { getFacturas, createFactura, updateFactura, getProveedores, getProductos, getMargenProductos, pagarFactura, createNotaCredito, deleteNotaCredito } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
@@ -222,10 +223,16 @@ export default function Facturas() {
       fd.append('foto', fotoNueva);
       return createFactura(fd);
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
-      toast({ title: 'Éxito', description: 'Factura registrada.' });
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      const asignadas = resumenPreReservas(response?.data?.pre_reservas_asignadas);
+      toast({
+        title: 'Éxito',
+        description: asignadas ? `Factura registrada.\n${asignadas}` : 'Factura registrada.',
+        className: 'whitespace-pre-line',
+      });
       form.reset({ ...form.formState.defaultValues, fecha: hoyISO() });
       setDetalles([]);
       setFotoNueva(null);
@@ -289,6 +296,7 @@ export default function Facturas() {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       queryClient.invalidateQueries({ queryKey: ['margen-productos'] });
+      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
       toast({ title: 'Éxito', description: 'Factura actualizada.' });
       setEditFactura(null);
     },
