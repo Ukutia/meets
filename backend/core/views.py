@@ -557,7 +557,9 @@ class VendedorListView(APIView):
 class ClienteListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        clientes = Cliente.objects.all().order_by('nombre')
+        # select_related: sin esto el serializer hace una consulta por cliente
+        # para traer su vendedor.
+        clientes = Cliente.objects.select_related('vendedor').order_by('nombre')
         serializer = ClienteSerializer(clientes, many=True)
         return Response(serializer.data)
 
@@ -1139,6 +1141,32 @@ class StockProductos(APIView):
         productos = Producto.objects.exclude(estado="desactivado")
         stock_data = []
 
+        # Todo se agrupa por producto en 3 consultas fijas, en vez de 3 por
+        # producto: con la base remota cada consulta cuesta un viaje de red.
+        # El stock congelado es un pool aparte, por eso se agrupa también
+        # por `congelado`: no cuenta como disponible para vender normal.
+        reales_por_producto = {
+            (r['producto'], r['congelado']): r
+            for r in EntradaProducto.objects.values('producto', 'congelado').annotate(
+                u=Sum('cantidad_unidades'),
+                k=Sum('cantidad_kilos'),
+            )
+        }
+        # Reservas: pedidos no anulados sin kilos. Las pre-reservas
+        # (unidades_pendientes) no descontaron stock: esas unidades todavía no existen.
+        reservas_por_producto = {
+            (r['producto'], r['congelado']): r
+            for r in DetallePedido.objects.filter(cantidad_kilos=0)
+            .exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
+            .values('producto', 'congelado')
+            .annotate(u=Sum('cantidad_unidades'), p=Sum('unidades_pendientes'))
+        }
+        lotes_por_producto = {}
+        for e in EntradaProducto.objects.filter(cantidad_unidades__gt=0).order_by('fecha_entrada'):
+            lotes_por_producto.setdefault((e.producto_id, e.congelado), []).append(
+                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
+            )
+
         for producto in productos:
             # DISPONIBLES: se calcula EXACTAMENTE igual que el chequeo de stock
             # de CrearPedido (Sum de EntradaProducto), que es el ledger real que
@@ -1150,31 +1178,21 @@ class StockProductos(APIView):
             # CrearPedido igual rechazaba por "No hay suficiente stock".
             # Usar la misma fuente que el chequeo real hace que ambos numeros
             # NUNCA puedan divergir.
-            # El stock congelado es un pool aparte: no cuenta como disponible
-            # para vender normal y se muestra en sus propias columnas.
-            reales = EntradaProducto.objects.filter(producto=producto, congelado=False).aggregate(
-                u=Sum('cantidad_unidades'),
-                k=Sum('cantidad_kilos'),
-            )
-            disponibles = reales['u'] or 0
-            kilos_actuales = reales['k'] or 0
-            congelado = EntradaProducto.objects.filter(producto=producto, congelado=True).aggregate(
-                u=Sum('cantidad_unidades'),
-                k=Sum('cantidad_kilos'),
-            )
+            reales = reales_por_producto.get((producto.id, False), {})
+            disponibles = reales.get('u') or 0
+            kilos_actuales = reales.get('k') or 0
+            congelado = reales_por_producto.get((producto.id, True), {})
 
             # Reservas: pedidos no anulados sin kilos (ya descontaron unidades
             # del ledger real, pero siguen fisicamente en bodega esperando).
             # Las pre-reservas no: esas unidades todavía no existen.
-            lineas_sin_pesar = DetallePedido.objects.filter(
-                producto=producto, cantidad_kilos=0
-            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
-            totales_reserva = lineas_sin_pesar.aggregate(
-                u=Sum('cantidad_unidades'), p=Sum('unidades_pendientes'))
-            pre_reservas = totales_reserva['p'] or 0
-            unidades_reservadas = (totales_reserva['u'] or 0) - pre_reservas
-            reservas_congelado = lineas_sin_pesar.filter(congelado=True).aggregate(
-                u=Sum('cantidad_unidades'))['u'] or 0
+            res_normal = reservas_por_producto.get((producto.id, False), {})
+            res_congelado = reservas_por_producto.get((producto.id, True), {})
+            pre_reservas = (res_normal.get('p') or 0) + (res_congelado.get('p') or 0)
+            unidades_reservadas = (
+                (res_normal.get('u') or 0) + (res_congelado.get('u') or 0) - pre_reservas
+            )
+            reservas_congelado = res_congelado.get('u') or 0
 
             # Stock físico = disponibles + lo reservado (que sigue en la repisa).
             stock_fisico = disponibles + unidades_reservadas - reservas_congelado
@@ -1182,18 +1200,8 @@ class StockProductos(APIView):
             # Lotes vivos en orden FIFO: con esto Nuevo Pedido estima el costo/kg
             # exacto que tendrá la línea (mismo ponderado por unidades que
             # costo_por_kilo_ponderado) y avisa si un precio queda bajo costo.
-            lotes = [
-                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
-                for e in EntradaProducto.objects.filter(
-                    producto=producto, cantidad_unidades__gt=0, congelado=False)
-                .order_by('fecha_entrada')
-            ]
-            lotes_congelado = [
-                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
-                for e in EntradaProducto.objects.filter(
-                    producto=producto, cantidad_unidades__gt=0, congelado=True)
-                .order_by('fecha_entrada')
-            ]
+            lotes = lotes_por_producto.get((producto.id, False), [])
+            lotes_congelado = lotes_por_producto.get((producto.id, True), [])
 
             stock_data.append({
                 'id': producto.id,
@@ -1209,8 +1217,8 @@ class StockProductos(APIView):
                 'kilos_actuales': round(kilos_actuales, 2),
                 'lotes': lotes,
                 'pre_reservas': pre_reservas,
-                'congelado_unidades': congelado['u'] or 0,
-                'congelado_kilos': round(congelado['k'] or 0, 2),
+                'congelado_unidades': congelado.get('u') or 0,
+                'congelado_kilos': round(congelado.get('k') or 0, 2),
                 'congelado_reservas': reservas_congelado,
                 'lotes_congelado': lotes_congelado,
             })

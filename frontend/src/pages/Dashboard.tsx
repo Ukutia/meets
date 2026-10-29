@@ -207,7 +207,7 @@ export default function Dashboard() {
         />
       </section>
 
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <div className="space-y-8">
           {/* Por atender */}
           <section aria-labelledby="pendientes-titulo" className="space-y-3">
@@ -360,12 +360,6 @@ export default function Dashboard() {
         </aside>
       </div>
 
-      {/* Botón flotante en teléfono */}
-      <div className="fixed bottom-6 right-6 z-50 md:hidden">
-        <Button size="lg" aria-label="Nuevo pedido" onClick={() => navigate('/pedidos/nuevo')} className="h-14 w-14 rounded-full p-0 shadow-xl">
-          <Plus className="h-7 w-7" />
-        </Button>
-      </div>
     </div>
   );
 }

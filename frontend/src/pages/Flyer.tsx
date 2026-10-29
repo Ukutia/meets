@@ -439,7 +439,7 @@ export default function Flyer() {
       </div>
 
       {/* En teléfono: WhatsApp es la acción principal */}
-      <div className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-[1fr_auto_auto] gap-2 border-t bg-background p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:hidden">
+      <div className="fixed inset-x-0 bottom-[var(--tabbar-h)] z-30 grid grid-cols-[1fr_auto_auto] gap-2 border-t bg-background p-3 sm:hidden">
         <Button className="bg-[#25D366] text-white hover:bg-[#1ebe5b]" onClick={() => compartir(true)} disabled={sinFilas}>
           {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MessageCircle className="mr-2 h-4 w-4" />}
           WhatsApp

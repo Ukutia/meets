@@ -53,6 +53,8 @@ All colors MUST be HSL.
     --sidebar-border: 0 0% 92%;
     --sidebar-ring: 351 71% 45%;
 
+    --grouped-bg: 240 14% 96%;
+
     --chart-1: 351 71% 45%;
     --chart-2: 100 45% 25%;
     --chart-3: 25 85% 60%;
@@ -104,6 +106,8 @@ All colors MUST be HSL.
     --sidebar-border: 0 0% 18%;
     --sidebar-ring: 351 71% 55%;
 
+    --grouped-bg: 0 0% 6%;
+
     --chart-1: 351 71% 55%;
     --chart-2: 100 45% 35%;
     --chart-3: 25 85% 65%;
@@ -119,5 +123,115 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Vista de teléfono: se comporta como una app nativa de iOS.
+   - Capa funcional (barras) con vidrio; el contenido va debajo, sin vidrio.
+   - Áreas seguras, objetivos táctiles de 44 pt y texto base de 17 pt.
+   --------------------------------------------------------------------------- */
+:root {
+  --navbar-h: 0px;
+  --tabbar-h: 0px;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --navbar-h: calc(2.75rem + env(safe-area-inset-top));
+    /* barra flotante: 60 px + 8 px de margen + área segura + aire */
+    --tabbar-h: calc(5.25rem + env(safe-area-inset-bottom));
+  }
+
+  /* 17 pt es el tamaño de lectura por defecto en iOS; todo lo en rem escala con él. */
+  html {
+    font-size: 106.25%;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  /* Título grande: lo escribe cada página como h1 y la barra superior lo toma al hacer scroll. */
+  main h1[class] {
+    font-size: 2rem;
+    line-height: 2.4rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  /* El mínimo legible en iOS es 11 pt. */
+  [class*="text-[10px]"],
+  [class*="text-[9px]"] {
+    font-size: 0.6875rem !important;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button,
+  [role="button"],
+  a,
+  label,
+  summary {
+    touch-action: manipulation;
+  }
+}
+
+.glass {
+  background: hsl(var(--background) / 0.72);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: hsl(var(--background));
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .glass {
+    background: hsl(var(--background));
+    border-color: hsl(var(--foreground) / 0.45) !important;
+  }
+}
+
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Hojas inferiores: en teléfono los diálogos suben desde abajo. */
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes sheet-out {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@media (max-width: 639px) {
+  [data-sheet][data-state="open"] {
+    animation: sheet-in 0.34s cubic-bezier(0.32, 0.72, 0, 1) both !important;
+  }
+  [data-sheet][data-state="closed"] {
+    animation: sheet-out 0.22s cubic-bezier(0.4, 0, 1, 1) both !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sheet][data-state] {
+    animation-duration: 0.01ms !important;
   }
 }
