@@ -567,3 +567,31 @@ class ConfiguracionContable(models.Model):
         return obj
 
 
+
+
+class ConteoInventario(models.Model):
+    """Una cuadratura de inventario: el usuario cuenta lo que hay y se compara con el sistema."""
+    fecha = models.DateTimeField(default=timezone.now)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="conteos_inventario"
+    )
+    notas = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ["-fecha", "-id"]
+
+    def __str__(self):
+        return f"Conteo #{self.id} ({self.fecha:%Y-%m-%d})"
+
+
+class DetalleConteo(models.Model):
+    """Lo que el sistema decia vs. lo contado, por producto. Kilos/unidades en None = no se conto."""
+    conteo = models.ForeignKey(ConteoInventario, on_delete=models.CASCADE, related_name="detalles")
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name="conteos")
+    sistema_kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    sistema_unidades = models.IntegerField(default=0)
+    contado_kilos = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    contado_unidades = models.IntegerField(null=True, blank=True)
+    diferencia_kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    diferencia_unidades = models.IntegerField(default=0)
+    ajuste = models.ForeignKey(AjusteInventario, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")

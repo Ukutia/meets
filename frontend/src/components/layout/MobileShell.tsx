@@ -65,7 +65,7 @@ export function MobileShell({ children }: { children: React.ReactNode }) {
   // Crear un pedido es una tarea de varios pasos: se presenta a pantalla completa, sin
   // barra de pestañas, con Cancelar a la izquierda (modal, ver sheets.md).
   const esFlujo = pathname === '/pedidos/nuevo';
-  const accionNuevo = pathname === '/' || pathname === '/pedidos';
+  const accionNuevo = pathname === '/resumen' || pathname === '/pedidos';
 
   const volver = () => (key !== 'default' ? navigate(-1) : navigate(esFlujo ? '/pedidos' : '/mas'));
 

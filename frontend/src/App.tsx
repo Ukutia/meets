@@ -14,6 +14,7 @@ import PedidoNuevo from "./pages/PedidoNuevo";
 import MovimientosInventarios from "./pages/MovimientosInventario";
 import Facturas from "./pages/Facturas";
 import Stock from "./pages/Stock";
+import ConteoInventario from "./pages/ConteoInventario";
 import Reportes from "./pages/Reportes";
 import NotFound from "./pages/NotFound";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
@@ -51,8 +52,10 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Al abrir la app se ven los precios y el stock; el Resumen sigue en /resumen. */}
+            <Route path="/" element={<Navigate to="/precios" replace />} />
             <Route
-              path="/"
+              path="/resumen"
               element={
                 <ProtectedRoute>
                   <Layout>
@@ -147,6 +150,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Stock />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/cuadrar-inventario"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ConteoInventario />
                   </Layout>
                 </ProtectedRoute>
               }

@@ -8,7 +8,7 @@ import { NAV_GROUPS, TAB_ITEMS } from '@/components/layout/nav';
 const URLS_EN_PESTANAS = new Set(TAB_ITEMS.map((t) => t.url));
 
 // "Más": el resto de las secciones y la cuenta, como una lista agrupada de Ajustes.
-// En escritorio no existe (el menú lateral muestra todo): vuelve al Resumen.
+// En escritorio no existe (el menú lateral muestra todo): vuelve al inicio.
 export default function Mas() {
   const { user, logout } = useAuth();
   const { confirm, dialog } = useConfirm();

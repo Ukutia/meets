@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import React from 'react';
 import {
   Plus, Search, MessageCircle, CheckCircle2,
-  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle, CheckSquare, X, MapPin, Check
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle, CheckSquare, X, MapPin, Check, Navigation
 } from 'lucide-react';
 import { DecimalInput } from '@/components/shared/DecimalInput';
 import { DireccionDialog } from '@/components/shared/DireccionDialog';
@@ -192,6 +192,15 @@ export default function Pedidos() {
     destructive: true,
     onConfirm: () => anularMutation.mutate(pedido.id),
   });
+
+  // Sin dirección avisa; con dirección abre el diálogo para elegir Google Maps o Waze.
+  const despachar = (pedido: Pedido) => {
+    if (!pedido.cliente.direccion?.trim()) {
+      toast({ title: 'No hay dirección registrada', description: pedido.cliente.nombre, variant: 'destructive' });
+      return;
+    }
+    setDireccionPedido(pedido);
+  };
 
   const cobrarPedido = (pedido: Pedido) => {
     let telefono = (pedido.cliente.telefono ?? '').replace(/\D/g, '');
@@ -628,6 +637,9 @@ export default function Pedidos() {
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setSelectedPedidoGanancia(pedido)}>
                           <TrendingUp className="mr-2 h-4 w-4" /> Ver ganancia
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => despachar(pedido)}>
+                          <Navigation className="mr-2 h-4 w-4" /> Despachar
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setDireccionPedido(pedido)}>
                           <MapPin className="mr-2 h-4 w-4" /> Ver dirección

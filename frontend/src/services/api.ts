@@ -9,6 +9,7 @@ import type {
   Proveedor,
   HistorialPrecio,
   AjusteInventario,
+  ConteoInventario,
   DatosFacturacion,
   ModoPrecio,
   NotaCredito,
@@ -311,3 +312,14 @@ export const updateConfiguracionContable = (data: { tasa_impuesto_renta?: number
   api.put('/tesoreria/configuracion/', data);
 
 export default api;
+
+// Cuadratura de inventario: stock que el sistema cree que hay y conteos ya registrados.
+export const getStockFisico = () =>
+  api.get<{ id: number; nombre: string; categoria?: string | null; sistema_kilos: string; sistema_unidades: number }[]>(
+    '/inventario/stock-fisico/'
+  );
+export const getConteos = () => api.get<ConteoInventario[]>('/inventario/conteos/');
+export const createConteo = (data: {
+  notas?: string;
+  lineas: { producto: number; contado_kilos?: string; contado_unidades?: string }[];
+}) => api.post<ConteoInventario>('/inventario/conteos/', data);

@@ -15,6 +15,7 @@ import {
   Landmark,
   Tag,
   Ellipsis,
+  ClipboardCheck,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -24,12 +25,11 @@ export type NavGroup = { label: string; items: NavItem[] };
 // Fuente única del menú: el Sidebar lo dibuja agrupado y el encabezado del
 // Layout usa el mismo título, así el nombre del menú y el de la página coinciden.
 export const NAV_GROUPS: NavGroup[] = [
-  { label: 'General', items: [{ title: 'Resumen', url: '/', icon: LayoutDashboard }] },
+  { label: 'General', items: [{ title: 'Precios', url: '/precios', icon: Tag }, { title: 'Resumen', url: '/resumen', icon: LayoutDashboard }] },
   {
     label: 'Ventas',
     items: [
       { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
-      { title: 'Precios', url: '/precios', icon: Tag },
       { title: 'Clientes', url: '/clientes', icon: Users },
       { title: 'Pagos de Vendedores', url: '/gestion-pagos', icon: Wallet },
       { title: 'Flyer de Precios', url: '/flyer', icon: Image },
@@ -46,6 +46,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'Inventario',
     items: [
       { title: 'Stock', url: '/stock', icon: Warehouse },
+      { title: 'Cuadrar inventario', url: '/cuadrar-inventario', icon: ClipboardCheck },
       { title: 'Movimientos', url: '/flujos-de-inventario', icon: ArrowLeftRight },
       { title: 'Productos', url: '/productos', icon: Package },
     ],
@@ -61,18 +62,17 @@ export const NAV_GROUPS: NavGroup[] = [
 
 // Destinos de la barra de pestañas del teléfono (máximo 5). El resto vive en "Más".
 export const TAB_ITEMS: NavItem[] = [
-  { title: 'Resumen', url: '/', icon: LayoutDashboard },
-  { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
   { title: 'Precios', url: '/precios', icon: Tag },
+  { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
+  { title: 'Resumen', url: '/resumen', icon: LayoutDashboard },
   { title: 'Clientes', url: '/clientes', icon: Users },
   { title: 'Más', url: '/mas', icon: Ellipsis },
 ];
 
 // Pestaña que corresponde a una ruta: las pantallas que no son pestaña se abren desde "Más".
 export function tabActiva(pathname: string): string {
-  if (pathname === '/') return '/';
   if (pathname.startsWith('/pedidos')) return '/pedidos';
-  if (pathname === '/precios' || pathname === '/clientes') return pathname;
+  if (pathname === '/precios' || pathname === '/resumen' || pathname === '/clientes') return pathname;
   return '/mas';
 }
 

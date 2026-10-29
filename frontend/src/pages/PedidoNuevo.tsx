@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, Plus, UserPlus, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, Building2, Check, MoreVertical, Plus, UserPlus, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -10,6 +10,10 @@ import { ClienteFormDialog } from '@/components/shared/ClienteFormDialog';
 import { DecimalInput } from '@/components/shared/DecimalInput';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -452,84 +456,76 @@ function LineaProducto({
   onRemove: () => void;
 }) {
   const margen = c.costoNeto != null ? gananciaPorKilo(c.precio, c.costoNeto) : null;
+  const modoActual = MODOS_PRECIO.find((m) => m.value === d.modo);
   return (
-    <div className={cn('rounded-xl border p-3 space-y-3', (c.pesoInvalido || c.bajoCosto) && 'border-destructive/50 bg-destructive/5')}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="font-semibold leading-tight">{d.producto_nombre}</p>
-          <p className="text-xs text-muted-foreground">
-            {d.stock_disponible} disponibles · normal {formatCLP(d.precio_lista)}/kg
+    <div className={cn('rounded-xl border p-3 space-y-2', (c.pesoInvalido || c.bajoCosto) && 'border-destructive/50 bg-destructive/5')}>
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold leading-tight">{d.producto_nombre}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {d.stock_disponible} disp. · normal {formatCLP(d.precio_lista)}/kg
+            {d.modo !== 'lista' && <span className="font-medium text-primary"> · {modoActual?.corto}</span>}
           </p>
         </div>
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Quitar ${d.producto_nombre}`} onClick={onRemove}>
-          <XCircle className="h-4 w-4 text-destructive" />
-        </Button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Unidades</Label>
-          <DecimalInput
-            decimales={false}
-            value={d.unidadesTexto}
-            onValueChange={(t) => onChange({ unidadesTexto: t })}
-            className={cn('h-11 text-center text-base font-semibold', c.unidades > d.stock_disponible && 'border-destructive')}
-            aria-label={`Unidades de ${d.producto_nombre}`}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Kilos (vacío = por pesar)</Label>
-          <DecimalInput
-            value={d.kilosTexto}
-            onValueChange={(t) => onChange({ kilosTexto: t })}
-            placeholder="0,000"
-            className={cn('h-11 text-center text-base font-semibold', c.pesoInvalido && 'border-destructive')}
-            aria-label={`Kilos de ${d.producto_nombre}`}
-          />
-        </div>
+        <DecimalInput
+          decimales={false}
+          value={d.unidadesTexto}
+          onValueChange={(t) => onChange({ unidadesTexto: t })}
+          placeholder="Unid."
+          className={cn('h-10 w-16 shrink-0 px-1 text-center font-semibold', c.unidades > d.stock_disponible && 'border-destructive')}
+          aria-label={`Unidades de ${d.producto_nombre}`}
+        />
+        <DecimalInput
+          value={d.kilosTexto}
+          onValueChange={(t) => onChange({ kilosTexto: t })}
+          placeholder="Kilos"
+          className={cn('h-10 w-24 shrink-0 px-1 text-center font-semibold', c.pesoInvalido && 'border-destructive')}
+          aria-label={`Kilos de ${d.producto_nombre} (vacío = por pesar)`}
+        />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Opciones de precio de ${d.producto_nombre}`}>
+              <MoreVertical className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuRadioGroup value={d.modo} onValueChange={(v) => onChange({ modo: v as ModoPrecio })}>
+              {MODOS_PRECIO.map((m) => (
+                <DropdownMenuRadioItem key={m.value} value={m.value}>{m.label}</DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onRemove}>
+              <XCircle className="mr-2 h-4 w-4" /> Quitar producto
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {c.pesoInvalido && (
         <p className="text-xs font-semibold text-destructive">Peso bajo el mínimo ({d.peso_minimo.toLocaleString('es-CL')} kg por unidad)</p>
       )}
 
-      <div className="space-y-2">
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          value={d.modo}
-          onValueChange={(v) => v && onChange({ modo: v as ModoPrecio })}
-          className="grid grid-cols-2 sm:grid-cols-4 gap-1"
-        >
-          {MODOS_PRECIO.map((m) => (
-            <ToggleGroupItem key={m.value} value={m.value} className="text-xs">
-              {m.corto}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-
-        {d.modo === 'descuento' && (
-          <DecimalInput
-            value={d.descuentoTexto}
-            onValueChange={(t) => onChange({ descuentoTexto: t })}
-            placeholder="Descuento en $ por kilo"
-            aria-label={`Descuento por kilo de ${d.producto_nombre}`}
-            autoFocus
-          />
-        )}
-        {d.modo === 'personalizado' && (
-          <DecimalInput
-            value={d.precioTexto}
-            onValueChange={(t) => onChange({ precioTexto: t })}
-            placeholder="Precio por kilo con IVA"
-            aria-label={`Precio por kilo de ${d.producto_nombre}`}
-            autoFocus
-          />
-        )}
-        {d.modo === 'costo' && c.costoNeto == null && (
-          <p className="text-xs text-muted-foreground">Sin costo de compra registrado: se usa el precio normal.</p>
-        )}
-      </div>
+      {d.modo === 'descuento' && (
+        <DecimalInput
+          value={d.descuentoTexto}
+          onValueChange={(t) => onChange({ descuentoTexto: t })}
+          placeholder="Descuento en $ por kilo"
+          aria-label={`Descuento por kilo de ${d.producto_nombre}`}
+          autoFocus
+        />
+      )}
+      {d.modo === 'personalizado' && (
+        <DecimalInput
+          value={d.precioTexto}
+          onValueChange={(t) => onChange({ precioTexto: t })}
+          placeholder="Precio por kilo con IVA"
+          aria-label={`Precio por kilo de ${d.producto_nombre}`}
+          autoFocus
+        />
+      )}
+      {d.modo === 'costo' && c.costoNeto == null && (
+        <p className="text-xs text-muted-foreground">Sin costo de compra registrado: se usa el precio normal.</p>
+      )}
 
       <div className="flex flex-wrap items-end justify-between gap-2 border-t border-dashed pt-2 text-sm">
         <div className="space-y-0.5">

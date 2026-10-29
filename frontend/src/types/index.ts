@@ -184,3 +184,24 @@ export interface KPI {
     positive: boolean;
   };
 }
+
+export interface DetalleConteo {
+  id: number;
+  producto: number;
+  producto_nombre: string;
+  sistema_kilos: string;
+  sistema_unidades: number;
+  contado_kilos: string | null;
+  contado_unidades: number | null;
+  diferencia_kilos: string;
+  diferencia_unidades: number;
+}
+
+export interface ConteoInventario {
+  id: number;
+  fecha: string;
+  usuario: string | null;
+  notas: string;
+  detalles: DetalleConteo[];
+  productos_con_diferencia: number;
+}
