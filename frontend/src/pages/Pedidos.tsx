@@ -2,15 +2,18 @@ import { useMemo, useState } from 'react';
 import React from 'react';
 import {
   Plus, Search, MessageCircle, CheckCircle2,
-  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle, CheckSquare, X
+  Trash2, ChevronDown, ChevronRight, MoreVertical, Edit2, TrendingUp, XCircle, CheckSquare, X, MapPin, Check, Navigation
 } from 'lucide-react';
 import { DecimalInput } from '@/components/shared/DecimalInput';
+import { DireccionDialog } from '@/components/shared/DireccionDialog';
+import { InsetGroup, ListRow } from '@/components/shared/InsetList';
+import { SwipeRow, type AccionDeslizar } from '@/components/shared/SwipeRow';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
-import { decimalATexto, enRango, formatCLP, parseDecimal } from '@/lib/utils';
+import { cn, decimalATexto, enRango, formatCLP, parseDecimal } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
@@ -51,6 +54,7 @@ export default function Pedidos() {
   const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [selectedPedidoGanancia, setSelectedPedidoGanancia] = useState<Pedido | null>(null);
+  const [direccionPedido, setDireccionPedido] = useState<Pedido | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterVendedor, setFilterVendedor] = useState('Todos');
   const [selectedIds, setSelectedIds] = useState<number[]>([]); // Para la selección múltiple
@@ -171,6 +175,32 @@ export default function Pedidos() {
   // Las líneas Canceladas quedan en el pedido solo como historial: conservan
   // total_venta/total_costo, pero ya no forman parte del total ni de la ganancia.
   const lineasActivas = (pedido: Pedido) => pedido.detalles.filter(d => d.estado !== 'Cancelado');
+
+  const etiquetaEstado = (estado: string) => ESTADOS.find(e => e.value === estado)?.label ?? estado;
+
+  const pedirMarcarPagado = (pedido: Pedido) => confirm({
+    title: `¿Marcar el pedido #${pedido.id} como pagado?`,
+    description: `${pedido.cliente.nombre} · ${formatCurrency(pedido.total)}`,
+    confirmLabel: 'Marcar pagado',
+    onConfirm: () => mutation.mutate({ id: pedido.id, data: { ...pedido, estado: 'Pagado' } }),
+  });
+
+  const pedirAnular = (pedido: Pedido) => confirm({
+    title: `¿Anular el pedido #${pedido.id}?`,
+    description: `${pedido.cliente.nombre} · ${formatCurrency(pedido.total)}. El stock será devuelto al inventario.`,
+    confirmLabel: 'Anular pedido',
+    destructive: true,
+    onConfirm: () => anularMutation.mutate(pedido.id),
+  });
+
+  // Sin dirección avisa; con dirección abre el diálogo para elegir Google Maps o Waze.
+  const despachar = (pedido: Pedido) => {
+    if (!pedido.cliente.direccion?.trim()) {
+      toast({ title: 'No hay dirección registrada', description: pedido.cliente.nombre, variant: 'destructive' });
+      return;
+    }
+    setDireccionPedido(pedido);
+  };
 
   const cobrarPedido = (pedido: Pedido) => {
     let telefono = (pedido.cliente.telefono ?? '').replace(/\D/g, '');
@@ -343,7 +373,7 @@ export default function Pedidos() {
   return (
     <div className="max-w-[100vw] overflow-x-hidden space-y-4 pb-24">
       {confirmDialog}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-2 md:px-0">
+      <div className="flex flex-wrap items-center justify-between gap-3 md:px-0">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pedidos</h1>
           <p className="text-muted-foreground text-sm hidden sm:block">Toca un pedido para ver sus productos.</p>
@@ -359,14 +389,14 @@ export default function Pedidos() {
           >
             {modoSeleccion ? <X className="h-4 w-4" /> : <CheckSquare className="h-4 w-4" />}
           </Button>
-          <Button onClick={() => navigate('/pedidos/nuevo')}>
+          <Button className="max-md:hidden" onClick={() => navigate('/pedidos/nuevo')}>
             <Plus className="mr-1 h-4 w-4" /> Nuevo
           </Button>
         </div>
       </div>
 
       {/* RESUMEN POR ESTADO: tocar uno filtra la lista */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 px-2 md:px-0">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 md:px-0">
         {resumenEstados.map(e => {
           const activo = filterEstado === e.value;
           return (
@@ -386,7 +416,7 @@ export default function Pedidos() {
       </div>
 
 {/* FILTROS ACTUALIZADOS */}
-<div className="grid grid-cols-1 px-2 md:grid-cols-4 gap-3"> {/* Cambiado a grid-cols-4 en md */}
+<div className="grid grid-cols-1 md:grid-cols-4 gap-3"> {/* Cambiado a grid-cols-4 en md */}
   <div className="relative">
     <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
     <Input 
@@ -428,8 +458,107 @@ export default function Pedidos() {
         </div>
       </div>
 
-      {/* TABLA PRINCIPAL - Optimizada para no salirse */}
-      <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+      {/* LISTA PARA TELÉFONO: lista agrupada, acciones al deslizar y detalle al tocar */}
+      <div className="md:hidden">
+        {filteredPedidos.length === 0 ? (
+          <p className="rounded-2xl bg-card px-4 py-10 text-center text-muted-foreground">No hay pedidos con estos filtros.</p>
+        ) : (
+          <InsetGroup footer="Desliza una fila para ver acciones rápidas. Mantén presionada una fila para seleccionar varios.">
+            {filteredPedidos.map((pedido) => {
+              const abierto = expandedId === pedido.id && !modoSeleccion;
+              const seleccionado = selectedIds.includes(pedido.id);
+              const abierta = pedido.estado !== 'Pagado' && pedido.estado !== 'Anulado';
+              const acciones: AccionDeslizar[] = [
+                { label: 'Editar', icon: Edit2, className: 'bg-slate-600', onClick: () => abrirEdicion(pedido) },
+                { label: 'WhatsApp', icon: MessageCircle, className: 'bg-[#178a45]', onClick: () => cobrarPedido(pedido) },
+                ...(abierta ? [{ label: 'Pagado', icon: CheckCircle2, className: 'bg-blue-600', onClick: () => pedirMarcarPagado(pedido) }] : []),
+              ];
+              return (
+                <div key={pedido.id} className="relative after:absolute after:bottom-0 after:left-4 after:right-0 after:h-px after:bg-border last:after:hidden">
+                  <SwipeRow acciones={acciones} disabled={modoSeleccion || pedido.estado === 'Anulado'}>
+                    <button
+                      type="button"
+                      aria-pressed={modoSeleccion ? seleccionado : undefined}
+                      aria-expanded={modoSeleccion ? undefined : abierto}
+                      className="no-select flex min-h-[64px] w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-150 active:bg-muted/70"
+                      onClick={() => modoSeleccion ? toggleSelect(pedido.id) : setExpandedId(abierto ? null : pedido.id)}
+                      onTouchStart={() => !modoSeleccion && inicioPulsacion(pedido.id)}
+                      onTouchEnd={finPulsacion}
+                      onTouchMove={finPulsacion}
+                    >
+                      {modoSeleccion && (
+                        <span
+                          aria-hidden
+                          className={cn('flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2', seleccionado ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40')}
+                        >
+                          {seleccionado && <Check className="h-4 w-4" strokeWidth={3} />}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[17px] font-semibold leading-[22px]">{pedido.cliente.nombre}</span>
+                        <span className="block text-[15px] leading-5 text-muted-foreground">
+                          <span className="tabular-nums">#{pedido.id}</span> · {formatDate(pedido.fecha)}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 flex-col items-end gap-1">
+                        <span className="text-[17px] font-semibold tabular-nums">{formatCurrency(pedido.total)}</span>
+                        <span className={cn('rounded-full px-2 py-0.5 text-[12px] font-medium', getStatusColor(pedido.estado))}>
+                          {etiquetaEstado(pedido.estado)}
+                        </span>
+                      </span>
+                      {!modoSeleccion && (
+                        <ChevronRight className={cn('h-[18px] w-[18px] shrink-0 text-muted-foreground/60 transition-transform duration-200', abierto && 'rotate-90')} />
+                      )}
+                    </button>
+                  </SwipeRow>
+
+                  {abierto && (
+                    <div className="bg-muted/40 pb-1">
+                      <div className="space-y-2 px-4 py-3">
+                        {pedido.observaciones && (
+                          <p className="rounded-xl bg-amber-50 px-3 py-2 text-[15px] text-amber-900">
+                            <span className="font-semibold">Nota:</span> {pedido.observaciones}
+                          </p>
+                        )}
+                        {pedido.detalles.map((det) => {
+                          const cancelado = det.estado === 'Cancelado';
+                          return (
+                            <div key={det.id} className={cn('flex items-baseline justify-between gap-3 text-[15px]', cancelado && 'opacity-50')}>
+                              <span className="min-w-0">
+                                <span className={cn('font-medium', cancelado && 'line-through')}>{det.producto.nombre}</span>
+                                <span className="block text-[13px] text-muted-foreground">
+                                  {cancelado ? 'Cancelado' : `${det.cantidad_unidades} un · ${Number(det.cantidad_kilos).toLocaleString('es-CL')} kg`}
+                                </span>
+                              </span>
+                              <span className="shrink-0 font-medium tabular-nums">{formatCurrency(det.total_venta)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="mx-4 mb-3 overflow-hidden rounded-xl bg-card">
+                        <ListRow
+                          icon={MapPin}
+                          title={pedido.cliente.direccion || 'Sin dirección registrada'}
+                          subtitle="Cómo llegar"
+                          chevron
+                          onClick={() => setDireccionPedido(pedido)}
+                        />
+                        <ListRow icon={Edit2} title="Editar pedido" chevron onClick={() => abrirEdicion(pedido)} />
+                        <ListRow icon={TrendingUp} title="Ver ganancia" chevron onClick={() => setSelectedPedidoGanancia(pedido)} />
+                        {abierta && <ListRow icon={CheckCircle2} title="Marcar pagado" onClick={() => pedirMarcarPagado(pedido)} />}
+                        {pedido.estado !== 'Anulado' && <ListRow icon={Trash2} title="Anular pedido" destructive onClick={() => pedirAnular(pedido)} />}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </InsetGroup>
+        )}
+      </div>
+
+      {/* TABLA PARA ESCRITORIO */}
+      <div className="hidden md:block rounded-xl border bg-white shadow-sm overflow-hidden">
         <Table>
           <TableHeader className="bg-slate-50">
             <TableRow>
@@ -509,6 +638,12 @@ export default function Pedidos() {
                         <DropdownMenuItem onClick={() => setSelectedPedidoGanancia(pedido)}>
                           <TrendingUp className="mr-2 h-4 w-4" /> Ver ganancia
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => despachar(pedido)}>
+                          <Navigation className="mr-2 h-4 w-4" /> Despachar
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setDireccionPedido(pedido)}>
+                          <MapPin className="mr-2 h-4 w-4" /> Ver dirección
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => cobrarPedido(pedido)} className="text-green-600">
                           <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
                         </DropdownMenuItem>
@@ -548,6 +683,14 @@ export default function Pedidos() {
                 {expandedId === pedido.id && (
                   <TableRow className="bg-slate-50/80">
                     <TableCell colSpan={9} className="p-2">
+                      <button
+                        type="button"
+                        onClick={() => setDireccionPedido(pedido)}
+                        className="mx-1 mb-1.5 flex items-center gap-1.5 text-xs text-primary hover:underline"
+                      >
+                        <MapPin className="h-3.5 w-3.5" />
+                        {pedido.cliente.direccion || 'Sin dirección registrada'} · Abrir en mapas
+                      </button>
                       {pedido.observaciones && (
                         <p className="mx-1 mb-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
                           <span className="font-bold">Nota:</span> {pedido.observaciones}
@@ -576,9 +719,11 @@ export default function Pedidos() {
             ))}
           </TableBody>
         </Table>
-        {/* BARRA DE SUMA FLOTANTE (Desktop Only) */}
+      </div>
+
+      {/* BARRA DE SELECCIÓN: en teléfono reemplaza a la barra de pestañas mientras se selecciona */}
   {(selectedIds.length > 0 || modoSeleccion) && (
-    <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl animate-in slide-in-from-bottom-4">
+    <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-50 mx-auto flex max-w-xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl animate-in slide-in-from-bottom-4">
       <div className="min-w-0 flex-1">
         <div className="text-[10px] font-bold uppercase text-slate-400">
           {selectedIds.length === 0 ? 'Toca los pedidos' : `${selectedIds.length} seleccionado${selectedIds.length === 1 ? '' : 's'}`}
@@ -595,11 +740,17 @@ export default function Pedidos() {
       </Button>
     </div>
   )}
-      </div>
+
+      <DireccionDialog
+        open={!!direccionPedido}
+        onOpenChange={(abierto) => !abierto && setDireccionPedido(null)}
+        cliente={direccionPedido?.cliente.nombre ?? ''}
+        direccion={direccionPedido?.cliente.direccion}
+      />
 
       {/* DIÁLOGO DE EDICIÓN RESPONSIVO (VISTA TARJETAS EN MÓVIL) */}
       <Dialog open={!!selectedPedido} onOpenChange={() => setSelectedPedido(null)}>
-        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0">
+        <DialogContent className="max-w-4xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0 max-sm:pb-0">
           <DialogHeader className="p-4 border-b bg-slate-50/50">
             <DialogTitle className="flex items-center gap-2">
               Pedido <span className="text-blue-600">#{selectedPedido?.id}</span>
@@ -767,7 +918,7 @@ export default function Pedidos() {
 
       {/* DIÁLOGO DE ANÁLISIS DE COSTO Y GANANCIA (SOLO LECTURA) */}
       <Dialog open={!!selectedPedidoGanancia} onOpenChange={() => setSelectedPedidoGanancia(null)}>
-        <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0">
+        <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-hidden flex flex-col p-0 max-sm:pb-0">
           <DialogHeader className="p-4 border-b bg-slate-50/50">
             <DialogTitle className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5 text-blue-600" />

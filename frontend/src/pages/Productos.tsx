@@ -33,6 +33,7 @@ import { createProducto, updateProducto, getProductos, getHistorialPrecio, getMa
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Producto, MargenProducto } from '@/types';
+import { formatCLP } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
 interface ProductoForm {
@@ -193,8 +194,9 @@ export default function Productos() {
   const ganLiveUnit = (costoRecienteEditado != null && precioEditado > 0)
     ? (precioEditado - costoRecienteEditado) / IVA_RATE
     : null;
-  const ganLivePct = (ganLiveUnit != null && precioEditado > 0)
-    ? (ganLiveUnit / precioEditado) * 100
+  // El porcentaje es sobre el precio de venta SIN IVA (el mismo que el backend).
+  const ganLivePct = (ganLiveUnit != null && precioNetoEditado != null)
+    ? (ganLiveUnit / precioNetoEditado) * 100
     : null;
 
   if (isLoading) return <LoadingSpinner />;
@@ -261,19 +263,19 @@ export default function Productos() {
                   <>
                     <div className="flex justify-between text-muted-foreground">
                       <span>Costo actual sin IVA /kg</span>
-                      <span className="font-mono">${Number(costoNetoEditado).toLocaleString('es-CL')}</span>
+                      <span className="font-mono">{formatCLP(costoNetoEditado)}</span>
                     </div>
                     <div className="flex justify-between text-muted-foreground">
                       <span>Precio de venta sin IVA</span>
                       <span className="font-mono">
-                        {precioNetoEditado != null ? `$${Number(precioNetoEditado).toLocaleString('es-CL')}` : '—'}
+                        {precioNetoEditado != null ? formatCLP(precioNetoEditado) : '—'}
                       </span>
                     </div>
                     <div className="flex justify-between font-medium pt-1 border-t mt-1">
                       <span>Ganancia neta</span>
                       <span className={`font-mono ${ganLiveUnit != null && ganLiveUnit < 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {ganLiveUnit != null
-                          ? `$${Number(ganLiveUnit).toLocaleString('es-CL')} (${ganLivePct!.toFixed(1)}%)`
+                          ? `${formatCLP(ganLiveUnit)} (${Math.round(ganLivePct!)}%)`
                           : '—'}
                       </span>
                     </div>
@@ -335,10 +337,10 @@ export default function Productos() {
                     <TableCell>{new Date(h.fecha_cambio).toLocaleString('es-CL')}</TableCell>
                     <TableCell>{h.usuario_nombre}</TableCell>
                     <TableCell className="text-right font-mono">
-                      ${Number(h.precio_anterior).toLocaleString('es-CL')}
+                      {formatCLP(h.precio_anterior)}
                     </TableCell>
                     <TableCell className="text-right font-mono">
-                      ${Number(h.precio_nuevo).toLocaleString('es-CL')}
+                      {formatCLP(h.precio_nuevo)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -394,18 +396,18 @@ export default function Productos() {
                   </TableCell>
                   <TableCell className="capitalize">{producto.categoria ?? 'N/A'}</TableCell>
                   <TableCell className="text-right font-mono">
-                    ${Number(producto.precio_por_kilo).toLocaleString('es-CL')}
+                    {formatCLP(producto.precio_por_kilo)}
                   </TableCell>
                   <TableCell className="text-right font-mono text-muted-foreground">
                     {margen?.costo_reciente != null
-                      ? `$${Number(margen.costo_reciente).toLocaleString('es-CL')}`
+                      ? formatCLP(margen.costo_reciente)
                       : '—'}
                   </TableCell>
                   <TableCell className="text-right font-mono">
                     {margen?.margen_unitario_actual != null ? (
                       <span className={margen.margen_unitario_actual < 0 ? 'text-red-600' : 'text-green-600'}>
-                        ${Number(margen.margen_unitario_actual).toLocaleString('es-CL')}
-                        {margen.margen_pct_actual != null && ` (${margen.margen_pct_actual.toFixed(1)}%)`}
+                        {formatCLP(margen.margen_unitario_actual)}
+                        {margen.margen_pct_actual != null && ` (${Math.round(margen.margen_pct_actual)}%)`}
                       </span>
                     ) : '—'}
                   </TableCell>

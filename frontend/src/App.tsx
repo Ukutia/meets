@@ -14,12 +14,15 @@ import PedidoNuevo from "./pages/PedidoNuevo";
 import MovimientosInventarios from "./pages/MovimientosInventario";
 import Facturas from "./pages/Facturas";
 import Stock from "./pages/Stock";
+import ConteoInventario from "./pages/ConteoInventario";
 import Reportes from "./pages/Reportes";
 import NotFound from "./pages/NotFound";
 import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
+import Precios from "./pages/Precios";
+import Mas from "./pages/Mas";
 
 const queryClient = new QueryClient();
 
@@ -49,8 +52,10 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            {/* Al abrir la app se ven los precios y el stock; el Resumen sigue en /resumen. */}
+            <Route path="/" element={<Navigate to="/precios" replace />} />
             <Route
-              path="/"
+              path="/resumen"
               element={
                 <ProtectedRoute>
                   <Layout>
@@ -150,6 +155,16 @@ const App = () => (
               }
             />
             <Route
+              path="/cuadrar-inventario"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <ConteoInventario />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/reportes"
               element={
                 <ProtectedRoute>
@@ -175,6 +190,26 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Flyer />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/mas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Mas />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/precios"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Precios />
                   </Layout>
                 </ProtectedRoute>
               }

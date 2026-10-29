@@ -1,7 +1,22 @@
+import { useEffect, useState } from 'react';
 import { SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { useLocation } from 'react-router-dom';
 import { AppSidebar } from './Sidebar';
+import { MobileShell } from './MobileShell';
 import { navInfo } from './nav';
+
+// Ancho de teléfono. Se lee de forma síncrona para no pintar un cuadro con el layout de escritorio.
+const CONSULTA_MOVIL = '(max-width: 767px)';
+function useEsTelefono() {
+  const [movil, setMovil] = useState(() => window.matchMedia(CONSULTA_MOVIL).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(CONSULTA_MOVIL);
+    const alCambiar = () => setMovil(mql.matches);
+    mql.addEventListener('change', alCambiar);
+    return () => mql.removeEventListener('change', alCambiar);
+  }, []);
+  return movil;
+}
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -10,6 +25,10 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const { pathname } = useLocation();
   const info = navInfo(pathname);
+  const esTelefono = useEsTelefono();
+
+  // Teléfono: barra superior con título grande y barra de pestañas, como una app de iOS.
+  if (esTelefono) return <MobileShell>{children}</MobileShell>;
 
   return (
     <SidebarProvider>

@@ -463,7 +463,9 @@ class VendedorListView(APIView):
 class ClienteListView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        clientes = Cliente.objects.all().order_by('nombre')
+        # select_related: sin esto el serializer hace una consulta por cliente
+        # para traer su vendedor.
+        clientes = Cliente.objects.select_related('vendedor').order_by('nombre')
         serializer = ClienteSerializer(clientes, many=True)
         return Response(serializer.data)
 
@@ -990,6 +992,27 @@ class StockProductos(APIView):
         productos = Producto.objects.exclude(estado="desactivado")
         stock_data = []
 
+        # Todo se agrupa por producto en 3 consultas fijas, en vez de 3 por
+        # producto: con la base remota cada consulta cuesta un viaje de red.
+        reales_por_producto = {
+            r['producto']: r
+            for r in EntradaProducto.objects.values('producto').annotate(
+                u=Sum('cantidad_unidades'),
+                k=Sum('cantidad_kilos'),
+            )
+        }
+        reservas_por_producto = {
+            r['producto']: r['u']
+            for r in DetallePedido.objects.filter(cantidad_kilos=0)
+            .exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
+            .values('producto').annotate(u=Sum('cantidad_unidades'))
+        }
+        lotes_por_producto = {}
+        for e in EntradaProducto.objects.filter(cantidad_unidades__gt=0).order_by('fecha_entrada'):
+            lotes_por_producto.setdefault(e.producto_id, []).append(
+                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
+            )
+
         for producto in productos:
             # DISPONIBLES: se calcula EXACTAMENTE igual que el chequeo de stock
             # de CrearPedido (Sum de EntradaProducto), que es el ledger real que
@@ -1001,20 +1024,13 @@ class StockProductos(APIView):
             # CrearPedido igual rechazaba por "No hay suficiente stock".
             # Usar la misma fuente que el chequeo real hace que ambos numeros
             # NUNCA puedan divergir.
-            reales = EntradaProducto.objects.filter(producto=producto).aggregate(
-                u=Sum('cantidad_unidades'),
-                k=Sum('cantidad_kilos'),
-            )
-            disponibles = reales['u'] or 0
-            kilos_actuales = reales['k'] or 0
+            reales = reales_por_producto.get(producto.id, {})
+            disponibles = reales.get('u') or 0
+            kilos_actuales = reales.get('k') or 0
 
             # Reservas: pedidos no anulados sin kilos (ya descontaron unidades
             # del ledger real, pero siguen fisicamente en bodega esperando).
-            unidades_reservadas = DetallePedido.objects.filter(
-                producto=producto, cantidad_kilos=0
-            ).exclude(pedido__estado="Anulado").exclude(estado="Cancelado").aggregate(
-                u=Sum('cantidad_unidades')
-            )['u'] or 0
+            unidades_reservadas = reservas_por_producto.get(producto.id) or 0
 
             # Stock físico = disponibles + lo reservado (que sigue en la repisa).
             stock_fisico = disponibles + unidades_reservadas
@@ -1022,11 +1038,7 @@ class StockProductos(APIView):
             # Lotes vivos en orden FIFO: con esto Nuevo Pedido estima el costo/kg
             # exacto que tendrá la línea (mismo ponderado por unidades que
             # costo_por_kilo_ponderado) y avisa si un precio queda bajo costo.
-            lotes = [
-                {'unidades': e.cantidad_unidades, 'costo_por_kilo': e.costo_por_kilo}
-                for e in EntradaProducto.objects.filter(producto=producto, cantidad_unidades__gt=0)
-                .order_by('fecha_entrada')
-            ]
+            lotes = lotes_por_producto.get(producto.id, [])
 
             stock_data.append({
                 'id': producto.id,
