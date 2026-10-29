@@ -339,3 +339,11 @@ export const createConteo = (data: {
   notas?: string;
   lineas: { producto: number; contado_kilos?: string; contado_unidades?: string }[];
 }) => api.post<ConteoInventario>('/inventario/conteos/', data);
+
+// --- Períodos (cortes contables) ---
+export interface Periodo { id: number; nombre: string; fecha_inicio: string; fecha_fin: string | null }
+export const getPeriodos = () => api.get<Periodo[]>('/periodos/');
+export const crearPeriodo = (data: { nombre: string; fecha_inicio: string }) => api.post<Periodo>('/periodos/', data);
+export const actualizarPeriodo = (id: number, data: Partial<Pick<Periodo, 'nombre' | 'fecha_inicio'>>) =>
+  api.patch<Periodo>(`/periodos/${id}/`, data);
+export const eliminarPeriodo = (id: number) => api.delete(`/periodos/${id}/`);

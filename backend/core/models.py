@@ -672,3 +672,18 @@ class DetalleConteo(models.Model):
     diferencia_kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     diferencia_unidades = models.IntegerField(default=0)
     ajuste = models.ForeignKey(AjusteInventario, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+
+
+class Periodo(models.Model):
+    """Corte contable: separa lo pagado y lo por pagar anterior a la formalización
+    de lo nuevo. Un período sin fecha_fin es el vigente; abrir uno nuevo cierra el anterior."""
+    nombre = models.CharField(max_length=100)
+    fecha_inicio = models.DateField()
+    fecha_fin = models.DateField(null=True, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.nombre
+
+    class Meta:
+        ordering = ['-fecha_inicio', '-id']

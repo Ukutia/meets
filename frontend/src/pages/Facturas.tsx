@@ -30,6 +30,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { totalAPagar, type Factura, type EstadoEdicionLinea } from '@/types';
 import { useToast } from '@/hooks/use-toast';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { diasDesde, enRango, formatCLP, formatFecha, hoyISO, mediaUrl, parseDecimal } from '@/lib/utils';
 import { useSearchParams } from 'react-router-dom';
 import { StatCard } from '@/components/shared/StatCard';
@@ -157,10 +158,12 @@ export default function Facturas() {
     const mejor = hist == null ? margenUnit >= 0 : pct >= Number(hist);
     return { precio, margenUnit, pct, hist, mejor, tieneInfo: !!info };
   };
-  const { data: facturasData, isLoading, error } = useQuery({
+  const { enPeriodo } = usePeriodo();
+  const { data: facturasTodas, isLoading, error } = useQuery({
     queryKey: ['facturas'],
     queryFn: async () => (await getFacturas()).data as Factura[],
   });
+  const facturasData = useMemo(() => facturasTodas?.filter((f) => enPeriodo(f.fecha)), [facturasTodas, enPeriodo]);
 
   const agregarItem = () => {
     const prod = productos?.find(p => p.id.toString() === nuevoItem.producto_id);

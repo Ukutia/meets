@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView, NotaCreditoView, NotaCreditoDetailView, MovimientoCongeladoView, RegistroPreReservaView
 from . import views_tesoreria as tes
 from . import views_conteo as conteo
+from . import views_periodos as periodos
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -60,6 +61,8 @@ urlpatterns = [
     path('tesoreria/configuracion/', tes.ConfiguracionContableView.as_view(), name='configuracion_contable'),
     path('inventario/conteos/', conteo.ConteoInventarioView.as_view(), name='conteos_inventario'),
     path('inventario/stock-fisico/', conteo.StockFisicoView.as_view(), name='stock_fisico'),
+    path('periodos/', periodos.PeriodoListView.as_view(), name='periodos'),
+    path('periodos/<int:pk>/', periodos.PeriodoDetailView.as_view(), name='periodo_detail'),
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/cambiar-password/', CambiarPasswordView.as_view(), name='cambiar_password'),

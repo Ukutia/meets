@@ -24,6 +24,7 @@ import Tesoreria from "./pages/Tesoreria";
 import PreReservas from "./pages/PreReservas";
 import Precios from "./pages/Precios";
 import Mas from "./pages/Mas";
+import { PeriodoProvider } from "./contexts/PeriodoContext";
 
 const queryClient = new QueryClient();
 
@@ -48,6 +49,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
+      <PeriodoProvider>
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>
@@ -240,6 +242,7 @@ const App = () => (
           </Routes>
         </BrowserRouter>
       </TooltipProvider>
+      </PeriodoProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

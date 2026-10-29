@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getFontEmbedCSS, toJpeg, toPng } from 'html-to-image';
 import jsPDF from 'jspdf';
 import { ArrowDown, ArrowUp, Check, Copy, Download, FileDown, ImagePlus, Loader2, MessageCircle, RotateCcw, Share2, Undo2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,100 +17,33 @@ import { useToast } from '@/hooks/use-toast';
 import { getPerfil, getStock, updatePerfil, updateProducto, type Perfil } from '@/services/api';
 import type { StockItem } from '@/types';
 import { mediaUrl } from '@/lib/utils';
-import { FlyerCanvas, FLYER_HEIGHT, FLYER_WIDTH, type FlyerFila, type FotosFlyer } from '@/components/flyer/FlyerCanvas';
-
-// Ajustes de cada usuario para su flyer (quedan en su navegador). El "c/u" y el peso
-// fijo, en cambio, se guardan en el producto y valen para todos. El teléfono, las
-// fotos y el mensaje de WhatsApp se guardan en el perfil de cada usuario.
-interface AjusteFila {
-  incluir?: boolean;
-  nombre?: string;
-  precio?: string; // precio manual; vacío = usa el de la plataforma
-}
-
-interface ConfigFlyer {
-  titulo1: string;
-  titulo2: string;
-  subtitulo: string;
-  categoria: string;
-  orden: number[];
-  filas: Record<number, AjusteFila>;
-}
-
-const STORAGE_KEY = 'flyer-config-v1';
-const CONFIG_INICIAL: ConfigFlyer = {
-  titulo1: 'Carnes',
-  titulo2: 'al vacio',
-  subtitulo: 'Precios por Kilo',
-  categoria: 'todas',
-  orden: [],
-  filas: {},
-};
-
-const MENSAJE_INICIAL =
-  '¡Hola! 👋 Te comparto la lista de precios de esta semana 🥩\nCarnes al vacío, frescas y a domicilio. Pide la tuya al {telefono} 📲';
+import {
+  ERROR_FOTOS,
+  MENSAJE_INICIAL,
+  STORAGE_KEY,
+  compartirFlyer,
+  copiarImagen,
+  descargarArchivo,
+  disponibleParaVenta,
+  filasDelFlyer,
+  formatoPesos,
+  generarImagen,
+  incluidoEnFlyer,
+  leerConfig,
+  nombreArchivoFlyer,
+  pesoCalculado,
+  productosDelFlyer,
+  useImagenFlyer,
+  type AjusteFila,
+  type ConfigFlyer,
+} from '@/lib/flyer';
+import { FlyerCanvas, FLYER_HEIGHT, FLYER_WIDTH, type FotosFlyer } from '@/components/flyer/FlyerCanvas';
 
 const FOTOS: { campo: keyof FotosFlyer; label: string }[] = [
   { campo: 'foto1', label: 'Foto principal' },
   { campo: 'foto2', label: 'Foto secundaria' },
   { campo: 'logo', label: 'Logo' },
 ];
-
-const leerConfig = (): ConfigFlyer => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return CONFIG_INICIAL;
-    const guardada = JSON.parse(raw);
-    // Las configs anteriores filtraban "al vacio" por defecto y ocultaban cortes con stock.
-    if (!guardada.v2) guardada.categoria = 'todas';
-    return { ...CONFIG_INICIAL, ...guardada };
-  } catch {
-    return CONFIG_INICIAL;
-  }
-};
-
-const formatoPesos = (n: number) => '$' + Math.round(n).toLocaleString('es-CL');
-
-const formatoKilos = (kg: number) => {
-  const r = Math.round(kg * 10) / 10;
-  return `${r.toLocaleString('es-CL', { maximumFractionDigits: 1 })} kg`;
-};
-
-// Peso promedio por pieza según lo que hay en bodega (kilos / unidades disponibles).
-// Los productos por unidad no lo muestran salvo que tengan un peso fijo.
-const pesoCalculado = (item: StockItem) =>
-  !item.venta_por_unidad && item.disponibles > 0 && Number(item.kilos_actuales) > 0
-    ? formatoKilos(Number(item.kilos_actuales) / Number(item.disponibles))
-    : '';
-
-const pesoFlyer = (item: StockItem) => item.peso_flyer?.trim() || pesoCalculado(item);
-
-const imagenLista = (img: HTMLImageElement) =>
-  img.complete && img.naturalWidth > 0
-    ? Promise.resolve()
-    : new Promise<void>((resolve) => {
-        const listo = () => resolve();
-        img.addEventListener('load', listo, { once: true });
-        img.addEventListener('error', listo, { once: true });
-        setTimeout(listo, 5000);
-      });
-
-const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible' && Number(item.disponibles) > 0;
-
-// JPEG -> PNG (el portapapeles solo acepta PNG).
-const aPng = (dataUrl: string) =>
-  new Promise<Blob>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      canvas.getContext('2d')!.drawImage(img, 0, 0);
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('No se pudo convertir'))), 'image/png');
-    };
-    img.onerror = reject;
-    img.src = dataUrl;
-  });
 
 export default function Flyer() {
   const { toast } = useToast();
@@ -126,11 +58,6 @@ export default function Flyer() {
   const [subiendo, setSubiendo] = useState<string | null>(null);
   const [exportando, setExportando] = useState(false);
   const [escala, setEscala] = useState(0.6);
-  // Imagen ya generada para compartir: generarla al tocar "Compartir" tarda y el
-  // navegador deja de considerarlo un toque del usuario, así que el share salía
-  // sin imagen. Se genera por adelantado cada vez que cambia el flyer.
-  const [lista, setLista] = useState<{ file: File; dataUrl: string } | null>(null);
-  const generacion = useRef(0);
 
   const { data: stock, isLoading, error } = useQuery({
     // Clave propia: el Dashboard guarda bajo ['stock'] la respuesta completa de axios, no la lista.
@@ -175,34 +102,16 @@ export default function Flyer() {
     [perfil?.foto1, perfil?.foto2, perfil?.logo]
   );
 
-  const productos = useMemo(() => {
-    const lista = (stock ?? []).filter(
-      (p) => config.categoria === 'todas' || (p.categoria ?? '') === config.categoria
-    );
-    const pos = (id: number) => {
-      const i = config.orden.indexOf(id);
-      return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-    };
-    return [...lista].sort((a, b) => pos(a.id) - pos(b.id) || b.precio_por_kilo - a.precio_por_kilo);
-  }, [stock, config.categoria, config.orden]);
+  const productos = useMemo(() => productosDelFlyer(stock ?? [], config), [stock, config]);
 
   // Cortes con stock que el filtro de categoría está dejando fuera.
   const ocultosConStock = (stock ?? []).filter(
     (p) => disponibleParaVenta(p) && !productos.some((x) => x.id === p.id)
   );
 
-  const incluido = (item: StockItem) => config.filas[item.id]?.incluir ?? disponibleParaVenta(item);
+  const incluido = (item: StockItem) => incluidoEnFlyer(item, config);
 
-  const filas: FlyerFila[] = productos.filter(incluido).map((item) => {
-    const a = config.filas[item.id] ?? {};
-    const base = a.precio?.trim() ? a.precio.trim() : formatoPesos(Number(item.precio_por_kilo));
-    return {
-      id: item.id,
-      nombre: a.nombre?.trim() || item.producto,
-      precio: item.venta_por_unidad ? `${base} c/u` : base,
-      peso: pesosEditando[item.id] ?? pesoFlyer(item),
-    };
-  });
+  const filas = filasDelFlyer(productos, config, pesosEditando);
 
   const ajustar = (id: number, cambios: AjusteFila) =>
     setConfig((c) => ({ ...c, filas: { ...c.filas, [id]: { ...c.filas[id], ...cambios } } }));
@@ -268,83 +177,30 @@ export default function Flyer() {
     }
   };
 
-  const generarImagen = async (formato: 'png' | 'jpeg') => {
-    if (!flyerRef.current) throw new Error('Flyer no disponible');
-    const nodo = flyerRef.current;
-    await document.fonts.ready;
-    // Esperar a que las fotos estén decodificadas (ya como data URL, ver FlyerCanvas).
-    const imgs = [...nodo.querySelectorAll<HTMLImageElement>('img[data-flyer-img]')];
-    // (img.decode() puede quedar colgado en algunos navegadores; se revisa complete/naturalWidth).
-    await Promise.all(imgs.map(imagenLista));
-    if (imgs.some((img) => !img.src.startsWith('data:'))) {
-      throw new Error('Las fotos aún no terminan de cargar');
-    }
-    // Safari pinta las imágenes en blanco en la primera pasada de html-to-image:
-    // una pasada previa barata las deja listas para la definitiva.
-    const fontEmbedCSS = await getFontEmbedCSS(nodo);
-    await toPng(nodo, { pixelRatio: 0.2, fontEmbedCSS });
-    return formato === 'png'
-      ? toPng(nodo, { pixelRatio: 3, fontEmbedCSS })
-      : toJpeg(nodo, { pixelRatio: 2.5, quality: 0.92, fontEmbedCSS, backgroundColor: '#f4ebde' });
-  };
-
-  const nombreArchivo = `flyer-${new Date().toISOString().slice(0, 10)}`;
-
   const firmaFlyer = JSON.stringify([filas, config.titulo1, config.titulo2, config.subtitulo, telefono, fotos]);
-  useEffect(() => {
-    setLista(null);
-    if (filas.length === 0) return;
-    const n = ++generacion.current;
-    const t = setTimeout(async () => {
-      try {
-        const dataUrl = await generarImagen('jpeg');
-        const blob = await (await fetch(dataUrl)).blob();
-        if (n === generacion.current) {
-          setLista({ dataUrl, file: new File([blob], `${nombreArchivo}.jpg`, { type: 'image/jpeg' }) });
-        }
-      } catch {
-        /* se genera al momento de compartir */
-      }
-    }, 1200);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firmaFlyer]);
+  const { lista, obtenerLista } = useImagenFlyer(flyerRef, firmaFlyer, filas.length > 0);
 
   const mensajeFinal = mensaje.replace(/\{telefono\}/g, telefono.trim() || 'este número').trim();
-
-  const obtenerLista = async () => {
-    if (lista) return lista;
-    const dataUrl = await generarImagen('jpeg');
-    const blob = await (await fetch(dataUrl)).blob();
-    return { dataUrl, file: new File([blob], `${nombreArchivo}.jpg`, { type: 'image/jpeg' }) };
-  };
 
   const manejarError = (e: any) => {
     if (e?.name === 'AbortError') return;
     toast({
       title: 'Error',
-      description: e?.message === 'Las fotos aún no terminan de cargar' ? 'Las fotos aún se están cargando, intenta en unos segundos.' : 'No se pudo generar el flyer',
+      description: e?.message === ERROR_FOTOS ? 'Las fotos aún se están cargando, intenta en unos segundos.' : 'No se pudo generar el flyer',
       variant: 'destructive',
     });
-  };
-
-  const descargar = (dataUrl: string, ext: string) => {
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = `${nombreArchivo}.${ext}`;
-    a.click();
   };
 
   const exportar = async (tipo: 'png' | 'pdf') => {
     setExportando(true);
     try {
-      const dataUrl = await generarImagen('png');
+      const dataUrl = await generarImagen(flyerRef.current, 'png');
       if (tipo === 'png') {
-        descargar(dataUrl, 'png');
+        descargarArchivo(dataUrl, `${nombreArchivoFlyer()}.png`);
       } else {
         const pdf = new jsPDF({ unit: 'px', format: [FLYER_WIDTH, FLYER_HEIGHT], hotfixes: ['px_scaling'] });
         pdf.addImage(dataUrl, 'PNG', 0, 0, FLYER_WIDTH, FLYER_HEIGHT);
-        pdf.save(`${nombreArchivo}.pdf`);
+        pdf.save(`${nombreArchivoFlyer()}.pdf`);
       }
     } catch (e: any) {
       manejarError(e);
@@ -353,43 +209,14 @@ export default function Flyer() {
     }
   };
 
-  const copiarImagen = async (datos?: { dataUrl: string }) => {
-    const fuente = datos ?? (await obtenerLista());
-    // El blob va como promesa: Safari exige crear el ClipboardItem dentro del toque.
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': aPng(fuente.dataUrl) })]);
-  };
-
-  // Compartir con la hoja del sistema (WhatsApp, Instagram...). Si la imagen ya
-  // está generada se comparte de inmediato, dentro del mismo toque.
+  // Si la imagen ya está generada se comparte de inmediato, dentro del mismo toque.
   const compartir = async (conMensaje: boolean) => {
     const datos = lista;
     setExportando(true);
     try {
-      const d = datos ?? (await obtenerLista());
-      const payload: ShareData = conMensaje ? { files: [d.file], text: mensajeFinal } : { files: [d.file] };
-      if (navigator.canShare?.(payload)) {
-        try {
-          await navigator.share(payload);
-          return;
-        } catch (e: any) {
-          if (e?.name === 'AbortError') return;
-          if (e?.name !== 'NotAllowedError') throw e;
-        }
-      }
-      // Sin hoja para compartir archivos (computador): se copia la imagen y se abre
-      // WhatsApp con el mensaje, para pegarla en el chat.
-      if (conMensaje) {
-        try {
-          await copiarImagen(d);
-          toast({ title: 'Imagen copiada', description: 'Pégala en el chat de WhatsApp junto al mensaje.' });
-        } catch {
-          descargar(d.dataUrl, 'jpg');
-          toast({ title: 'Imagen descargada', description: 'Adjúntala en el chat de WhatsApp.' });
-        }
-        window.open(`https://wa.me/?text=${encodeURIComponent(mensajeFinal)}`, '_blank');
-      } else {
-        descargar(d.dataUrl, 'jpg');
-      }
+      const resultado = await compartirFlyer(datos ?? (await obtenerLista()), conMensaje ? mensajeFinal : undefined);
+      if (resultado === 'copiado') toast({ title: 'Imagen copiada', description: 'Pégala en el chat de WhatsApp junto al mensaje.' });
+      if (resultado === 'descargado' && conMensaje) toast({ title: 'Imagen descargada', description: 'Adjúntala en el chat de WhatsApp.' });
     } catch (e: any) {
       manejarError(e);
     } finally {
@@ -399,7 +226,7 @@ export default function Flyer() {
 
   const copiar = async () => {
     try {
-      await copiarImagen();
+      await copiarImagen((await obtenerLista()).dataUrl);
       toast({ title: 'Imagen copiada' });
     } catch (e: any) {
       manejarError(e);

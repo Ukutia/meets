@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { StatCard } from '@/components/shared/StatCard';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { formatCLP, formatFecha } from '@/lib/utils';
 import { calcularSaldosVendedores, pagosDesdeRespuesta, type PagoVendedor } from '@/lib/saldos';
 import type { Pedido, Vendedor } from '@/types';
@@ -47,16 +48,21 @@ export default function GestionPagosVendedor() {
     queryKey: ['vendedores'],
     queryFn: async () => (await getVendedores()).data as Vendedor[],
   });
+  const { enPeriodo } = usePeriodo();
   const { data: todosPedidos } = useQuery({
     queryKey: ['pedidos'],
     queryFn: async () => (await getPedidos(true)).data as Pedido[],
   });
-  const { data: todosPagos = [] } = useQuery({
+  const { data: pagosTodos = [] } = useQuery({
     queryKey: ['pagos-vendedor'],
     queryFn: async () => pagosDesdeRespuesta((await getPagosVendedor()).data),
   });
 
-  const pedidosVigentes = useMemo(() => (todosPedidos ?? []).filter((p) => p.estado !== 'Anulado'), [todosPedidos]);
+  const todosPagos = useMemo(() => pagosTodos.filter((p) => enPeriodo(p.fecha)), [pagosTodos, enPeriodo]);
+  const pedidosVigentes = useMemo(
+    () => (todosPedidos ?? []).filter((p) => p.estado !== 'Anulado' && enPeriodo(p.fecha)),
+    [todosPedidos, enPeriodo]
+  );
   const resumen = useMemo(
     () => calcularSaldosVendedores(vendedores, pedidosVigentes, todosPagos),
     [vendedores, pedidosVigentes, todosPagos]

@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { cn, decimalATexto, enRango, formatCLP, parseDecimal } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -75,13 +76,16 @@ export default function Pedidos() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data, isLoading, error } = useQuery({
+  const { enPeriodo } = usePeriodo();
+  const { data: dataTodos, isLoading, error } = useQuery({
     queryKey: ['pedidos'],
     queryFn: async () => {
       const response = await getPedidos(true);
       return response.data as Pedido[];
     },
   });
+  // Solo los pedidos del período elegido arriba (ver PeriodoSelector).
+  const data = useMemo(() => dataTodos?.filter((p) => enPeriodo(p.fecha)), [dataTodos, enPeriodo]);
 
   const { data: productosData } = useQuery({
     queryKey: ['productos'],
