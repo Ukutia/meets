@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { invalidarPreReservas } from '@/lib/preReservas';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import { Search, ArrowUpCircle, ArrowDownCircle, PackageMinus, Plus, Filter, FileSpreadsheet, FileText, Layers, Pencil, Trash2 } from 'lucide-react';
@@ -145,7 +146,7 @@ export default function MovimientosInventario() {
       // El backend revierte y vuelve a aplicar el movimiento en el ledger, así
       // que el stock cambia igual que al crear: hay que refrescar ambas listas.
       queryClient.invalidateQueries({ queryKey: ['ajustes-inventario'] });
-      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      invalidarPreReservas(queryClient);
       toast({
         title: ajusteEditando ? 'Ajuste actualizado' : 'Ajuste registrado',
         description: 'El movimiento de inventario se guardó con éxito.',
@@ -165,7 +166,7 @@ export default function MovimientosInventario() {
     mutationFn: (id: number) => deleteAjusteInventario(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ajustes-inventario'] });
-      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      invalidarPreReservas(queryClient);
       toast({ title: 'Ajuste eliminado', description: 'El stock volvió a su valor anterior.' });
       setAjusteAEliminar(null);
     },

@@ -201,6 +201,7 @@ class Pedido(models.Model):
     estado = models.CharField(
         max_length=20,
         choices=[
+            ("Pre-reserva", "Pre-reserva"),
             ("Reservado", "Reservado"),
             ("Preparado", "Preparado"),
             ("Anulado", "Anulado"),
@@ -271,6 +272,13 @@ class DetallePedido(models.Model):
         verbose_name="Estado de la línea",
         help_text="Cancelado = el producto fue quitado del pedido y su stock/costo ya fue revertido"
     )
+    # Pre-reserva: unidades de cantidad_unidades que se vendieron SIN stock.
+    # No tienen lote (FacturaDetallePedido) todavía; cuando entra una factura
+    # con el producto se les asignan unidades FIFO (asignar_pre_reservas en
+    # utils.py) y el número baja hasta 0.
+    unidades_pendientes = models.IntegerField(default=0, verbose_name="Unidades en pre-reserva (sin stock)")
+    # La línea se abastece del stock congelado del producto en vez del inventario normal.
+    congelado = models.BooleanField(default=False, verbose_name="Sale del stock congelado")
 
 
     def save(self, *args, **kwargs):
@@ -426,9 +434,78 @@ class EntradaProducto(models.Model):
     # Con default=timezone.now se mantiene el mismo comportamiento al crear sin
     # fecha, pero la fecha explicita si se respeta.
     fecha_entrada = models.DateTimeField(default=timezone.now)
+    # Lote pasado a congelado: es un stock aparte del inventario normal. Las
+    # ventas y ajustes normales no lo tocan; solo las líneas con congelado=True.
+    congelado = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.producto.nombre} - {self.cantidad_kilos} kg - {self.costo_por_kilo} por kilo"
+
+
+class RegistroPreReserva(models.Model):
+    """Auditoría de una línea en pre-reserva: cuándo se creó, cada asignación
+    de stock (con el lote/factura de donde salió) y cada vez que sus unidades
+    pendientes cambiaron por una edición o cancelación. Solo se escribe; la
+    escriben crear_linea_pedido, asignar_pre_reservas y las vistas que editan
+    o cancelan pedidos (ver registrar_pre_reserva en utils.py)."""
+    EVENTOS = [
+        ("creada", "Pre-reserva creada"),
+        ("aumentada", "Unidades pendientes aumentadas"),
+        ("asignada", "Unidades asignadas desde stock"),
+        ("reducida", "Unidades pendientes reducidas"),
+        ("cancelada", "Pre-reserva cancelada"),
+    ]
+    ORIGENES = [
+        ("creacion_pedido", "Creación del pedido"),
+        ("agregar_producto", "Producto agregado al pedido"),
+        ("edicion_pedido", "Edición del pedido"),
+        ("factura", "Ingreso de factura"),
+        ("edicion_factura", "Edición de factura"),
+        ("descongelar", "Stock descongelado"),
+        ("anulacion_pedido", "Anulación de otro pedido"),
+        ("cancelacion_linea", "Cancelación de una línea"),
+        ("ajuste_inventario", "Ajuste de inventario"),
+    ]
+    detalle = models.ForeignKey(DetallePedido, on_delete=models.CASCADE, related_name="registros_pre_reserva")
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name="registros_pre_reserva")
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name="registros_pre_reserva")
+    evento = models.CharField(max_length=12, choices=EVENTOS)
+    origen = models.CharField(max_length=20, choices=ORIGENES)
+    unidades = models.IntegerField()
+    pendientes_despues = models.IntegerField()
+    # Lote de donde salieron las unidades (solo en evento 'asignada').
+    factura = models.ForeignKey('Factura', on_delete=models.SET_NULL, null=True, blank=True, related_name="registros_pre_reserva")
+    referencia = models.CharField(max_length=255, blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+    def __str__(self):
+        return f"Pedido #{self.pedido_id} {self.producto.nombre}: {self.evento} {self.unidades} un"
+
+
+class MovimientoCongelado(models.Model):
+    """Registro de stock pasado de inventario a congelado (o de vuelta). El
+    movimiento real lo hace mover_stock_congelado (utils.py) sobre los lotes."""
+    DIRECCIONES = [
+        ("congelar", "Inventario -> Congelado"),
+        ("descongelar", "Congelado -> Inventario"),
+    ]
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE, related_name="movimientos_congelado")
+    direccion = models.CharField(max_length=12, choices=DIRECCIONES)
+    cantidad_unidades = models.IntegerField()
+    cantidad_kilos = models.DecimalField(max_digits=10, decimal_places=2)
+    razon = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+    def __str__(self):
+        return f"{self.get_direccion_display()} {self.producto.nombre}: {self.cantidad_unidades} un / {self.cantidad_kilos} kg"
 
 
 class NotaCredito(models.Model):

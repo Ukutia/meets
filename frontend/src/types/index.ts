@@ -76,6 +76,8 @@ export interface DetallePedido {
   total_costo: number;
   costo_por_kilo?: number;
   estado: 'Activo' | 'Cancelado';
+  unidades_pendientes?: number;
+  congelado?: boolean;
 }
 
 export interface Pedido {
@@ -83,7 +85,7 @@ export interface Pedido {
   cliente: Cliente;
   vendedor: Vendedor;
   fecha: string;
-  estado: 'Reservado' | 'Preparado' | 'Anulado' | 'Pagado';
+  estado: 'Pre-reserva' | 'Reservado' | 'Preparado' | 'Anulado' | 'Pagado';
   total: number;
   detalles: DetallePedido[];
   observaciones?: string;
@@ -162,6 +164,32 @@ export interface StockItem {
   kilos_actuales: number;
   // Lotes vivos en orden FIFO (para estimar el costo de una venta).
   lotes?: { unidades: number; costo_por_kilo: number | string }[];
+  // Pre-reservas: unidades pedidas sin stock.
+  pre_reservas?: number;
+  // Stock congelado (pool separado del inventario normal).
+  congelado_unidades?: number;
+  congelado_kilos?: number;
+  congelado_reservas?: number;
+  lotes_congelado?: { unidades: number; costo_por_kilo: number | string }[];
+}
+
+export interface PreReservaAsignada {
+  pedido: number;
+  producto: string;
+  unidades: number;
+  completa: boolean;
+}
+
+export interface MovimientoCongelado {
+  id: number;
+  producto: number;
+  producto_nombre: string;
+  direccion: 'congelar' | 'descongelar';
+  cantidad_unidades: number;
+  cantidad_kilos: number | string;
+  razon?: string | null;
+  usuario_nombre?: string;
+  fecha: string;
 }
 
 export interface AjusteInventario {
@@ -183,6 +211,28 @@ export interface KPI {
     value: number;
     positive: boolean;
   };
+}
+
+export type EventoPreReserva = 'creada' | 'aumentada' | 'asignada' | 'reducida' | 'cancelada';
+
+export interface AuditoriaPreReserva {
+  id: number;
+  pedido: number;
+  cliente_nombre: string;
+  detalle: number;
+  producto: number;
+  producto_nombre: string;
+  evento: EventoPreReserva;
+  evento_display: string;
+  origen: string;
+  origen_display: string;
+  unidades: number;
+  pendientes_despues: number;
+  factura: string | null;
+  proveedor_nombre: string | null;
+  referencia: string;
+  usuario_nombre: string | null;
+  fecha: string;
 }
 
 export interface DetalleConteo {

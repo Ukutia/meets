@@ -71,6 +71,7 @@ export default function Dashboard() {
   }, [pedidos]);
 
   const porPesar = pedidos.filter((p) => p.estado === 'Reservado').sort((a, b) => a.id - b.id);
+  const preReservas = pedidos.filter((p) => p.estado === 'Pre-reserva').sort((a, b) => a.id - b.id);
   const porCobrar = pedidos.filter((p) => p.estado === 'Preparado').sort((a, b) => a.id - b.id);
   const montoPorCobrar = porCobrar.reduce((s, p) => s + Number(p.total), 0);
 
@@ -115,6 +116,14 @@ export default function Dashboard() {
       detalle: `El más antiguo es el #${porPesar[0].id} de ${porPesar[0].cliente.nombre}`,
       tono: 'atencion',
       ir: '/pedidos?estado=Reservado',
+    },
+    preReservas.length > 0 && {
+      clave: 'prereserva',
+      icono: AlertCircle,
+      titulo: `${preReservas.length} pre-reserva${preReservas.length === 1 ? '' : 's'} esperando stock`,
+      detalle: `La más antigua es el #${preReservas[0].id} de ${preReservas[0].cliente.nombre}`,
+      tono: 'atencion',
+      ir: '/pedidos?estado=Pre-reserva',
     },
     porCobrar.length > 0 && {
       clave: 'cobrar',
