@@ -212,3 +212,25 @@ export interface KPI {
     positive: boolean;
   };
 }
+
+export type EventoPreReserva = 'creada' | 'aumentada' | 'asignada' | 'reducida' | 'cancelada';
+
+export interface AuditoriaPreReserva {
+  id: number;
+  pedido: number;
+  cliente_nombre: string;
+  detalle: number;
+  producto: number;
+  producto_nombre: string;
+  evento: EventoPreReserva;
+  evento_display: string;
+  origen: string;
+  origen_display: string;
+  unidades: number;
+  pendientes_despues: number;
+  factura: string | null;
+  proveedor_nombre: string | null;
+  referencia: string;
+  usuario_nombre: string | null;
+  fecha: string;
+}

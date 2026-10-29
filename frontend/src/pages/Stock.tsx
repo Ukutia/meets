@@ -129,6 +129,7 @@ export default function Stock() {
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       queryClient.invalidateQueries({ queryKey: ['movimientos-congelado'] });
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      queryClient.invalidateQueries({ queryKey: ['auditoria-pre-reservas'] });
       const asignadas = resumenPreReservas(response.data?.pre_reservas_asignadas);
       toast({
         title: direccion === 'congelar' ? 'Stock congelado' : 'Stock descongelado',

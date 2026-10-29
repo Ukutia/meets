@@ -227,6 +227,7 @@ export default function Facturas() {
       queryClient.invalidateQueries({ queryKey: ['facturas'] });
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      queryClient.invalidateQueries({ queryKey: ['auditoria-pre-reservas'] });
       const asignadas = resumenPreReservas(response?.data?.pre_reservas_asignadas);
       toast({
         title: 'Éxito',
@@ -297,6 +298,7 @@ export default function Facturas() {
       queryClient.invalidateQueries({ queryKey: ['stock'] });
       queryClient.invalidateQueries({ queryKey: ['margen-productos'] });
       queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      queryClient.invalidateQueries({ queryKey: ['auditoria-pre-reservas'] });
       toast({ title: 'Éxito', description: 'Factura actualizada.' });
       setEditFactura(null);
     },

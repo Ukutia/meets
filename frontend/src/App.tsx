@@ -20,6 +20,7 @@ import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
+import PreReservas from "./pages/PreReservas";
 
 const queryClient = new QueryClient();
 
@@ -185,6 +186,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Tesoreria />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/pre-reservas"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <PreReservas />
                   </Layout>
                 </ProtectedRoute>
               }

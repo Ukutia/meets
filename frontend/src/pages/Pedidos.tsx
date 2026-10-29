@@ -15,6 +15,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from '@/components/ui/badge';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { invalidarPreReservas } from '@/lib/preReservas';
+import { HistorialPreReserva } from '@/components/shared/AuditoriaPreReservaList';
 import { getPedidos, updatePedido, cancelarPedido, cancelarProductoPedido, agregarProductoPedido, getProductos } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
@@ -89,8 +91,7 @@ export default function Pedidos() {
   const mutation = useMutation({
     mutationFn: (payload: { id: number, data: any }) => updatePedido(payload.id, payload.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
-      queryClient.invalidateQueries({ queryKey: ['stock'] });
+      invalidarPreReservas(queryClient);
       toast({ title: "Actualizado", description: "Pedido actualizado correctamente." });
       setSelectedPedido(null);
     },
@@ -106,7 +107,7 @@ export default function Pedidos() {
   const anularMutation = useMutation({
     mutationFn: (id: number) => cancelarPedido(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      invalidarPreReservas(queryClient);
       toast({ title: "Anulado", description: "El pedido fue anulado." });
       setSelectedPedido(null);
     },
@@ -116,7 +117,7 @@ export default function Pedidos() {
     mutationFn: (payload: { pedidoId: number, detalleId: number }) =>
       cancelarProductoPedido(payload.pedidoId, payload.detalleId),
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      invalidarPreReservas(queryClient);
       // Refrescamos el pedido abierto en el dialog con la respuesta del backend
       // (stock revertido, total recalculado, y posiblemente el pedido entero
       // Anulado si esa era la última línea activa).
@@ -135,12 +136,11 @@ export default function Pedidos() {
         ...(payload.cantidad_kilos > 0 ? {} : { permitir_pre_reserva: true }),
       }),
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: ['pedidos'] });
+      invalidarPreReservas(queryClient);
       abrirEdicion(response.data);
       setNuevoProductoId('');
       setNuevoProductoKilos('');
       setNuevoProductoUnidades('');
-      queryClient.invalidateQueries({ queryKey: ['stock'] });
       const pendiente = (response.data as Pedido).detalles?.some((d) => Number(d.unidades_pendientes) > 0);
       toast({
         title: "Producto agregado",
@@ -594,6 +594,7 @@ export default function Pedidos() {
                           </div>
                         ))}
                       </div>
+                      <HistorialPreReserva pedidoId={pedido.id} />
                     </TableCell>
                   </TableRow>
                 )}

@@ -13,6 +13,7 @@ import {
   KeyRound,
   Plus,
   Landmark,
+  Hourglass,
 } from 'lucide-react';
 
 export type NavItem = { title: string; url: string; icon: React.ComponentType<{ className?: string }> };
@@ -26,6 +27,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: 'Ventas',
     items: [
       { title: 'Pedidos', url: '/pedidos', icon: ShoppingCart },
+      { title: 'Pre-reservas', url: '/pre-reservas', icon: Hourglass },
       { title: 'Clientes', url: '/clientes', icon: Users },
       { title: 'Pagos de Vendedores', url: '/gestion-pagos', icon: Wallet },
       { title: 'Flyer de Precios', url: '/flyer', icon: Image },

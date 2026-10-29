@@ -3,6 +3,7 @@ import type {
   Producto,
   Cliente,
   Pedido,
+  AuditoriaPreReserva,
   Factura,
   StockItem,
   MovimientoCongelado,
@@ -248,6 +249,8 @@ export const getDetallePedidos = async () => {
 };
 
 // Stock
+export const getAuditoriaPreReservas = (params: { pedido?: number; producto?: number; evento?: string } = {}) =>
+  api.get<AuditoriaPreReserva[]>('/pedidos/pre-reservas/auditoria/', { params });
 export const getStock = () => api.get<StockItem[]>('/stock/');
 export const getMovimientosCongelado = (producto?: number) =>
   api.get<MovimientoCongelado[]>('/inventario/congelado/', { params: producto ? { producto } : undefined });
