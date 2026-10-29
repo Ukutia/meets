@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.db import models
 from rest_framework import serializers
-from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario, MovimientoCongelado, NotaCredito, MovimientoBancario, AsignacionMovimiento, Cartola, Gasto
+from .models import Producto, Pedido, DetallePedido, Cliente, PagoFactura, Factura, DetalleFactura, Vendedor, Proveedor, FacturaDetallePedido, HistorialPrecioProducto, AjusteInventario, MovimientoCongelado, RegistroPreReserva, NotaCredito, MovimientoBancario, AsignacionMovimiento, Cartola, Gasto
 
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -93,6 +93,27 @@ class AjusteInventarioSerializer(serializers.ModelSerializer):
     class Meta:
         model = AjusteInventario
         fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'cantidad_unidades', 'tipo', 'razon', 'fecha']
+
+
+class RegistroPreReservaSerializer(serializers.ModelSerializer):
+    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+    cliente_nombre = serializers.ReadOnlyField(source='pedido.cliente.nombre')
+    evento_display = serializers.CharField(source='get_evento_display', read_only=True)
+    origen_display = serializers.CharField(source='get_origen_display', read_only=True)
+    proveedor_nombre = serializers.SerializerMethodField()
+    usuario_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RegistroPreReserva
+        fields = ['id', 'pedido', 'cliente_nombre', 'detalle', 'producto', 'producto_nombre', 'evento',
+                  'evento_display', 'origen', 'origen_display', 'unidades', 'pendientes_despues', 'factura',
+                  'proveedor_nombre', 'referencia', 'usuario_nombre', 'fecha']
+
+    def get_proveedor_nombre(self, obj):
+        return obj.factura.proveedor.nombre if obj.factura_id and obj.factura.proveedor_id else None
+
+    def get_usuario_nombre(self, obj):
+        return obj.usuario.username if obj.usuario else None
 
 
 class MovimientoCongeladoSerializer(serializers.ModelSerializer):

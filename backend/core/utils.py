@@ -4,7 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido
+from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido, RegistroPreReserva
 
 
 def costo_por_kilo_ponderado(detalle):
@@ -422,13 +422,34 @@ def actualizar_estado_pre_reserva(pedido):
         pedido.estado = "Reservado"
 
 
-def asignar_pre_reservas(producto):
+def registrar_pre_reserva(detalle, evento, origen, unidades, referencia='', usuario=None, factura_id=None):
+    """Escribe una fila de auditoría (RegistroPreReserva) con el estado de la
+    línea DESPUÉS del cambio. ``usuario`` puede ser un AnonymousUser o None."""
+    if unidades <= 0:
+        return None
+    if usuario is not None and not getattr(usuario, 'is_authenticated', False):
+        usuario = None
+    return RegistroPreReserva.objects.create(
+        detalle=detalle, pedido_id=detalle.pedido_id, producto_id=detalle.producto_id,
+        evento=evento, origen=origen, unidades=int(unidades),
+        pendientes_despues=int(detalle.unidades_pendientes),
+        factura_id=factura_id, referencia=referencia[:255], usuario=usuario,
+    )
+
+
+def asignar_pre_reservas(producto, origen='factura', referencia='', usuario=None):
     """Asigna stock del inventario normal a las pre-reservas del producto, la
-    más antigua primero, consumiendo FIFO como cualquier venta. Se llama al
-    ingresar (o editar) una factura de compra.
+    más antigua primero, consumiendo FIFO como cualquier venta. Se llama cada
+    vez que vuelve o entra stock al inventario normal: ingreso o edición de
+    factura, descongelar, anular un pedido, cancelar o achicar una línea y
+    ajustes de inventario que suman unidades.
 
     Una línea puede quedar asignada a medias si no alcanza; el pedido pasa de
     Pre-reserva a Reservado cuando ninguna de sus líneas tiene pendientes.
+
+    Cada asignación queda en RegistroPreReserva (una fila por factura de la
+    que salieron las unidades) con ``origen`` y ``referencia`` del evento que
+    liberó el stock.
 
     Devuelve [{'pedido': id, 'producto': nombre, 'unidades': n, 'completa': bool}].
     """
@@ -459,8 +480,22 @@ def asignar_pre_reservas(producto):
                     (detalle.precio_lista or producto.precio_por_kilo) - detalle.precio_venta,
                     Decimal('0.00'))
                 detalle.total_venta = (detalle.cantidad_kilos or 0) * detalle.precio_venta
+        pendientes_antes = detalle.unidades_pendientes
         detalle.unidades_pendientes -= unidades
         detalle.save()
+
+        # Una fila por lote (factura) de donde salieron las unidades, con los
+        # pendientes que quedaron tras ESE lote, para leer el historial en orden.
+        asignadas = 0
+        for factura_id, cantidad in facturas_cantidades.items():
+            asignadas += cantidad
+            RegistroPreReserva.objects.create(
+                detalle=detalle, pedido_id=detalle.pedido_id, producto=producto,
+                evento='asignada', origen=origen, unidades=cantidad,
+                pendientes_despues=pendientes_antes - asignadas,
+                factura_id=factura_id, referencia=referencia[:255],
+                usuario=usuario if getattr(usuario, 'is_authenticated', False) else None,
+            )
 
         pedido = detalle.pedido
         actualizar_estado_pre_reserva(pedido)

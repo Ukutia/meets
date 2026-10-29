@@ -1,10 +1,10 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado
-from .serializers import MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado, RegistroPreReserva
+from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -111,7 +111,8 @@ def precio_segun_modo(producto, cfg, costo_por_kilo, lista=None):
     return lista
 
 
-def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, permitir_pre_reserva=False):
+def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, permitir_pre_reserva=False,
+                       origen='creacion_pedido', usuario=None):
     """Crea una línea de venta consumiendo stock FIFO. La usan CrearPedido y
     AgregarProductoPedido para que ambas queden idénticas.
 
@@ -151,6 +152,8 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
         modo_precio=cfg['modo'],
     )
     vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
+    registrar_pre_reserva(detalle, 'creada', origen, pendientes,
+                          referencia=f"Pedido #{pedido.id}", usuario=usuario)
 
     cpk = costo_por_kilo_ponderado(detalle)
     if cpk is not None:
@@ -172,6 +175,24 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
 
     detalle.save()
     return detalle
+
+
+def anular_pedido(pedido, usuario=None):
+    """Anula el pedido devolviendo el stock de sus líneas activas (lo que usan
+    CancelarPedido y PedidoDetailView). Las pre-reservas del pedido quedan
+    canceladas en la auditoría, y el stock devuelto se ofrece a las
+    pre-reservas de OTROS pedidos que esperan esos productos."""
+    referencia = f"Pedido #{pedido.id} anulado"
+    productos = {}
+    for detalle in pedido.detalles.exclude(estado="Cancelado").select_related('producto'):
+        revertir_stock_detalle(detalle)
+        registrar_pre_reserva(detalle, 'cancelada', 'anulacion_pedido',
+                              detalle.unidades_pendientes, referencia=referencia, usuario=usuario)
+        productos[detalle.producto_id] = detalle.producto
+    pedido.estado = "Anulado"
+    pedido.save()
+    for producto in productos.values():
+        asignar_pre_reservas(producto, 'anulacion_pedido', referencia, usuario)
 
 
 def _es_verdadero(valor):
@@ -264,6 +285,7 @@ class CrearPedido(APIView):
                         pedido, producto, unidades, kilos, cfg,
                         congelado=_es_verdadero(detalle.get('congelado')),
                         permitir_pre_reserva=permitir_pre_reserva,
+                        usuario=request.user,
                     )
 
                 # Antes el estado quedaba según la ÚLTIMA línea: un pedido con una
@@ -303,10 +325,7 @@ class PedidoDetailView(APIView):
                     if nuevo_estado not in dict(Pedido._meta.get_field('estado').choices):
                         raise ValidationError("Estado inválido")
                     if nuevo_estado == "Anulado":
-                        for detalle in pedido.detalles.exclude(estado="Cancelado"):
-                            revertir_stock_detalle(detalle)
-                        pedido.estado = "Anulado"
-                        pedido.save()
+                        anular_pedido(pedido, request.user)
                         return Response(PedidoSerializer(pedido).data, status=status.HTTP_200_OK)
                     pedido.estado = nuevo_estado
                 if data.get('tipo_recibo') in ('Boleta', 'Factura'):
@@ -316,6 +335,9 @@ class PedidoDetailView(APIView):
 
                 # 2. Actualizar detalles (kilos y unidades)
                 detalles_data = data.get('detalles', [])
+                # Productos a los que esta edición les devolvió unidades al
+                # inventario: al final se ofrecen a otras pre-reservas.
+                productos_liberados = {}
 
                 for det in detalles_data:
                     # Extraemos el ID del producto (manejando si viene como objeto o ID)
@@ -367,6 +389,9 @@ class PedidoDetailView(APIView):
                                 hay = int(unidades_en_stock(detalle_obj.producto))
                                 a_consumir = min(delta_unidades, hay)
                                 detalle_obj.unidades_pendientes += delta_unidades - a_consumir
+                                registrar_pre_reserva(
+                                    detalle_obj, 'aumentada', 'edicion_pedido', delta_unidades - a_consumir,
+                                    referencia=f"Pedido #{pedido.id} editado", usuario=request.user)
                         _c, _k, facturas_usadas_delta, facturas_cantidades_delta = consumir_fifo(
                             detalle_obj.producto, a_consumir, congelado=congelado
                         )
@@ -389,9 +414,14 @@ class PedidoDetailView(APIView):
                         quitar = -delta_unidades
                         de_pendientes = min(quitar, detalle_obj.unidades_pendientes)
                         detalle_obj.unidades_pendientes -= de_pendientes
+                        registrar_pre_reserva(
+                            detalle_obj, 'reducida', 'edicion_pedido', de_pendientes,
+                            referencia=f"Pedido #{pedido.id} editado", usuario=request.user)
                         if quitar - de_pendientes > 0:
                             restituir_unidades_fifo(
                                 detalle_obj.producto, quitar - de_pendientes, congelado=congelado)
+                            if not congelado:
+                                productos_liberados[detalle_obj.producto_id] = detalle_obj.producto
 
                     if detalle_obj.unidades_pendientes > 0 and detalle_obj.cantidad_kilos > 0:
                         raise ValidationError(
@@ -437,6 +467,11 @@ class PedidoDetailView(APIView):
                         f"{pedido.estado} hasta que llegue la factura")
                 actualizar_estado_pre_reserva(pedido)
                 pedido.save()
+
+                for producto in productos_liberados.values():
+                    asignar_pre_reservas(
+                        producto, 'edicion_pedido', f"Pedido #{pedido.id} bajó unidades", request.user)
+                pedido.refresh_from_db()
 
             serializer = PedidoSerializer(pedido)
             return Response(serializer.data, status=status.HTTP_200_OK)
@@ -606,7 +641,9 @@ class CrearFacturaEntrada(APIView):
             # toman sus unidades (la más antigua primero) y pasan a Reservado.
             pre_reservas = []
             for producto_id in {item.get('producto') for item in detalles_data}:
-                pre_reservas += asignar_pre_reservas(Producto.objects.get(id=producto_id))
+                pre_reservas += asignar_pre_reservas(
+                    Producto.objects.get(id=producto_id), 'factura',
+                    f"Factura {factura.numero_factura}", request.user)
 
             return Response({'message': 'Éxito', 'pre_reservas_asignadas': pre_reservas},
                             status=status.HTTP_201_CREATED)
@@ -738,7 +775,8 @@ class UpdateFacturaEntrada(APIView):
 
                 # Si la edición sumó unidades, pueden cubrir pre-reservas.
                 for producto in productos_tocados:
-                    asignar_pre_reservas(producto)
+                    asignar_pre_reservas(producto, 'edicion_factura',
+                                         f"Factura {factura.numero_factura} editada", request.user)
 
             factura.refresh_from_db()
             return Response(FacturaSerializer(factura).data, status=status.HTTP_200_OK)
@@ -903,14 +941,10 @@ class CancelarPedido(APIView):
                 # CancelarProductoPedido usa por línea, ver utils.revertir_stock_detalle).
                 # Las líneas ya canceladas individualmente saltan esta reversión:
                 # su stock ya volvió al ledger cuando se cancelaron.
-                for detalle in pedido.detalles.exclude(estado="Cancelado"):
-                    revertir_stock_detalle(detalle)
-
                 # 2. IMPORTANTE: NO borres los detalles.
                 # Si los borras, pierdes el historial de qué se vendió.
                 # Solo cambia el estado del pedido.
-                pedido.estado = "Anulado"
-                pedido.save()
+                anular_pedido(pedido, request.user)
 
                 return Response({'status': 'Pedido Anulado y stock revertido'}, status=status.HTTP_200_OK)
 
@@ -972,6 +1006,9 @@ class CancelarProductoPedido(APIView):
 
                 detalle.estado = "Cancelado"
                 detalle.save()
+                referencia = f"Línea de Pedido #{pedido.id} cancelada"
+                registrar_pre_reserva(detalle, 'cancelada', 'cancelacion_linea',
+                                      detalle.unidades_pendientes, referencia=referencia, usuario=request.user)
 
                 # Recalcular el total del pedido con las líneas que siguen activas.
                 lineas_activas = pedido.detalles.exclude(estado="Cancelado")
@@ -988,6 +1025,12 @@ class CancelarProductoPedido(APIView):
                     actualizar_estado_pre_reserva(pedido)
 
                 pedido.save()
+
+                # Lo devuelto puede cubrir pre-reservas de otros pedidos (o de
+                # otra línea de este mismo).
+                if not detalle.congelado:
+                    asignar_pre_reservas(detalle.producto, 'cancelacion_linea', referencia, request.user)
+                pedido.refresh_from_db()
 
                 return Response(PedidoSerializer(pedido).data, status=status.HTTP_200_OK)
 
@@ -1039,6 +1082,7 @@ class AgregarProductoPedido(APIView):
                     pedido, producto, unidades, kilos, cfg,
                     congelado=_es_verdadero(request.data.get('congelado')),
                     permitir_pre_reserva=_es_verdadero(request.data.get('permitir_pre_reserva')),
+                    origen='agregar_producto', usuario=request.user,
                 )
                 recalcular_total_pedido(pedido)
 
@@ -1599,6 +1643,9 @@ class CrearAjusteInventario(APIView):
                 _aplicar_ajuste_en_ledger(
                     datos['producto'], datos['cantidad'], datos['cantidad_unidades']
                 )
+                if datos['cantidad_unidades'] > 0:
+                    asignar_pre_reservas(datos['producto'], 'ajuste_inventario',
+                                         f"Ajuste #{ajuste.id} ({ajuste.tipo})", request.user)
 
         except ValidationError as e:
             return _error_de_validacion(e)
@@ -1641,6 +1688,7 @@ class AjusteInventarioDetailView(APIView):
         try:
             with transaction.atomic():
                 _revertir_ajuste_en_ledger(ajuste)
+                producto_anterior = ajuste.producto
 
                 ajuste.producto = datos['producto']
                 ajuste.tipo = datos['tipo']
@@ -1652,6 +1700,11 @@ class AjusteInventarioDetailView(APIView):
                 _aplicar_ajuste_en_ledger(
                     datos['producto'], datos['cantidad'], datos['cantidad_unidades']
                 )
+                # Revertir una merma o aplicar un exceso puede dejar unidades
+                # libres en cualquiera de los dos productos.
+                for producto in {producto_anterior.id: producto_anterior, datos['producto'].id: datos['producto']}.values():
+                    asignar_pre_reservas(producto, 'ajuste_inventario',
+                                         f"Ajuste #{ajuste.id} editado", request.user)
         except ValidationError as e:
             return _error_de_validacion(e)
 
@@ -1668,11 +1721,30 @@ class AjusteInventarioDetailView(APIView):
         try:
             with transaction.atomic():
                 _revertir_ajuste_en_ledger(ajuste)
+                referencia = f"Ajuste #{ajuste.id} ({ajuste.tipo}) eliminado"
+                producto = ajuste.producto
                 ajuste.delete()
+                # Borrar una merma devuelve sus unidades al inventario.
+                asignar_pre_reservas(producto, 'ajuste_inventario', referencia, request.user)
         except ValidationError as e:
             return _error_de_validacion(e)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class RegistroPreReservaView(APIView):
+    """GET: auditoría de pre-reservas, la más reciente primero. Filtros
+    opcionales: ?pedido=<id>, ?producto=<id>, ?evento=<evento>."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        registros = RegistroPreReserva.objects.select_related(
+            'producto', 'pedido__cliente', 'usuario', 'factura__proveedor')
+        for campo in ('pedido', 'producto', 'evento'):
+            valor = request.query_params.get(campo)
+            if valor:
+                registros = registros.filter(**{f"{campo}_id" if campo != 'evento' else campo: valor})
+        return Response(RegistroPreReservaSerializer(registros[:500], many=True).data)
 
 
 class MovimientoCongeladoView(APIView):
@@ -1719,7 +1791,9 @@ class MovimientoCongeladoView(APIView):
                     razon=(data.get('razon') or '').strip(),
                     usuario=request.user if request.user.is_authenticated else None,
                 )
-                pre_reservas = asignar_pre_reservas(producto) if direccion == 'descongelar' else []
+                pre_reservas = asignar_pre_reservas(
+                    producto, 'descongelar', f"Movimiento de congelado #{movimiento.id}", request.user,
+                ) if direccion == 'descongelar' else []
         except ValidationError as e:
             return _error_de_validacion(e)
 
