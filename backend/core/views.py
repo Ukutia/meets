@@ -2128,6 +2128,7 @@ class MargenActualProductoView(APIView):
       (precio / IVA_RATE, ya que precio_por_kilo es precio de boleta con IVA
       incluido) vs. costo reciente NETO, para que refleje la ganancia
       contable real y no el débito fiscal que corresponde enterar al Fisco.
+      margen_pct_actual se expresa sobre el costo neto.
     - margen_pct_historico: margen promedio de ventas NO anuladas, recalculado
       como (ventas_neto - costo_neto) / ventas_neto del producto (no se usa
       el campo persistido DetallePedido.margen porque se guardó sin IVA).
@@ -2162,7 +2163,8 @@ class MargenActualProductoView(APIView):
             precio = p.precio_por_kilo or Decimal('0')
             precio_neto = (precio / IVA_RATE) if precio else Decimal('0')
             margen_unit = (precio_neto - costo_reciente) if costo_reciente is not None else None
-            margen_pct = float(margen_unit / precio_neto * 100) if (margen_unit is not None and precio_neto) else None
+            # Porcentaje sobre el costo neto (base sobre la que se gana).
+            margen_pct = float(margen_unit / costo_reciente * 100) if (margen_unit is not None and costo_reciente) else None
 
             h = hist.get(p.id)
             margen_pct_hist = None
