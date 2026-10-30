@@ -344,6 +344,10 @@ export const crearDocumento = (data: Record<string, unknown>) => api.post('/cier
 export const actualizarDocumento = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/documentos/${id}/`, data);
 export const eliminarDocumento = (id: number) => api.delete(`/cierre/documentos/${id}/`);
 export const getImportacionesSII = () => api.get('/cierre/sii/');
+// Emisión en OpenFactura: espera la respuesta del SII, por eso el timeout largo.
+export const emitirBoleta = (pedidoId: number) =>
+  api.post(`/cierre/pedidos/${pedidoId}/emitir-boleta/`, undefined, { timeout: 120_000 });
+export const actualizarEstadoDocumento = (id: number) => api.post(`/cierre/documentos/${id}/estado/`);
 export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
 
 export default api;

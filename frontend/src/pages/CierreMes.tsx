@@ -66,7 +66,7 @@ export default function CierreMes() {
       'Pedido': p.id, 'Cliente': p.cliente.nombre, 'Fecha cobro': formatFecha(c.fecha), 'Monto': Number(c.monto),
       'Medio': MEDIOS_PAGO.find((m) => m.value === c.medio)?.label ?? c.medio,
       'Recibió': c.receptor === 'empresa' ? 'Cuenta de la empresa' : c.vendedor_nombre ?? '',
-      'Desde cartola': c.desde_banco ? 'Sí' : 'No', 'Comentario': c.comentario,
+      'Desde cartola': c.desde_banco ? 'Sí' : 'No', 'Por confirmar': c.automatico ? 'Sí' : 'No', 'Comentario': c.comentario,
     })));
     const r = data.resumen;
     const resumen = [
@@ -134,6 +134,14 @@ export default function CierreMes() {
               </div>
             </CardContent>
           </Card>
+
+          {data.resumen.cobros_por_confirmar > 0 && (
+            <button onClick={() => setFiltro('alertas')}
+              className="flex w-full items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-left text-sm text-amber-800 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              {data.resumen.cobros_por_confirmar} cobro(s) se registraron al marcar el pedido Pagado. Confirma su fecha y medio de pago.
+            </button>
+          )}
 
           {data.resumen.pagado_sin_cobro > 0 && (
             <button onClick={() => setFiltro('alertas')}
@@ -220,7 +228,8 @@ export default function CierreMes() {
             </TabsContent>
           </Tabs>
 
-          <DetallePedidoCierre pedido={pedidoAbierto} receptorPorDefecto={data.config.receptor_cobro} onClose={() => setSeleccionado(null)} />
+          <DetallePedidoCierre pedido={pedidoAbierto} receptorPorDefecto={data.config.receptor_cobro} emision={data.config.emision}
+            onClose={() => setSeleccionado(null)} />
         </>
       )}
     </div>

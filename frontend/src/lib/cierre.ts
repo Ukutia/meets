@@ -7,15 +7,18 @@ export type Receptor = 'vendedor' | 'empresa';
 
 export interface CobroCierre {
   id: number; pedido: number; fecha: string; monto: Num; medio: string; receptor: Receptor;
-  vendedor: number | null; vendedor_nombre: string | null; desde_banco: boolean;
+  vendedor: number | null; vendedor_nombre: string | null; desde_banco: boolean; automatico: boolean;
   comprobante: string | null; comentario: string; usuario: string | null; creado: string;
 }
 
 export interface DocumentoCierre {
   id: number; tipo: number; tipo_nombre: string; folio: number; fecha_emision: string; pedido: number | null;
   rut_receptor: string; razon_social: string; exento: Num; neto: Num; iva: Num; total: Num;
-  origen: 'manual' | 'sii'; comentario: string; usuario: string | null; creado: string;
+  origen: 'manual' | 'sii' | 'openfactura'; ambiente: 'produccion' | 'pruebas'; estado_sii: string;
+  pdf: string | null; comentario: string; usuario: string | null; creado: string;
 }
+
+export interface Emision { habilitada: boolean; ambiente: 'produccion' | 'pruebas' }
 
 export interface PedidoCierre {
   id: number; fecha: string; estado: string;
@@ -39,13 +42,14 @@ export interface VentasMes {
     cobros_recibidos_mes: Num;
     cantidad: number; con_documento: number; sin_documento: number; por_revisar: number;
     pagados: number; parciales: number; pendientes_cobro: number; pagado_sin_cobro: number;
+    cobros_por_confirmar: number;
   };
   recibido_por: { nombre: string; monto: Num }[];
   por_vendedor: { vendedor: number | null; nombre: string; ventas_total: Num; cobrado: Num;
     saldo_pendiente: Num; margen: Num; cantidad: number }[];
   pedidos: PedidoCierre[];
   documentos_sin_pedido: DocumentoCierre[];
-  config: { tasa_iva: Num; receptor_cobro: Receptor };
+  config: { tasa_iva: Num; receptor_cobro: Receptor; emision: Emision };
 }
 
 export const MEDIOS_PAGO = [
