@@ -712,8 +712,9 @@ RECEPTORES_COBRO = [("vendedor", "Vendedor"), ("empresa", "Cuenta de la empresa"
 
 class Cobro(models.Model):
     """Plata efectivamente recibida por un pedido. Un pedido puede tener varios
-    (pagos parciales). Es independiente del estado del pedido: "Pagado" no
-    implica que exista un cobro registrado, ni al revés."""
+    (pagos parciales). Al marcar un pedido Pagado se registra solo un cobro
+    automático por lo que falte (ver cobros.py), que queda "por confirmar"
+    hasta que alguien revise su fecha y medio de pago."""
     pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name="cobros")
     fecha = models.DateField()
     monto = models.DecimalField(max_digits=12, decimal_places=2)
@@ -726,6 +727,9 @@ class Cobro(models.Model):
                                       related_name="cobro")
     comprobante = models.FileField(upload_to="cobros/", blank=True, null=True)
     comentario = models.TextField(blank=True, default='')
+    # Creado al marcar el pedido Pagado: se ajusta o se borra solo si el pedido
+    # cambia, hasta que alguien lo confirma (al editarlo deja de ser automático).
+    automatico = models.BooleanField(default=False)
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     creado = models.DateTimeField(auto_now_add=True)
 

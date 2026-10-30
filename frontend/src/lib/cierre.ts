@@ -7,7 +7,7 @@ export type Receptor = 'vendedor' | 'empresa';
 
 export interface CobroCierre {
   id: number; pedido: number; fecha: string; monto: Num; medio: string; receptor: Receptor;
-  vendedor: number | null; vendedor_nombre: string | null; desde_banco: boolean;
+  vendedor: number | null; vendedor_nombre: string | null; desde_banco: boolean; automatico: boolean;
   comprobante: string | null; comentario: string; usuario: string | null; creado: string;
 }
 
@@ -42,6 +42,7 @@ export interface VentasMes {
     cobros_recibidos_mes: Num;
     cantidad: number; con_documento: number; sin_documento: number; por_revisar: number;
     pagados: number; parciales: number; pendientes_cobro: number; pagado_sin_cobro: number;
+    cobros_por_confirmar: number;
   };
   recibido_por: { nombre: string; monto: Num }[];
   por_vendedor: { vendedor: number | null; nombre: string; ventas_total: Num; cobrado: Num;

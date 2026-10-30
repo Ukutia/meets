@@ -59,7 +59,7 @@ def _cobro_json(c):
         'id': c.id, 'pedido': c.pedido_id, 'fecha': c.fecha, 'monto': c.monto, 'medio': c.medio,
         'receptor': c.receptor, 'vendedor': c.vendedor_id,
         'vendedor_nombre': c.vendedor.nombre if c.vendedor else None,
-        'desde_banco': c.asignacion_id is not None,
+        'desde_banco': c.asignacion_id is not None, 'automatico': c.automatico,
         'comprobante': c.comprobante.url if c.comprobante else None,
         'comentario': c.comentario,
         'usuario': c.usuario.username if c.usuario else None, 'creado': c.creado,
@@ -129,7 +129,8 @@ class VentasMesView(APIView):
         r = {k: Decimal('0') for k in ('ventas_total', 'ventas_netas', 'iva_debito_teorico', 'cobrado',
                                        'saldo_pendiente', 'costo', 'margen')}
         conteo = {'cantidad': 0, 'con_documento': 0, 'sin_documento': 0, 'por_revisar': 0,
-                  'pagados': 0, 'parciales': 0, 'pendientes_cobro': 0, 'pagado_sin_cobro': 0}
+                  'pagados': 0, 'parciales': 0, 'pendientes_cobro': 0, 'pagado_sin_cobro': 0,
+                  'cobros_por_confirmar': 0}
         por_vendedor = {}
 
         for p in pedidos:
@@ -148,6 +149,9 @@ class VentasMesView(APIView):
             if p.estado == 'Pagado' and not cobros:
                 alertas.append('Marcado Pagado sin cobro registrado')
                 conteo['pagado_sin_cobro'] += 1
+            if any(c.automatico for c in cobros):
+                alertas.append('Cobro registrado al marcar Pagado: confirma la fecha y el medio de pago')
+                conteo['cobros_por_confirmar'] += 1
             if motivo:
                 alertas.append(motivo)
             if any(l.total_costo == 0 for l in lineas):
@@ -297,8 +301,15 @@ class CobroDetailView(APIView):
             return _error(str(e))
         if datos.get('receptor') == 'empresa':
             datos['vendedor'] = None
+        elif datos.get('receptor') == 'vendedor' and 'vendedor' not in datos and not cobro.vendedor_id:
+            datos['vendedor'] = cobro.pedido.vendedor
         for k, v in datos.items():
             setattr(cobro, k, v)
+        # Revisarlo lo confirma: deja de ajustarse solo con el pedido.
+        if cobro.automatico:
+            cobro.automatico = False
+            if cobro.comentario.startswith(('Registrado al marcar', 'El pedido ya estaba Pagado')):
+                cobro.comentario = ''
         if request.FILES.get('comprobante'):
             cobro.comprobante = request.FILES['comprobante']
         cobro.save()
@@ -310,6 +321,8 @@ class CobroDetailView(APIView):
             return _error('Cobro no encontrado', status.HTTP_404_NOT_FOUND)
         if cobro.asignacion_id:
             return _error('Este cobro viene de la cartola: quita la asociación desde Tesorería')
+        if cobro.automatico:
+            return _error('Este cobro se registró al marcar el pedido Pagado. Corrígelo, o cambia el estado del pedido si no está pagado')
         cobro.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

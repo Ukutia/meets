@@ -12,11 +12,12 @@ import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
 import {
   crearCobro, crearDocumento, eliminarCobro, eliminarDocumento, actualizarDocumento, emitirBoleta, actualizarEstadoDocumento,
+  actualizarCobro,
 } from '@/services/api';
 import { cn, decimalATexto, formatCLP, formatFecha, formatKg, hoyISO, mediaUrl, parseDecimal } from '@/lib/utils';
 import {
   ETIQUETA_COBRO, ETIQUETA_TRIBUTARIO, MEDIOS_PAGO, TIPOS_DOCUMENTO,
-  type Emision, type PedidoCierre, type Receptor,
+  type CobroCierre, type Emision, type PedidoCierre, type Receptor,
 } from '@/lib/cierre';
 
 interface Props {
@@ -165,8 +166,11 @@ export function DetallePedidoCierre({ pedido, receptorPorDefecto, emision, onClo
                   </p>
                   {c.comentario && <p className="text-xs">{c.comentario}</p>}
                   {c.comprobante && <a className="text-xs text-primary hover:underline" href={mediaUrl(c.comprobante)} target="_blank" rel="noreferrer">Ver comprobante</a>}
+                  {c.automatico && <ConfirmarCobro cobro={c} vendedor={pedido.vendedor?.nombre} onListo={refrescar} onError={error} />}
                 </div>
-                {c.desde_banco ? (
+                {c.automatico ? (
+                  <Etiqueta texto="Por confirmar" clase="bg-amber-500/15 text-amber-700 dark:text-amber-400" />
+                ) : c.desde_banco ? (
                   <span title="Viene de la cartola; se quita desde Tesorería"><Landmark className="h-4 w-4 text-muted-foreground" /></span>
                 ) : (
                   <Button variant="ghost" size="icon" aria-label="Borrar cobro" onClick={() => confirm({
@@ -304,5 +308,36 @@ export function DetallePedidoCierre({ pedido, receptorPorDefecto, emision, onClo
         {dialog}
       </SheetContent>
     </Sheet>
+  );
+}
+
+// Cobro creado al marcar el pedido Pagado: se confirma indicando cuándo y cómo
+// se pagó de verdad.
+function ConfirmarCobro({ cobro, vendedor, onListo, onError }: {
+  cobro: CobroCierre; vendedor?: string; onListo: () => void; onError: (e: unknown) => void;
+}) {
+  const [datos, setDatos] = useState({ fecha: cobro.fecha, medio: cobro.medio === 'otro' ? 'transferencia' : cobro.medio, receptor: cobro.receptor });
+  const guardar = useMutation({
+    mutationFn: () => actualizarCobro(cobro.id, datos),
+    onSuccess: onListo,
+    onError,
+  });
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <Input type="date" className="h-8 text-xs" value={datos.fecha} max={hoyISO()}
+        onChange={(e) => setDatos({ ...datos, fecha: e.target.value })} aria-label="Fecha del pago" />
+      <Select value={datos.medio} onValueChange={(v) => setDatos({ ...datos, medio: v })}>
+        <SelectTrigger className="h-8 text-xs" aria-label="Medio de pago"><SelectValue /></SelectTrigger>
+        <SelectContent>{MEDIOS_PAGO.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}</SelectContent>
+      </Select>
+      <Select value={datos.receptor} onValueChange={(v) => setDatos({ ...datos, receptor: v as Receptor })}>
+        <SelectTrigger className="h-8 text-xs" aria-label="Quién recibió la plata"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="vendedor">{vendedor ?? 'El vendedor'}</SelectItem>
+          <SelectItem value="empresa">Cuenta de la empresa</SelectItem>
+        </SelectContent>
+      </Select>
+      <Button size="sm" className="h-8" disabled={guardar.isPending || !datos.fecha} onClick={() => guardar.mutate()}>Confirmar</Button>
+    </div>
   );
 }
