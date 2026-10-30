@@ -156,7 +156,7 @@ def buscar_pedido(doc):
     candidatos = (Pedido.objects.exclude(estado='Anulado')
                   .filter(fecha__date__gte=desde, fecha__date__lte=hasta,
                           total__gte=doc.total - TOLERANCIA, total__lte=doc.total + TOLERANCIA)
-                  .exclude(documentos__tipo__in=[33, 34, 39, 41])
+                  .exclude(documentos__tipo__in=[33, 34, 39, 41], documentos__ambiente='produccion')
                   .select_related('cliente'))
     rut = normalizar_rut(doc.rut_receptor)
     if rut:
@@ -177,7 +177,7 @@ def importar_ventas(filas, importacion, usuario):
             'exento': f['exento'], 'neto': f['neto'], 'iva': f['iva'], 'total': f['total'],
             'origen': 'sii', 'importacion': importacion,
         }
-        doc = DocumentoTributario.objects.filter(tipo=f['tipo'], folio=f['folio']).first()
+        doc = DocumentoTributario.objects.filter(tipo=f['tipo'], folio=f['folio'], ambiente='produccion').first()
         if doc:
             # El SII manda: si se había registrado a mano con otra fecha, queda la
             # del SII y se informa.
@@ -205,7 +205,8 @@ def resumen_boletas(filas, mes):
     for f in filas:
         if f['tipo'] not in TIPOS_VALIDOS:
             continue
-        registrado = DocumentoTributario.objects.filter(tipo=f['tipo'], **filtro_mes('fecha_emision', mes))
+        registrado = DocumentoTributario.objects.filter(tipo=f['tipo'], ambiente='produccion',
+                                                         **filtro_mes('fecha_emision', mes))
         agg = registrado.aggregate(total=Sum('total'))
         tipos.append({
             'tipo': f['tipo'], 'cantidad_sii': f['cantidad'], 'total_sii': f['total'],

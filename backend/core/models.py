@@ -774,7 +774,15 @@ class DocumentoTributario(models.Model):
     neto = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     iva = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=12, decimal_places=2)
-    origen = models.CharField(max_length=10, choices=[("manual", "Manual"), ("sii", "Registro SII")], default="manual")
+    origen = models.CharField(max_length=12, choices=[("manual", "Manual"), ("sii", "Registro SII"),
+                                                      ("openfactura", "Emitida desde la app")], default="manual")
+    # Documentos emitidos en el ambiente de pruebas de OpenFactura: no tienen
+    # efecto tributario y no cuentan para el estado del pedido ni el IVA.
+    ambiente = models.CharField(max_length=10, choices=[("produccion", "Producción"), ("pruebas", "Pruebas")],
+                                default="produccion")
+    token = models.CharField(max_length=100, blank=True, default='')
+    estado_sii = models.CharField(max_length=40, blank=True, default='')
+    pdf = models.FileField(upload_to="dte/", blank=True, null=True)
     importacion = models.ForeignKey(ImportacionSII, on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos")
     comentario = models.TextField(blank=True, default='')
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
@@ -782,7 +790,7 @@ class DocumentoTributario(models.Model):
 
     class Meta:
         ordering = ['-fecha_emision', '-folio']
-        constraints = [models.UniqueConstraint(fields=['tipo', 'folio'], name='documento_tipo_folio_unico')]
+        constraints = [models.UniqueConstraint(fields=['tipo', 'folio', 'ambiente'], name='documento_tipo_folio_ambiente_unico')]
 
     @property
     def es_nota_credito(self):

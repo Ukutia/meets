@@ -14,8 +14,11 @@ export interface CobroCierre {
 export interface DocumentoCierre {
   id: number; tipo: number; tipo_nombre: string; folio: number; fecha_emision: string; pedido: number | null;
   rut_receptor: string; razon_social: string; exento: Num; neto: Num; iva: Num; total: Num;
-  origen: 'manual' | 'sii'; comentario: string; usuario: string | null; creado: string;
+  origen: 'manual' | 'sii' | 'openfactura'; ambiente: 'produccion' | 'pruebas'; estado_sii: string;
+  pdf: string | null; comentario: string; usuario: string | null; creado: string;
 }
+
+export interface Emision { habilitada: boolean; ambiente: 'produccion' | 'pruebas' }
 
 export interface PedidoCierre {
   id: number; fecha: string; estado: string;
@@ -45,7 +48,7 @@ export interface VentasMes {
     saldo_pendiente: Num; margen: Num; cantidad: number }[];
   pedidos: PedidoCierre[];
   documentos_sin_pedido: DocumentoCierre[];
-  config: { tasa_iva: Num; receptor_cobro: Receptor };
+  config: { tasa_iva: Num; receptor_cobro: Receptor; emision: Emision };
 }
 
 export const MEDIOS_PAGO = [

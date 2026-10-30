@@ -220,7 +220,8 @@ export default function CierreMes() {
             </TabsContent>
           </Tabs>
 
-          <DetallePedidoCierre pedido={pedidoAbierto} receptorPorDefecto={data.config.receptor_cobro} onClose={() => setSeleccionado(null)} />
+          <DetallePedidoCierre pedido={pedidoAbierto} receptorPorDefecto={data.config.receptor_cobro} emision={data.config.emision}
+            onClose={() => setSeleccionado(null)} />
         </>
       )}
     </div>

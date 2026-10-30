@@ -4,13 +4,17 @@ importación del Registro de Compras y Ventas del SII.
 Tres cosas distintas que nunca se dan por hechas una a partir de otra:
 - venta: el pedido (no anulado) y sus líneas.
 - cobro: plata recibida (Cobro). Un pedido "Pagado" sin cobros se informa.
-- documento: boleta/factura emitida en el SII (DocumentoTributario).
+- documento: boleta/factura emitida en el SII (DocumentoTributario). Las
+  boletas se pueden emitir desde aquí con OpenFactura; las del ambiente de
+  pruebas se muestran pero no cuentan.
 """
+import base64
 import json
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
+from django.core.files.base import ContentFile
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError, transaction
 from django.db.models import Prefetch
@@ -19,7 +23,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import sii
+from . import openfactura, sii
 from .contabilidad import factor_iva
 from .models import (MEDIOS_PAGO, TIPOS_DTE, Cobro, ConfiguracionContable, DetallePedido,
                      DocumentoTributario, ImportacionSII, Pedido, Vendedor)
@@ -67,7 +71,8 @@ def _documento_json(d):
         'id': d.id, 'tipo': d.tipo, 'tipo_nombre': NOMBRE_TIPO.get(d.tipo, str(d.tipo)), 'folio': d.folio,
         'fecha_emision': d.fecha_emision, 'pedido': d.pedido_id, 'rut_receptor': d.rut_receptor,
         'razon_social': d.razon_social, 'exento': d.exento, 'neto': d.neto, 'iva': d.iva, 'total': d.total,
-        'origen': d.origen, 'comentario': d.comentario,
+        'origen': d.origen, 'ambiente': d.ambiente, 'estado_sii': d.estado_sii,
+        'pdf': d.pdf.url if d.pdf else None, 'comentario': d.comentario,
         'usuario': d.usuario.username if d.usuario else None, 'creado': d.creado,
     }
 
@@ -80,6 +85,7 @@ def estado_cobro(total, cobrado):
 
 def estado_tributario(pedido, documentos):
     """emitido / pendiente / por_revisar, más el motivo cuando hay que revisar."""
+    documentos = [d for d in documentos if d.ambiente == 'produccion']
     ventas = [d for d in documentos if d.tipo in TIPOS_VENTA]
     if not ventas:
         return 'pendiente', None
@@ -190,7 +196,8 @@ class VentasMesView(APIView):
 
         # Lo emitido en el mes según los documentos (lo que va al F29), aparte
         # de la cifra teórica que sale de las ventas.
-        docs_mes = DocumentoTributario.objects.filter(**sii.filtro_mes('fecha_emision', f'{mes[0]}-{mes[1]:02d}'))
+        docs_mes = DocumentoTributario.objects.filter(ambiente='produccion',
+                                                      **sii.filtro_mes('fecha_emision', f'{mes[0]}-{mes[1]:02d}'))
         iva_documentos = Decimal('0')
         sin_pedido = []
         for d in docs_mes.select_related('usuario'):
@@ -216,7 +223,8 @@ class VentasMesView(APIView):
             'por_vendedor': sorted(por_vendedor.values(), key=lambda v: v['nombre']),
             'pedidos': filas,
             'documentos_sin_pedido': sin_pedido,
-            'config': {'tasa_iva': config.tasa_iva, 'receptor_cobro': config.receptor_cobro},
+            'config': {'tasa_iva': config.tasa_iva, 'receptor_cobro': config.receptor_cobro,
+                       'emision': {'habilitada': openfactura.habilitada(), 'ambiente': openfactura.ambiente()}},
         })
 
 
@@ -396,6 +404,8 @@ class DocumentoDetailView(APIView):
             return _error('Documento no encontrado', status.HTTP_404_NOT_FOUND)
         if doc.origen == 'sii':
             return _error('Este documento viene del SII; no se puede borrar, solo desasociar del pedido')
+        if doc.origen == 'openfactura' and doc.ambiente == 'produccion':
+            return _error('Esta boleta ya fue emitida en el SII; para anularla hay que emitir una nota de crédito')
         doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -442,3 +452,116 @@ class ImportacionSIIView(APIView):
             importacion.resultado = json.loads(json.dumps(resultado, cls=DjangoJSONEncoder))
             importacion.save()
         return Response(_importacion_json(importacion), status=status.HTTP_201_CREATED)
+
+
+def _rut_sii(rut):
+    """'76.123.456-7' -> '76123456-7' (formato que espera el SII)."""
+    limpio = sii.normalizar_rut(rut)
+    return f'{limpio[:-1]}-{limpio[-1]}' if len(limpio) > 1 else ''
+
+
+def dte_boleta(pedido, iva_rate):
+    """Arma la boleta (DTE 39) de un pedido. Cada producto va como una línea de
+    cantidad 1 con su monto final, y el peso en el nombre: así el monto de cada
+    línea es exactamente lo que se cobró (precio por kilo y descuentos ya
+    aplicados), sin diferencias de redondeo."""
+    lineas = [l for l in pedido.detalles.all() if l.estado != 'Cancelado']
+    if not lineas:
+        raise ValueError('El pedido no tiene productos')
+    detalle = []
+    for i, l in enumerate(lineas, start=1):
+        monto = int(Decimal(l.total_venta).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+        if monto <= 0:
+            raise ValueError(f'"{l.producto.nombre}" no tiene monto: pesa el producto antes de emitir')
+        cantidad = (f'{int(l.cantidad_unidades)} u.' if l.producto.venta_por_unidad and l.cantidad_unidades
+                    else f'{Decimal(l.cantidad_kilos).normalize():f} kg'.replace('.', ','))
+        detalle.append({'NroLinDet': i, 'NmbItem': f'{l.producto.nombre} ({cantidad})'[:80],
+                        'QtyItem': 1, 'PrcItem': monto, 'MontoItem': monto})
+    total = sum(d['MontoItem'] for d in detalle)
+    if abs(total - pedido.total) > TOLERANCIA:
+        raise ValueError(f'Las líneas suman {total} y el pedido dice {pedido.total:.0f}; revisa el pedido')
+    neto = int((Decimal(total) / iva_rate).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+    rut = _rut_sii(pedido.cliente.rut)
+    receptor = {'RUTRecep': rut or '66666666-6'}
+    if rut and (pedido.cliente.razon_social or pedido.cliente.nombre):
+        receptor['RznSocRecep'] = (pedido.cliente.razon_social or pedido.cliente.nombre)[:100]
+    return {
+        'Encabezado': {
+            # IndServicio 3: boleta de ventas y servicios.
+            'IdDoc': {'TipoDTE': 39, 'Folio': 0, 'FchEmis': date.today().isoformat(), 'IndServicio': 3},
+            'Emisor': openfactura.emisor_boleta(),
+            'Receptor': receptor,
+            'Totales': {'MntNeto': neto, 'IVA': total - neto, 'MntTotal': total},
+        },
+        'Detalle': detalle,
+    }
+
+
+class EmitirBoletaView(APIView):
+    """POST: emite la boleta electrónica del pedido en OpenFactura y la registra
+    como documento con su PDF. Un pedido emite una sola boleta: la clave de
+    idempotencia hace que un reintento devuelva la misma en vez de otra."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not openfactura.habilitada():
+            return _error('La emisión de boletas no está configurada (falta OPENFACTURA_API_KEY)')
+        pedido = (Pedido.objects.filter(pk=pk).select_related('cliente')
+                  .prefetch_related(Prefetch('detalles', queryset=DetallePedido.objects.select_related('producto')))
+                  .first())
+        if not pedido or pedido.estado == 'Anulado':
+            return _error('Pedido no encontrado o anulado', status.HTTP_404_NOT_FOUND)
+        if pedido.estado not in ('Preparado', 'Pagado'):
+            return _error('Solo se emite la boleta de un pedido Preparado o Pagado (con todo pesado)')
+        ambiente = openfactura.ambiente()
+        previos = pedido.documentos.filter(tipo__in=TIPOS_VENTA, ambiente=ambiente)
+        if previos.exists():
+            d = previos.first()
+            return _error(f'El pedido ya tiene {NOMBRE_TIPO[d.tipo].lower()} N° {d.folio}')
+        try:
+            dte = dte_boleta(pedido, factor_iva())
+            clave = f'meatme-{pedido.pk}-{int(pedido.fecha.timestamp())}-39'
+            r = openfactura.emitir(dte, clave)
+        except ValueError as e:
+            return _error(str(e))
+        except openfactura.OpenFacturaError as e:
+            return _error(f'OpenFactura: {e}', status.HTTP_502_BAD_GATEWAY)
+
+        totales = dte['Encabezado']['Totales']
+        doc = DocumentoTributario(
+            tipo=39, folio=r['folio'], fecha_emision=date.fromisoformat(dte['Encabezado']['IdDoc']['FchEmis']),
+            pedido=pedido, rut_receptor=dte['Encabezado']['Receptor']['RUTRecep'],
+            razon_social=dte['Encabezado']['Receptor'].get('RznSocRecep', ''),
+            neto=totales['MntNeto'], iva=totales['IVA'], total=totales['MntTotal'],
+            origen='openfactura', ambiente=ambiente, token=r['token'], usuario=request.user,
+            comentario='; '.join(f'{k}: {v}' for w in r['advertencias'] for k, v in w.items()),
+        )
+        if r['pdf']:
+            doc.pdf.save(f'boleta-{r["folio"]}.pdf', ContentFile(base64.b64decode(r['pdf'])), save=False)
+        try:
+            doc.estado_sii = openfactura.estado(r['token'])
+        except openfactura.OpenFacturaError:
+            pass  # se puede consultar después
+        try:
+            doc.save()
+        except IntegrityError:
+            # Ya estaba registrada (reintento que recuperó el mismo folio).
+            doc = DocumentoTributario.objects.get(tipo=39, folio=r['folio'], ambiente=ambiente)
+        return Response(_documento_json(doc), status=status.HTTP_201_CREATED)
+
+
+class EstadoDocumentoView(APIView):
+    """POST: consulta en OpenFactura el estado del documento ante el SII."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        doc = DocumentoTributario.objects.filter(pk=pk, origen='openfactura').first()
+        if not doc:
+            return _error('Documento no encontrado', status.HTTP_404_NOT_FOUND)
+        try:
+            doc.estado_sii = openfactura.estado(doc.token)
+        except openfactura.OpenFacturaError as e:
+            return _error(f'OpenFactura: {e}', status.HTTP_502_BAD_GATEWAY)
+        doc.save(update_fields=['estado_sii'])
+        return Response(_documento_json(doc))

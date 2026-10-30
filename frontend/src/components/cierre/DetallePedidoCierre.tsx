@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Landmark, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, FileText, Landmark, Plus, ReceiptText, RefreshCw, Trash2 } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,16 +10,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DecimalInput } from '@/components/shared/DecimalInput';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
-import { crearCobro, crearDocumento, eliminarCobro, eliminarDocumento, actualizarDocumento } from '@/services/api';
+import {
+  crearCobro, crearDocumento, eliminarCobro, eliminarDocumento, actualizarDocumento, emitirBoleta, actualizarEstadoDocumento,
+} from '@/services/api';
 import { cn, decimalATexto, formatCLP, formatFecha, formatKg, hoyISO, mediaUrl, parseDecimal } from '@/lib/utils';
 import {
   ETIQUETA_COBRO, ETIQUETA_TRIBUTARIO, MEDIOS_PAGO, TIPOS_DOCUMENTO,
-  type PedidoCierre, type Receptor,
+  type Emision, type PedidoCierre, type Receptor,
 } from '@/lib/cierre';
 
 interface Props {
   pedido: PedidoCierre | null;
   receptorPorDefecto: Receptor;
+  emision: Emision;
   onClose: () => void;
 }
 
@@ -27,7 +30,7 @@ export function Etiqueta({ texto, clase }: { texto: string; clase: string }) {
   return <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold whitespace-nowrap', clase)}>{texto}</span>;
 }
 
-export function DetallePedidoCierre({ pedido, receptorPorDefecto, onClose }: Props) {
+export function DetallePedidoCierre({ pedido, receptorPorDefecto, emision, onClose }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { confirm, dialog } = useConfirm();
@@ -77,7 +80,24 @@ export function DetallePedidoCierre({ pedido, receptorPorDefecto, onClose }: Pro
     onError: error,
   });
 
+  const emitirMutation = useMutation({
+    mutationFn: () => emitirBoleta(pedido!.id),
+    onSuccess: (r) => {
+      refrescar();
+      toast({ title: `Boleta N° ${r.data.folio} emitida`, description: emision.ambiente === 'pruebas' ? 'Ambiente de pruebas: no tiene validez tributaria.' : undefined });
+    },
+    onError: error,
+  });
+
+  const estadoMutation = useMutation({
+    mutationFn: (id: number) => actualizarEstadoDocumento(id),
+    onSuccess: () => refrescar(),
+    onError: error,
+  });
+
   if (!pedido) return null;
+  const yaEmitida = pedido.documentos.some((d) => d.origen === 'openfactura' && d.ambiente === emision.ambiente && [33, 39].includes(d.tipo));
+  const puedeEmitir = ['Preparado', 'Pagado'].includes(pedido.estado);
   const cobroEtq = ETIQUETA_COBRO[pedido.estado_cobro];
   const tribEtq = ETIQUETA_TRIBUTARIO[pedido.estado_tributario];
 
@@ -199,12 +219,33 @@ export function DetallePedidoCierre({ pedido, receptorPorDefecto, onClose }: Pro
             </div>
             {pedido.documentos.map((d) => (
               <div key={d.id} className="flex items-start justify-between gap-2 rounded-md border p-2 text-sm">
-                <div>
-                  <p className="font-medium">{d.tipo_nombre} N° {d.folio}</p>
-                  <p className="text-xs text-muted-foreground">
-                    Emitida el {formatFecha(d.fecha_emision)} · {formatCLP(d.total)} · {d.origen === 'sii' ? 'del registro SII' : `ingresada a mano${d.usuario ? ` por ${d.usuario}` : ''}`}
+                <div className="space-y-1">
+                  <p className="font-medium flex items-center gap-2">
+                    {d.tipo_nombre} N° {d.folio}
+                    {d.ambiente === 'pruebas' && <Etiqueta texto="Prueba" clase="bg-sky-500/15 text-sky-700 dark:text-sky-400" />}
                   </p>
+                  <p className="text-xs text-muted-foreground">
+                    Emitida el {formatFecha(d.fecha_emision)} · {formatCLP(d.total)} · {
+                      d.origen === 'sii' ? 'del registro SII'
+                        : d.origen === 'openfactura' ? `desde la app${d.usuario ? ` por ${d.usuario}` : ''}`
+                          : `ingresada a mano${d.usuario ? ` por ${d.usuario}` : ''}`}
+                  </p>
+                  {d.origen === 'openfactura' && (
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span>SII: <b>{d.estado_sii || 'sin consultar'}</b></span>
+                      <button className="inline-flex items-center gap-1 text-primary hover:underline disabled:opacity-50"
+                        disabled={estadoMutation.isPending} onClick={() => estadoMutation.mutate(d.id)}>
+                        <RefreshCw className="h-3 w-3" />Actualizar
+                      </button>
+                      {d.pdf && (
+                        <a className="inline-flex items-center gap-1 text-primary hover:underline" href={mediaUrl(d.pdf)} target="_blank" rel="noreferrer">
+                          <FileText className="h-3 w-3" />Ver PDF
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
+                {!(d.origen === 'openfactura' && d.ambiente === 'produccion') && (
                 <Button variant="ghost" size="icon" aria-label={d.origen === 'sii' ? 'Desasociar' : 'Borrar documento'}
                   onClick={() => confirm({
                     title: d.origen === 'sii' ? 'Desasociar documento' : 'Borrar documento',
@@ -215,8 +256,31 @@ export function DetallePedidoCierre({ pedido, receptorPorDefecto, onClose }: Pro
                     onConfirm: () => (d.origen === 'sii' ? actualizarDocumento(d.id, { pedido: null }) : eliminarDocumento(d.id))
                       .then(refrescar).catch(error),
                   })}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                )}
               </div>
             ))}
+            {emision.habilitada && !yaEmitida && pedido.estado_tributario !== 'emitido' && (
+              <div className="rounded-md border p-3 space-y-2 bg-primary/5">
+                {emision.ambiente === 'pruebas' && (
+                  <p className="text-xs text-sky-700 dark:text-sky-400">
+                    Ambiente de pruebas de OpenFactura: la boleta no llega al SII ni tiene validez tributaria.
+                  </p>
+                )}
+                {!puedeEmitir && <p className="text-xs text-muted-foreground">Primero pesa todos los productos (pedido Preparado o Pagado).</p>}
+                <Button size="sm" className="w-full" disabled={!puedeEmitir || emitirMutation.isPending}
+                  onClick={() => confirm({
+                    title: 'Emitir boleta electrónica',
+                    description: emision.ambiente === 'produccion'
+                      ? `Se emitirá en el SII una boleta por ${formatCLP(pedido.total)}. Una vez emitida no se puede borrar: para anularla hay que emitir una nota de crédito.`
+                      : `Se emitirá una boleta de prueba por ${formatCLP(pedido.total)}.`,
+                    confirmLabel: 'Emitir',
+                    onConfirm: () => emitirMutation.mutate(),
+                  })}>
+                  <ReceiptText className="h-4 w-4 mr-1" />
+                  {emitirMutation.isPending ? 'Emitiendo...' : `Emitir boleta electrónica por ${formatCLP(pedido.total)}`}
+                </Button>
+              </div>
+            )}
             <div className="rounded-md border border-dashed p-3 space-y-3">
               <p className="text-xs text-muted-foreground">Ingresa el documento tal como se emitió en el SII: folio y fecha real de emisión.</p>
               <div className="grid grid-cols-2 gap-3">
