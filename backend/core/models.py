@@ -310,6 +310,8 @@ class DetallePedido(models.Model):
 
 class Proveedor(models.Model):
     nombre = models.CharField(max_length=100, unique=True)
+    # Para cruzar sus facturas con el Registro de Compras del SII.
+    rut = models.CharField(max_length=15, blank=True, default='')
 
     def __str__(self):
         return self.nombre
@@ -322,6 +324,9 @@ class Factura(models.Model):
     numero_factura = models.CharField(max_length=50, unique=True, verbose_name="Número de factura" ,primary_key=True)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Subtotal")
     iva = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="IVA")
+    # Anticipo de IVA que cobra el proveedor de carne (5% del neto). Se paga
+    # junto con la factura y es crédito fiscal, igual que el IVA.
+    anticipo_iva = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name="Anticipo IVA carne")
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total con IVA")
     fecha_vencimiento = models.DateField(null=True, blank=True, verbose_name="Fecha de vencimiento")
     foto = models.FileField(upload_to="facturas/", blank=True, null=True, verbose_name="Foto o PDF de la factura")
@@ -637,6 +642,13 @@ class ConfiguracionContable(models.Model):
                                               help_text="Impuesto de primera categoría, %")
     tasa_ppm = models.DecimalField(max_digits=5, decimal_places=3, default=0.25,
                                    help_text="Pago provisional mensual sobre ingresos netos, %")
+    tasa_iva = models.DecimalField(max_digits=5, decimal_places=2, default=19, help_text="IVA, %")
+    tasa_anticipo_carne = models.DecimalField(max_digits=5, decimal_places=2, default=5,
+                                              help_text="Anticipo de IVA que cobran los proveedores de carne, % del neto")
+    # A quién se le asignan por defecto los cobros nuevos. Hoy los recibe el
+    # vendedor; al abrir la cuenta de la empresa basta con cambiarlo aquí.
+    receptor_cobro = models.CharField(max_length=10, choices=[("vendedor", "Vendedor"), ("empresa", "Cuenta de la empresa")],
+                                      default="vendedor")
 
     @classmethod
     def actual(cls):
@@ -687,3 +699,91 @@ class Periodo(models.Model):
 
     class Meta:
         ordering = ['-fecha_inicio', '-id']
+
+
+MEDIOS_PAGO = [
+    ("transferencia", "Transferencia"),
+    ("efectivo", "Efectivo"),
+    ("tarjeta", "Tarjeta"),
+    ("otro", "Otro"),
+]
+RECEPTORES_COBRO = [("vendedor", "Vendedor"), ("empresa", "Cuenta de la empresa")]
+
+
+class Cobro(models.Model):
+    """Plata efectivamente recibida por un pedido. Un pedido puede tener varios
+    (pagos parciales). Es independiente del estado del pedido: "Pagado" no
+    implica que exista un cobro registrado, ni al revés."""
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name="cobros")
+    fecha = models.DateField()
+    monto = models.DecimalField(max_digits=12, decimal_places=2)
+    medio = models.CharField(max_length=15, choices=MEDIOS_PAGO, default="transferencia")
+    receptor = models.CharField(max_length=10, choices=RECEPTORES_COBRO, default="vendedor")
+    # Quién recibió la plata cuando receptor = vendedor.
+    vendedor = models.ForeignKey(Vendedor, on_delete=models.SET_NULL, null=True, blank=True, related_name="cobros")
+    # Si el cobro viene de conciliar la cartola: al quitar la asociación se borra.
+    asignacion = models.OneToOneField(AsignacionMovimiento, on_delete=models.CASCADE, null=True, blank=True,
+                                      related_name="cobro")
+    comprobante = models.FileField(upload_to="cobros/", blank=True, null=True)
+    comentario = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+
+TIPOS_DTE = [
+    (33, "Factura electrónica"),
+    (34, "Factura exenta"),
+    (39, "Boleta electrónica"),
+    (41, "Boleta exenta"),
+    (56, "Nota de débito"),
+    (61, "Nota de crédito"),
+]
+
+
+class ImportacionSII(models.Model):
+    """Un archivo del Registro de Compras y Ventas (RCV) descargado de sii.cl."""
+    nombre_archivo = models.CharField(max_length=255)
+    tipo = models.CharField(max_length=10, choices=[("ventas", "Ventas"), ("compras", "Compras"), ("resumen", "Resumen")])
+    mes = models.CharField(max_length=7, blank=True, default='')  # YYYY-MM
+    filas = models.IntegerField(default=0)
+    nuevos = models.IntegerField(default=0)
+    actualizados = models.IntegerField(default=0)
+    # Lo que no se guarda como documento: resumen de boletas, cruce de compras.
+    resultado = models.JSONField(default=dict, blank=True)
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    subida = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-subida']
+
+
+class DocumentoTributario(models.Model):
+    """Boleta, factura o nota emitida de verdad (en el SII). Se registra a mano o
+    viene del RCV. Que el pedido diga Boleta/Factura es lo que *corresponde*;
+    esto es lo que *se emitió*. La fecha es la real de emisión."""
+    tipo = models.IntegerField(choices=TIPOS_DTE)
+    folio = models.BigIntegerField()
+    fecha_emision = models.DateField()
+    pedido = models.ForeignKey(Pedido, on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos")
+    rut_receptor = models.CharField(max_length=15, blank=True, default='')
+    razon_social = models.CharField(max_length=150, blank=True, default='')
+    exento = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    neto = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    iva = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    origen = models.CharField(max_length=10, choices=[("manual", "Manual"), ("sii", "Registro SII")], default="manual")
+    importacion = models.ForeignKey(ImportacionSII, on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos")
+    comentario = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha_emision', '-folio']
+        constraints = [models.UniqueConstraint(fields=['tipo', 'folio'], name='documento_tipo_folio_unico')]
+
+    @property
+    def es_nota_credito(self):
+        return self.tipo == 61

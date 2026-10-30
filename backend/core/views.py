@@ -4,6 +4,7 @@ from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado, RegistroPreReserva
 from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
+from .models import ConfiguracionContable
 from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
@@ -596,6 +597,7 @@ class CrearFacturaEntrada(APIView):
                 fecha_vencimiento=data.get('fecha_vencimiento') or None,
                 subtotal=Decimal(str(data.get('subtotal', 0))),
                 iva=Decimal(str(data.get('iva', 0))),
+                anticipo_iva=Decimal(str(data.get('anticipo_iva') or 0)),
                 total=Decimal(str(data.get('total', 0)))
             )
 
@@ -764,15 +766,21 @@ class UpdateFacturaEntrada(APIView):
                     )
                     productos_tocados.add(detalle.producto)
 
-                # Recalcular totales igual que en creación (subtotal + IVA 19%),
-                # solo si se tocaron líneas: subir la foto o cambiar el
-                # vencimiento no debe mover los montos ya registrados.
-                if detalles_put:
+                # Recalcular totales igual que en creación (subtotal + IVA +
+                # anticipo de la carne si lo trae), solo si se tocaron líneas o
+                # el anticipo: subir la foto o cambiar el vencimiento no debe
+                # mover los montos ya registrados.
+                if detalles_put or 'con_anticipo' in data:
+                    config = ConfiguracionContable.actual()
                     subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
-                    iva = (subtotal * Decimal('0.19')).quantize(Decimal('0.01'))
+                    iva = (subtotal * config.tasa_iva / 100).quantize(Decimal('1'))
+                    con_anticipo = (str(data['con_anticipo']).lower() in ('true', '1')
+                                    if 'con_anticipo' in data else factura.anticipo_iva > 0)
+                    anticipo = (subtotal * config.tasa_anticipo_carne / 100).quantize(Decimal('1')) if con_anticipo else Decimal('0')
                     factura.subtotal = subtotal.quantize(Decimal('0.01'))
                     factura.iva = iva
-                    factura.total = (subtotal + iva).quantize(Decimal('0.01'))
+                    factura.anticipo_iva = anticipo
+                    factura.total = (subtotal + iva + anticipo).quantize(Decimal('0.01'))
                 factura.save()
 
                 # Si la edición sumó unidades, pueden cubrir pre-reservas.

@@ -130,9 +130,9 @@ export const refreshToken = (refresh: string) =>
 
 // Productos
 export const getProveedores = () => api.get<Proveedor[]>('/proveedores/');
-export const createProveedor = (data: { nombre: string }) =>
+export const createProveedor = (data: { nombre: string; rut?: string }) =>
   api.post<Proveedor>('/proveedores/', data);
-export const updateProveedor = (id: number, data: { nombre: string }) =>
+export const updateProveedor = (id: number, data: { nombre: string; rut?: string }) =>
   api.put<Proveedor>(`/proveedores/${id}/`, data);
 export const deleteProveedor = (id: number) => api.delete(`/proveedores/${id}/`);
 export const getProductos = () => api.get<Producto[]>('/productos/');
@@ -324,8 +324,27 @@ export const createGasto = (data: Record<string, unknown>) => api.post('/tesorer
 export const updateGasto = (id: number, data: Record<string, unknown>) => api.put(`/tesoreria/gastos/${id}/`, data);
 export const deleteGasto = (id: number) => api.delete(`/tesoreria/gastos/${id}/`);
 export const getContabilidad = (params?: { desde?: string; hasta?: string }) => api.get('/tesoreria/contabilidad/', { params });
-export const updateConfiguracionContable = (data: { tasa_impuesto_renta?: number; tasa_ppm?: number }) =>
-  api.put('/tesoreria/configuracion/', data);
+export interface ConfiguracionContable {
+  tasa_impuesto_renta: string; tasa_ppm: string; tasa_iva: string; tasa_anticipo_carne: string;
+  receptor_cobro: 'vendedor' | 'empresa';
+}
+export const getConfiguracionContable = () => api.get<ConfiguracionContable>('/tesoreria/configuracion/');
+export const updateConfiguracionContable = (data: {
+  tasa_impuesto_renta?: number; tasa_ppm?: number; tasa_iva?: number; tasa_anticipo_carne?: number;
+  receptor_cobro?: 'vendedor' | 'empresa';
+}) => api.put<ConfiguracionContable>('/tesoreria/configuracion/', data);
+
+// --- Cierre de mes: ventas, cobros y documentos tributarios ---
+export const getVentasMes = (params: { mes: string; vendedor?: string }) => api.get('/cierre/ventas/', { params });
+export const crearCobro = (data: Record<string, unknown> | FormData) => api.post('/cierre/cobros/', data, opcionesPara(data));
+export const actualizarCobro = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/cobros/${id}/`, data);
+export const eliminarCobro = (id: number) => api.delete(`/cierre/cobros/${id}/`);
+export const getDocumentos = (params?: { mes?: string; sin_pedido?: string }) => api.get('/cierre/documentos/', { params });
+export const crearDocumento = (data: Record<string, unknown>) => api.post('/cierre/documentos/', data);
+export const actualizarDocumento = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/documentos/${id}/`, data);
+export const eliminarDocumento = (id: number) => api.delete(`/cierre/documentos/${id}/`);
+export const getImportacionesSII = () => api.get('/cierre/sii/');
+export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
 
 export default api;
 

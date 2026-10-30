@@ -11,12 +11,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .cartola import asignar_huellas, extraer_con_ia, normalizar_filas, parse_fecha, parse_monto
-from .contabilidad import resumen_anual, resumen_mensual
-from .models import (CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola,
+from .contabilidad import factor_iva, resumen_anual, resumen_mensual
+from .models import (CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola, Cobro,
                      ConfiguracionContable, Factura, Gasto, MovimientoBancario, Pedido)
-
-IVA = Decimal('0.19')
-
 
 def _error(mensaje, codigo=status.HTTP_400_BAD_REQUEST):
     return Response({'error': mensaje}, status=codigo)
@@ -266,7 +263,14 @@ class AsignarMovimientoView(APIView):
                 pedido = Pedido.objects.filter(pk=pedido_id).first()
                 if not pedido or pedido.estado == 'Anulado':
                     return _error('Pedido no encontrado o anulado')
-                AsignacionMovimiento.objects.create(movimiento=m, pedido=pedido, monto=monto)
+                asignacion = AsignacionMovimiento.objects.create(movimiento=m, pedido=pedido, monto=monto)
+                config = ConfiguracionContable.actual()
+                Cobro.objects.create(
+                    pedido=pedido, fecha=m.fecha, monto=monto, medio='transferencia',
+                    receptor=config.receptor_cobro,
+                    vendedor=pedido.vendedor if config.receptor_cobro == 'vendedor' else None,
+                    asignacion=asignacion, comentario='Desde cartola bancaria', usuario=request.user,
+                )
                 if m.categoria == 'sin_clasificar':
                     m.categoria = 'venta'
                     m.save(update_fields=['categoria'])
@@ -330,7 +334,7 @@ def _datos_gasto(data, actual=None):
     if total <= 0:
         raise ValueError('El total debe ser mayor a 0')
     con_factura = campo('con_factura', False) in (True, 'true', '1', 1)
-    neto = (total / (1 + IVA)).quantize(Decimal('1')) if con_factura else total
+    neto = (total / factor_iva()).quantize(Decimal('1')) if con_factura else total
     return {
         'fecha': fecha, 'descripcion': descripcion[:255], 'categoria': categoria,
         'total': total, 'neto': neto, 'iva': total - neto, 'con_factura': con_factura,
@@ -406,7 +410,7 @@ class ContabilidadView(APIView):
         return Response({
             'meses': filas,
             'anios': resumen_anual(todas, config),
-            'config': {'tasa_impuesto_renta': config.tasa_impuesto_renta, 'tasa_ppm': config.tasa_ppm},
+            'config': config_json(config),
             'estado': {
                 'por_cobrar': pedidos_abiertos,
                 'por_pagar': por_pagar,
@@ -418,19 +422,43 @@ class ContabilidadView(APIView):
         })
 
 
+def config_json(config):
+    return {
+        'tasa_impuesto_renta': config.tasa_impuesto_renta,
+        'tasa_ppm': config.tasa_ppm,
+        'tasa_iva': config.tasa_iva,
+        'tasa_anticipo_carne': config.tasa_anticipo_carne,
+        'receptor_cobro': config.receptor_cobro,
+    }
+
+
 class ConfiguracionContableView(APIView):
     permission_classes = [IsAuthenticated]
+
+    TASAS = {
+        'tasa_impuesto_renta': ('La tasa de impuesto', 60),
+        'tasa_ppm': ('La tasa de PPM', 10),
+        'tasa_iva': ('La tasa de IVA', 30),
+        'tasa_anticipo_carne': ('La tasa de anticipo', 30),
+    }
+
+    def get(self, request):
+        return Response(config_json(ConfiguracionContable.actual()))
 
     def put(self, request):
         config = ConfiguracionContable.actual()
         try:
-            if 'tasa_impuesto_renta' in request.data:
-                config.tasa_impuesto_renta = _decimal(request.data['tasa_impuesto_renta'], 'La tasa de impuesto')
-            if 'tasa_ppm' in request.data:
-                config.tasa_ppm = _decimal(request.data['tasa_ppm'], 'La tasa de PPM')
+            for campo, (nombre, maximo) in self.TASAS.items():
+                if campo in request.data:
+                    valor = _decimal(request.data[campo], nombre)
+                    if not 0 <= valor <= maximo:
+                        return _error(f'{nombre} está fuera de rango')
+                    setattr(config, campo, valor)
         except ValueError as e:
             return _error(str(e))
-        if not (0 <= config.tasa_impuesto_renta <= 60 and 0 <= config.tasa_ppm <= 10):
-            return _error('Tasa fuera de rango')
+        if 'receptor_cobro' in request.data:
+            if request.data['receptor_cobro'] not in ('vendedor', 'empresa'):
+                return _error('Receptor de cobros inválido')
+            config.receptor_cobro = request.data['receptor_cobro']
         config.save()
-        return Response({'tasa_impuesto_renta': config.tasa_impuesto_renta, 'tasa_ppm': config.tasa_ppm})
+        return Response(config_json(config))

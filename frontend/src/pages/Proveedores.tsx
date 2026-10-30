@@ -45,6 +45,7 @@ export default function Proveedores() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Proveedor | null>(null);
   const [nombre, setNombre] = useState('');
+  const [rut, setRut] = useState('');
   const [toDelete, setToDelete] = useState<Proveedor | null>(null);
 
   const navigate = useNavigate();
@@ -81,7 +82,7 @@ export default function Proveedores() {
 
   const saveMutation = useMutation({
     mutationFn: (value: string) =>
-      editing ? updateProveedor(editing.id, { nombre: value }) : createProveedor({ nombre: value }),
+      editing ? updateProveedor(editing.id, { nombre: value, rut: rut.trim() }) : createProveedor({ nombre: value, rut: rut.trim() }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['proveedores'] });
       toast({ title: editing ? 'Proveedor actualizado' : 'Proveedor creado' });
@@ -106,6 +107,7 @@ export default function Proveedores() {
   const openDialog = (proveedor: Proveedor | null) => {
     setEditing(proveedor);
     setNombre(proveedor?.nombre ?? '');
+    setRut(proveedor?.rut ?? '');
     setDialogOpen(true);
   };
 
@@ -171,7 +173,10 @@ export default function Proveedores() {
             ) : (
               filtered.map((proveedor) => (
                 <TableRow key={proveedor.id}>
-                  <TableCell className="font-medium">{proveedor.nombre}</TableCell>
+                  <TableCell className="font-medium">
+                    {proveedor.nombre}
+                    {proveedor.rut && <span className="block text-xs font-normal text-muted-foreground">{proveedor.rut}</span>}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{proveedor.cantidad_facturas}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatCLP(compras.get(String(proveedor.id))?.total ?? 0)}</TableCell>
                   <TableCell className="text-right tabular-nums">
@@ -216,7 +221,7 @@ export default function Proveedores() {
             <DialogHeader>
               <DialogTitle>{editing ? 'Editar Proveedor' : 'Nuevo Proveedor'}</DialogTitle>
               <DialogDescription>
-                {editing ? 'Modifica el nombre del proveedor.' : 'Ingresa el nombre del nuevo proveedor.'}
+                El RUT sirve para cruzar sus facturas con el registro de compras del SII.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-4">
@@ -228,6 +233,8 @@ export default function Proveedores() {
                 maxLength={100}
                 autoFocus
               />
+              <Label htmlFor="rut-proveedor" className="block pt-2">RUT</Label>
+              <Input id="rut-proveedor" value={rut} onChange={(e) => setRut(e.target.value)} maxLength={15} placeholder="76.123.456-7" />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>
