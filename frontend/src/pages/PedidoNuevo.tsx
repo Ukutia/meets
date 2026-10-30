@@ -38,31 +38,42 @@ interface DetalleProducto {
   stock_normal: number;
   stock_congelado: number;
   peso_minimo: number;
+  /** Kilos fijos por unidad (> 0 = se vende por unidad, sin pesar). */
+  peso_unidad: number;
   lotes_normal: StockItem['lotes'];
   lotes_congelado: StockItem['lotes'];
   congelado: boolean;
 }
 
 const disponibleDe = (d: DetalleProducto) => (d.congelado ? d.stock_congelado : d.stock_normal);
+const porUnidad = (d: DetalleProducto) => d.peso_unidad > 0;
+// Descuento y precio personalizado se escriben por unidad en un producto por unidad;
+// el backend (y todo el costeo) trabaja por kilo.
+const aPorKilo = (d: DetalleProducto, valor: number) => (porUnidad(d) ? valor / d.peso_unidad : valor);
+const redondear = (n: number) => Math.round(n * 100) / 100;
 
 // Valores calculados de una línea (todo deriva del texto que escribe el usuario).
 function calcular(d: DetalleProducto) {
-  const kilos = parseDecimal(d.kilosTexto);
   const unidades = Math.trunc(parseDecimal(d.unidadesTexto));
   const costoNeto = costoFifo(d.congelado ? d.lotes_congelado : d.lotes_normal, unidades);
   const disponibles = disponibleDe(d);
   // Solo Inventario admite pre-reserva; esas unidades sin stock no se pueden pesar.
   const pendientes = !d.congelado && unidades > disponibles ? unidades - Math.max(disponibles, 0) : 0;
   const excedeCongelado = d.congelado && unidades > disponibles;
+  // Producto por unidad: los kilos salen de unidades x peso fijo (sin báscula), salvo las
+  // unidades en pre-reserva, que dejan la línea sin pesar hasta que llegue el stock.
+  const kilos = porUnidad(d)
+    ? (pendientes > 0 ? 0 : redondear(unidades * d.peso_unidad))
+    : parseDecimal(d.kilosTexto);
   const precio = precioSegunModo(d.modo, d.precio_lista, {
-    descuento: parseDecimal(d.descuentoTexto),
-    personalizado: parseDecimal(d.precioTexto),
+    descuento: aPorKilo(d, parseDecimal(d.descuentoTexto)),
+    personalizado: aPorKilo(d, parseDecimal(d.precioTexto)),
     costoNeto,
   });
   const piso = costoNeto != null ? pisoSinPerdida(costoNeto) : null;
   const bajoCosto = piso != null && precio < piso;
-  const pesoInvalido = unidades > 0 && kilos > 0 && kilos / unidades < d.peso_minimo;
-  const pesoConPendientes = pendientes > 0 && kilos > 0;
+  const pesoInvalido = !porUnidad(d) && unidades > 0 && kilos > 0 && kilos / unidades < d.peso_minimo;
+  const pesoConPendientes = !porUnidad(d) && pendientes > 0 && kilos > 0;
   return { kilos, unidades, pendientes, excedeCongelado, costoNeto, precio, piso, bajoCosto, pesoInvalido, pesoConPendientes, subtotal: kilos * precio };
 }
 
@@ -134,6 +145,7 @@ export default function PedidoNuevo() {
         stock_normal: disponibles,
         stock_congelado: congelados,
         peso_minimo: Number(producto.peso_minimo) || 0,
+        peso_unidad: Number(producto.peso_unidad) || 0,
         lotes_normal: item?.lotes,
         lotes_congelado: item?.lotes_congelado,
         congelado: false,
@@ -168,8 +180,8 @@ export default function PedidoNuevo() {
           cantidad_unidades: calculados[i].unidades,
           modo_precio: d.modo,
           congelado: d.congelado,
-          descuento_por_kilo: d.modo === 'descuento' ? parseDecimal(d.descuentoTexto) : 0,
-          precio_personalizado: d.modo === 'personalizado' ? parseDecimal(d.precioTexto) : undefined,
+          descuento_por_kilo: d.modo === 'descuento' ? aPorKilo(d, parseDecimal(d.descuentoTexto)) : 0,
+          precio_personalizado: d.modo === 'personalizado' ? aPorKilo(d, parseDecimal(d.precioTexto)) : undefined,
         })),
         observaciones: observaciones.trim(),
         ...(lineasPendientes.length > 0 ? { permitir_pre_reserva: true } : {}),
@@ -321,7 +333,7 @@ export default function PedidoNuevo() {
                   <SelectContent>
                     {productosDisponibles.map((p) => (
                       <SelectItem key={p.id} value={p.id.toString()}>
-                        {p.nombre} · {formatCLP(p.precio_por_kilo)}/kg · {stockDe(p)?.disponibles ?? 0} disp.{(stockDe(p)?.congelado_unidades ?? 0) > 0 ? ` · ${stockDe(p)?.congelado_unidades} cong.` : ''}
+                        {p.nombre} · {Number(p.peso_unidad) > 0 ? `${formatCLP(Number(p.precio_unidad))} c/u` : `${formatCLP(p.precio_por_kilo)}/kg`} · {stockDe(p)?.disponibles ?? 0} disp.{(stockDe(p)?.congelado_unidades ?? 0) > 0 ? ` · ${stockDe(p)?.congelado_unidades} cong.` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -404,7 +416,7 @@ export default function PedidoNuevo() {
                     <TableHead>Producto</TableHead>
                     <TableHead className="text-right">Unid.</TableHead>
                     <TableHead className="text-right">Kilos</TableHead>
-                    <TableHead className="text-right">Precio/kg</TableHead>
+                    <TableHead className="text-right">Precio</TableHead>
                     <TableHead className="text-right">Subtotal</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -425,7 +437,9 @@ export default function PedidoNuevo() {
                         <TableCell className="text-right">
                           {c.kilos > 0 ? `${c.kilos.toLocaleString('es-CL')} kg` : <span className="text-muted-foreground">por pesar</span>}
                         </TableCell>
-                        <TableCell className={cn('text-right', c.bajoCosto && 'text-destructive font-semibold')}>{formatCLP(c.precio)}</TableCell>
+                        <TableCell className={cn('text-right', c.bajoCosto && 'text-destructive font-semibold')}>
+                          {porUnidad(d) ? `${formatCLP(c.precio * d.peso_unidad)} c/u` : formatCLP(c.precio)}
+                        </TableCell>
                         <TableCell className="text-right font-semibold">{formatCLP(c.subtotal)}</TableCell>
                       </TableRow>
                     );
@@ -494,13 +508,16 @@ function LineaProducto({
 }) {
   const margen = c.costoNeto != null ? gananciaPorKilo(c.precio, c.costoNeto) : null;
   const modoActual = MODOS_PRECIO.find((m) => m.value === d.modo);
+  // Factor para mostrar precios por unidad en vez de por kilo.
+  const k = porUnidad(d) ? d.peso_unidad : 1;
+  const unidadPrecio = porUnidad(d) ? 'unidad' : 'kilo';
   return (
     <div className={cn('rounded-xl border p-3 space-y-2', (c.pesoInvalido || c.bajoCosto || c.excedeCongelado) && 'border-destructive/50 bg-destructive/5', c.pendientes > 0 && 'border-amber-300 bg-amber-50/50')}>
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold leading-tight">{d.producto_nombre}</p>
           <p className="truncate text-xs text-muted-foreground">
-            {disponibleDe(d)} disp.{d.congelado ? ' (congelado)' : ''} · normal {formatCLP(d.precio_lista)}/kg
+            {disponibleDe(d)} disp.{d.congelado ? ' (congelado)' : ''} · normal {formatCLP(d.precio_lista * (porUnidad(d) ? d.peso_unidad : 1))}{porUnidad(d) ? ' c/u' : '/kg'}
             {d.modo !== 'lista' && <span className="font-medium text-primary"> · {modoActual?.corto}</span>}
           </p>
         </div>
@@ -512,13 +529,19 @@ function LineaProducto({
           className={cn('h-10 w-16 shrink-0 px-1 text-center font-semibold', c.excedeCongelado && 'border-destructive')}
           aria-label={`Unidades de ${d.producto_nombre}`}
         />
-        <DecimalInput
-          value={d.kilosTexto}
-          onValueChange={(t) => onChange({ kilosTexto: t })}
-          placeholder="Kilos"
-          className={cn('h-10 w-24 shrink-0 px-1 text-center font-semibold', (c.pesoInvalido || c.pesoConPendientes) && 'border-destructive')}
-          aria-label={`Kilos de ${d.producto_nombre} (vacío = por pesar)`}
-        />
+        {porUnidad(d) ? (
+          <span className="w-24 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
+            {c.kilos > 0 ? `${c.kilos.toLocaleString('es-CL')} kg` : `${d.peso_unidad.toLocaleString('es-CL')} kg c/u`}
+          </span>
+        ) : (
+          <DecimalInput
+            value={d.kilosTexto}
+            onValueChange={(t) => onChange({ kilosTexto: t })}
+            placeholder="Kilos"
+            className={cn('h-10 w-24 shrink-0 px-1 text-center font-semibold', (c.pesoInvalido || c.pesoConPendientes) && 'border-destructive')}
+            aria-label={`Kilos de ${d.producto_nombre} (vacío = por pesar)`}
+          />
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Opciones de precio de ${d.producto_nombre}`}>
@@ -557,7 +580,7 @@ function LineaProducto({
       {c.pendientes > 0 && (
         <p className="flex items-start gap-1.5 text-xs font-semibold text-amber-700">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          {c.pendientes} {c.pendientes === 1 ? 'unidad queda' : 'unidades quedan'} en pre-reserva (sin stock). Esta línea no se puede pesar hasta que llegue stock.
+          {c.pendientes} {c.pendientes === 1 ? 'unidad queda' : 'unidades quedan'} en pre-reserva (sin stock). {porUnidad(d) ? 'La línea queda por pesar hasta que llegue stock.' : 'Esta línea no se puede pesar hasta que llegue stock.'}
         </p>
       )}
       {c.excedeCongelado && (
@@ -571,7 +594,7 @@ function LineaProducto({
         <DecimalInput
           value={d.descuentoTexto}
           onValueChange={(t) => onChange({ descuentoTexto: t })}
-          placeholder="Descuento en $ por kilo"
+          placeholder={porUnidad(d) ? 'Descuento en $ por unidad' : 'Descuento en $ por kilo'}
           aria-label={`Descuento por kilo de ${d.producto_nombre}`}
           autoFocus
         />
@@ -580,7 +603,7 @@ function LineaProducto({
         <DecimalInput
           value={d.precioTexto}
           onValueChange={(t) => onChange({ precioTexto: t })}
-          placeholder="Precio por kilo con IVA"
+          placeholder={porUnidad(d) ? 'Precio por unidad con IVA' : 'Precio por kilo con IVA'}
           aria-label={`Precio por kilo de ${d.producto_nombre}`}
           autoFocus
         />
@@ -592,17 +615,17 @@ function LineaProducto({
       <div className="flex flex-wrap items-end justify-between gap-2 border-t border-dashed pt-2 text-sm">
         <div className="space-y-0.5">
           <p>
-            <span className="font-semibold tabular-nums">{formatCLP(c.precio)}</span>
-            <span className="text-muted-foreground">/kg</span>
+            <span className="font-semibold tabular-nums">{formatCLP(c.precio * k)}</span>
+            <span className="text-muted-foreground">{porUnidad(d) ? ' c/u' : '/kg'}</span>
             {c.precio < d.precio_lista && (
-              <span className="ml-2 text-xs text-muted-foreground line-through">{formatCLP(d.precio_lista)}</span>
+              <span className="ml-2 text-xs text-muted-foreground line-through">{formatCLP(d.precio_lista * k)}</span>
             )}
           </p>
           {c.piso != null && (
             <p className={cn('text-xs', c.bajoCosto ? 'font-semibold text-destructive' : 'text-muted-foreground')}>
               {c.bajoCosto
-                ? `Bajo costo: pierdes ${formatCLP(-(margen ?? 0))} por kilo (mínimo ${formatCLP(c.piso)})`
-                : `Costo con IVA ${formatCLP(c.piso)}/kg · ganas ${formatCLP(margen ?? 0)}/kg neto`}
+                ? `Bajo costo: pierdes ${formatCLP(-(margen ?? 0) * k)} por ${unidadPrecio} (mínimo ${formatCLP(c.piso * k)})`
+                : `Costo con IVA ${formatCLP(c.piso * k)}/${porUnidad(d) ? 'un' : 'kg'} · ganas ${formatCLP((margen ?? 0) * k)}/${porUnidad(d) ? 'un' : 'kg'} neto`}
             </p>
           )}
         </div>

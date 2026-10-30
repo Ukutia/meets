@@ -23,7 +23,7 @@ import { HistorialPreReserva } from '@/components/shared/AuditoriaPreReservaList
 import { getPedidos, updatePedido, cancelarPedido, cancelarProductoPedido, agregarProductoPedido, getProductos } from '@/services/api';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
-import type { Pedido, Producto } from '@/types';
+import type { DetallePedido, Pedido, Producto } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Select, 
@@ -38,6 +38,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+// Producto de peso fijo: se vende por unidad y los kilos son unidades x peso (sin báscula).
+const esPorUnidad = (d: DetallePedido) => Number(d.producto?.peso_unidad) > 0;
+const kilosPorUnidad = (d: DetallePedido, unidades: number) => {
+  const cantidad_kilos = Math.round(unidades * Number(d.producto.peso_unidad) * 100) / 100;
+  return { cantidad_kilos, total_venta: cantidad_kilos * Number(d.precio_venta) };
+};
 
 const ESTADOS = [
   { value: 'Pre-reserva', label: 'Pre-reservas' },
@@ -337,11 +344,18 @@ export default function Pedidos() {
   };
 
   const abrirEdicion = (pedido: Pedido) => {
-    setTextosEdicion(Object.fromEntries(pedido.detalles.map(d => [d.id, {
+    // Producto por unidad: los kilos son unidades x peso fijo (una línea que estaba
+    // en pre-reserva y ya recibió stock aún no los tiene calculados).
+    const detalles = pedido.detalles.map(d => (
+      d.estado !== 'Cancelado' && esPorUnidad(d) && !(Number(d.unidades_pendientes) > 0) && !(Number(d.cantidad_kilos) > 0)
+        ? { ...d, ...kilosPorUnidad(d, Number(d.cantidad_unidades)) }
+        : d
+    ));
+    setTextosEdicion(Object.fromEntries(detalles.map(d => [d.id, {
       kilos: decimalATexto(d.cantidad_kilos),
       unidades: d.cantidad_unidades ? String(Math.trunc(Number(d.cantidad_unidades))) : '',
     }])));
-    setSelectedPedido(pedido);
+    setSelectedPedido({ ...pedido, detalles });
   };
   const productosDisponiblesParaAgregar = useMemo(() => {
     const productos = productosData ?? [];
@@ -352,6 +366,9 @@ export default function Pedidos() {
     );
     return productos.filter(p => p.estado !== 'desactivado' && !idsEnPedido.has(p.id));
   }, [productosData, selectedPedido]);
+
+  const nuevoProductoSel = (productosData ?? []).find(p => p.id.toString() === nuevoProductoId);
+  const nuevoProductoPorUnidad = Number(nuevoProductoSel?.peso_unidad) > 0;
 
   const todosPesados = useMemo(() => {
     const activos = selectedPedido?.detalles.filter(det => det.estado !== 'Cancelado') ?? [];
@@ -372,7 +389,14 @@ export default function Pedidos() {
         return { ...det, cantidad_kilos: kilos, total_venta: kilos * Number(det.precio_venta) };
       }
       if (field === 'cantidad_unidades') {
-        return { ...det, cantidad_unidades: Math.trunc(valAsNum) };
+        const unidades = Math.trunc(valAsNum);
+        // Peso fijo: los kilos (y el subtotal) siguen a las unidades.
+        if (esPorUnidad(det) && !(Number(det.unidades_pendientes) > 0)) {
+          const calc = kilosPorUnidad(det, unidades);
+          setTextosEdicion(prev => ({ ...prev, [det.id]: { ...prev[det.id], kilos: decimalATexto(calc.cantidad_kilos) } }));
+          return { ...det, cantidad_unidades: unidades, ...calc };
+        }
+        return { ...det, cantidad_unidades: unidades };
       }
       return { ...det, [field]: valAsNum };
     });
@@ -807,7 +831,7 @@ export default function Pedidos() {
                         <Badge className="text-[10px] bg-red-100 text-red-700 border-none">Cancelado</Badge>
                       ) : (
                         <Badge variant="outline" className="text-[10px]">
-                          {formatCurrency(det.precio_venta)}/kg
+                          {esPorUnidad(det) ? `${formatCurrency(Number(det.precio_venta) * Number(det.producto.peso_unidad))} c/u` : `${formatCurrency(det.precio_venta)}/kg`}
                           {det.modo_precio === 'costo' ? ' · a costo' : det.modo_precio === 'personalizado' ? ' · precio especial' : Number(det.descuento_por_kilo) > 0 ? ` · −${formatCurrency(det.descuento_por_kilo)}` : ''}
                         </Badge>
                       )}
@@ -829,9 +853,11 @@ export default function Pedidos() {
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
+                      <label className="text-[10px] font-black uppercase text-slate-400 ml-1">
+                        Kilos{esPorUnidad(det) ? ` (${Number(det.producto.peso_unidad).toLocaleString('es-CL')} kg c/u)` : ''}
+                      </label>
                       <DecimalInput
-                        disabled={cancelado || Number(det.unidades_pendientes) > 0}
+                        disabled={cancelado || Number(det.unidades_pendientes) > 0 || esPorUnidad(det)}
                         placeholder={Number(det.unidades_pendientes) > 0 ? 'Sin stock' : '0,000'}
                         className="h-12 text-center text-lg font-bold border-blue-200 focus:ring-blue-500"
                         value={textosEdicion[det.id]?.kilos ?? ''}
@@ -898,12 +924,18 @@ export default function Pedidos() {
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Kilos</label>
-                    <DecimalInput
-                      placeholder="0,000"
-                      className="h-12 text-center text-lg font-bold bg-white"
-                      value={nuevoProductoKilos}
-                      onValueChange={setNuevoProductoKilos}
-                    />
+                    {nuevoProductoPorUnidad ? (
+                      <p className="flex h-12 items-center justify-center text-sm text-muted-foreground">
+                        {Number(nuevoProductoSel?.peso_unidad).toLocaleString('es-CL')} kg c/u
+                      </p>
+                    ) : (
+                      <DecimalInput
+                        placeholder="0,000"
+                        className="h-12 text-center text-lg font-bold bg-white"
+                        value={nuevoProductoKilos}
+                        onValueChange={setNuevoProductoKilos}
+                      />
+                    )}
                   </div>
                 </div>
                 <Button
@@ -914,7 +946,7 @@ export default function Pedidos() {
                     agregarProductoMutation.mutate({
                       pedidoId: selectedPedido.id,
                       producto_id: parseInt(nuevoProductoId, 10),
-                      cantidad_kilos: parseDecimal(nuevoProductoKilos),
+                      cantidad_kilos: nuevoProductoPorUnidad ? 0 : parseDecimal(nuevoProductoKilos),
                       cantidad_unidades: Math.trunc(parseDecimal(nuevoProductoUnidades)),
                     });
                   }}

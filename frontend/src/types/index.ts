@@ -40,6 +40,10 @@ export interface Producto {
   categoria?: string | null;
   precio_por_kilo: number;
   peso_minimo?: number | string;
+  /** Kilos fijos por unidad. > 0 = se vende por unidad (kilos = unidades x peso, sin pesar). */
+  peso_unidad?: number | string;
+  /** Precio de una unidad (solo si peso_unidad > 0). */
+  precio_unidad?: number | string | null;
   estado: 'disponible' | 'agotado' | 'desactivado';
   venta_por_unidad?: boolean;
   peso_flyer?: string;

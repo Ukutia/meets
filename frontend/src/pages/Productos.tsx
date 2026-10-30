@@ -33,15 +33,16 @@ import { createProducto, updateProducto, getProductos, getHistorialPrecio, getMa
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import type { Producto, MargenProducto } from '@/types';
-import { formatCLP } from '@/lib/utils';
+import { formatCLP, formatKg } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
 interface ProductoForm {
   nombre: string;
   descripcion?: string;
   categoria?: string;
-  precio_por_kilo: string;
+  precio: string; // precio por kilo, o por unidad si peso_unidad > 0
   peso_minimo: string;
+  peso_unidad: string;
   estado: 'disponible' | 'agotado' | 'desactivado';
 }
 
@@ -60,8 +61,9 @@ export default function Productos() {
       nombre: '',
       descripcion: '',
       categoria: '',
-      precio_por_kilo: '',
+      precio: '',
       peso_minimo: '0',
+      peso_unidad: '0',
       estado: 'disponible',
     },
   });
@@ -93,20 +95,27 @@ export default function Productos() {
   // Mutación CORREGIDA: Maneja explícitamente el ID para el PUT
   const mutation = useMutation({
     mutationFn: async (values: ProductoForm) => {
-      const payload = {
+      const pesoUnidad = Number(values.peso_unidad) || 0;
+      const porUnidad = pesoUnidad > 0;
+      // Con peso fijo el backend deriva precio_por_kilo a partir de precio_unidad,
+      // así que en ese caso no se envía precio_por_kilo.
+      const payload: Record<string, unknown> = {
         nombre: values.nombre,
         descripcion: values.descripcion || "",
         categoria: values.categoria,
-        precio_por_kilo: Number(values.precio_por_kilo),
         peso_minimo: Number(values.peso_minimo),
+        peso_unidad: pesoUnidad,
         estado: values.estado,
+        ...(porUnidad
+          ? { precio_unidad: Number(values.precio) }
+          : { precio_por_kilo: Number(values.precio) }),
       };
-      
+
       if (editingProducto?.id) {
         // IMPORTANTE: Se envía el ID y el cuerpo por separado
-        return await updateProducto(editingProducto.id, payload);
+        return await updateProducto(editingProducto.id, payload as Partial<Producto>);
       } else {
-        return await createProducto(payload);
+        return await createProducto(payload as Parameters<typeof createProducto>[0]);
       }
     },
     onSuccess: () => {
@@ -130,12 +139,16 @@ export default function Productos() {
 
   const handleEditClick = (producto: Producto) => {
     setEditingProducto(producto);
+    const pesoUnidad = Number(producto.peso_unidad) || 0;
     form.reset({
       nombre: producto.nombre,
       descripcion: producto.descripcion || '',
       categoria: producto.categoria || '',
-      precio_por_kilo: String(producto.precio_por_kilo),
+      precio: pesoUnidad > 0
+        ? String(producto.precio_unidad ?? '')
+        : String(producto.precio_por_kilo),
       peso_minimo: String(producto.peso_minimo || 0),
+      peso_unidad: String(pesoUnidad),
       estado: producto.estado as any,
     });
     setDialogOpen(true);
@@ -163,8 +176,9 @@ export default function Productos() {
         nombre: '',
         descripcion: '',
         categoria: '',
-        precio_por_kilo: '',
+        precio: '',
         peso_minimo: '0',
+        peso_unidad: '0',
         estado: 'disponible',
       });
     }, 100);
@@ -184,7 +198,8 @@ export default function Productos() {
   }, [data, search]);
 
   const IVA_RATE = 1.19;
-  const precioEditado = Number(form.watch('precio_por_kilo'));
+  const porUnidadEditado = (Number(form.watch('peso_unidad')) || 0) > 0;
+  const precioEditado = Number(form.watch('precio'));
   const margenDelEditado = editingProducto ? margenMap.get(editingProducto.id) : undefined;
   const costoRecienteEditado = margenDelEditado?.costo_reciente;
   // precioEditado y costoRecienteEditado vienen CON IVA incluido; la ganancia
@@ -248,8 +263,8 @@ export default function Productos() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="precio">Precio por Kilo ($)</Label>
-                <Input id="precio" type="number" step="any" {...form.register('precio_por_kilo', { required: true })} />
+                <Label htmlFor="precio">{porUnidadEditado ? 'Precio por unidad ($)' : 'Precio por Kilo ($)'}</Label>
+                <Input id="precio" type="number" step="any" {...form.register('precio', { required: true })} />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="peso_minimo">Peso Mínimo (Kg)</Label>
@@ -257,7 +272,13 @@ export default function Productos() {
               </div>
             </div>
 
-            {editingProducto && (
+            <div className="grid gap-2">
+              <Label htmlFor="peso_unidad">Peso fijo por unidad (kg)</Label>
+              <Input id="peso_unidad" type="number" step="0.001" {...form.register('peso_unidad')} />
+              <p className="text-xs text-muted-foreground">0 = se vende por kilo</p>
+            </div>
+
+            {editingProducto && !porUnidadEditado && (
               <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm space-y-1">
                 {costoRecienteEditado != null ? (
                   <>
@@ -396,7 +417,16 @@ export default function Productos() {
                   </TableCell>
                   <TableCell className="capitalize">{producto.categoria ?? 'N/A'}</TableCell>
                   <TableCell className="text-right font-mono">
-                    {formatCLP(producto.precio_por_kilo)}
+                    {Number(producto.peso_unidad) > 0 ? (
+                      <>
+                        {formatCLP(producto.precio_unidad)}
+                        <span className="block text-xs text-muted-foreground font-sans">
+                          {formatKg(producto.peso_unidad, 3)} c/u
+                        </span>
+                      </>
+                    ) : (
+                      formatCLP(producto.precio_por_kilo)
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-mono text-muted-foreground">
                     {margen?.costo_reciente != null

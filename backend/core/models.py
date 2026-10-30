@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -69,6 +71,14 @@ class Producto(models.Model):
         verbose_name="Peso mínimo por unidad (kg)",
         help_text="Útil para detectar errores de digitación en el pesaje"
     )
+    peso_unidad = models.DecimalField(
+        max_digits=10,
+        decimal_places=3,
+        default=0,
+        verbose_name="Peso fijo por unidad (kg)",
+        help_text="Mayor a 0 = producto de peso fijo que se vende por unidad: los kilos se calculan "
+                  "(unidades x peso) y no se pesa. 0 = se vende por kilo."
+    )
     venta_por_unidad = models.BooleanField(
         default=False,
         verbose_name="Precio por unidad en el flyer",
@@ -81,6 +91,23 @@ class Producto(models.Model):
         verbose_name="Peso aproximado en el flyer",
         help_text="Texto fijo (ej: 'paquete de 1 kg'). Vacío = se calcula desde el stock"
     )
+
+    @property
+    def se_vende_por_unidad(self):
+        return (self.peso_unidad or 0) > 0
+
+    @property
+    def precio_unidad(self):
+        """Precio de una unidad (None si el producto se vende por kilo)."""
+        if not self.se_vende_por_unidad:
+            return None
+        return (self.precio_por_kilo * self.peso_unidad).quantize(Decimal('0.01'))
+
+    def kilos_de_unidades(self, unidades):
+        """Kilos de ``unidades`` de un producto de peso fijo (None si se vende por kilo)."""
+        if not self.se_vende_por_unidad:
+            return None
+        return (Decimal(unidades or 0) * self.peso_unidad).quantize(Decimal('0.01'))
 
     def stock_actual(self):
         entradas = self.facturas_entrada.aggregate(total=models.Sum('cantidad'))['total'] or 0

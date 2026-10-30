@@ -10,6 +10,12 @@ import { getStock } from '@/services/api';
 import { formatCLP, formatKg } from '@/lib/utils';
 import type { StockItem } from '@/types';
 
+// El stock trae también el peso fijo por unidad y su precio (si el producto se vende por unidad).
+type StockItemPrecio = StockItem & {
+  peso_unidad?: number | string;
+  precio_unidad?: number | string | null;
+};
+
 // Vista rápida para consultar qué hay y a cuánto: solo productos disponibles,
 // con stock, ordenados de mayor a menor existencia.
 export default function Precios() {
@@ -20,7 +26,7 @@ export default function Precios() {
     queryKey: ['stock', 'precios'],
     queryFn: async () => {
       const response = await getStock();
-      return Array.isArray(response.data) ? (response.data as StockItem[]) : [];
+      return Array.isArray(response.data) ? (response.data as StockItemPrecio[]) : [];
     },
   });
 
@@ -80,8 +86,17 @@ export default function Precios() {
                   <span className="block text-[10px] uppercase text-muted-foreground">unid.</span>
                 </TableCell>
                 <TableCell className="text-right">
-                  <span className="text-sm font-bold tabular-nums">{formatCLP(p.precio_por_kilo)}</span>
-                  <span className="block text-[10px] uppercase text-muted-foreground">{p.venta_por_unidad ? 'c/u' : 'por kilo'}</span>
+                  {Number(p.peso_unidad) > 0 ? (
+                    <>
+                      <span className="text-sm font-bold tabular-nums">{formatCLP(p.precio_unidad)}</span>
+                      <span className="block text-[10px] uppercase text-muted-foreground">c/u</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-sm font-bold tabular-nums">{formatCLP(p.precio_por_kilo)}</span>
+                      <span className="block text-[10px] uppercase text-muted-foreground">{p.venta_por_unidad ? 'c/u' : 'por kilo'}</span>
+                    </>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

@@ -23,6 +23,33 @@ class ProductosView(APIView):
         serializer = ProductoSerializer(productos, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+def aplicar_peso_y_precio(producto, data):
+    """Aplica ``peso_unidad`` y el precio del producto desde el payload.
+
+    Un producto de peso fijo (peso_unidad > 0) se vende por unidad: el precio se
+    escribe POR UNIDAD (``precio_unidad``) y se guarda como precio por kilo
+    (precio_unidad / peso_unidad), que es la base de todo el costeo y los
+    márgenes. Sin ``precio_unidad`` se respeta ``precio_por_kilo``."""
+    if data.get('peso_unidad') not in (None, ''):
+        try:
+            peso = Decimal(str(data['peso_unidad']).replace(',', '.'))
+        except (InvalidOperation, ValueError):
+            raise ValidationError("El peso por unidad no es válido")
+        if peso < 0:
+            raise ValidationError("El peso por unidad no puede ser negativo")
+        producto.peso_unidad = peso
+    if producto.peso_unidad > 0 and data.get('precio_unidad') not in (None, ''):
+        try:
+            precio_unidad = Decimal(str(data['precio_unidad']).replace(',', '.'))
+        except (InvalidOperation, ValueError):
+            raise ValidationError("El precio por unidad no es válido")
+        if precio_unidad <= 0:
+            raise ValidationError("El precio por unidad debe ser mayor a 0")
+        producto.precio_por_kilo = (precio_unidad / producto.peso_unidad).quantize(Decimal('0.01'))
+    elif data.get('precio_por_kilo') not in (None, ''):
+        producto.precio_por_kilo = data['precio_por_kilo']
+
+
 class CrearProducto(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
@@ -33,17 +60,19 @@ class CrearProducto(APIView):
         categoria = data.get('categoria')
         estado = data.get('estado')
 
-        if not nombre or not precio_por_kilo:
+        if not nombre or not (precio_por_kilo or data.get('precio_unidad')):
             return Response({'error': 'Faltan datos obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            producto = Producto.objects.create(
+            producto = Producto(
                 nombre=nombre,
                 descripcion=descripcion,
-                precio_por_kilo=precio_por_kilo,
+                precio_por_kilo=0,
                 categoria=categoria,
-                estado=estado
+                estado=estado or "disponible"
             )
+            aplicar_peso_y_precio(producto, data)
+            producto.save()
             return Response(ProductoSerializer(producto).data, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -132,10 +161,15 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
         if not permitir_pre_reserva or congelado:
             donde = " congelado" if congelado else ""
             raise ValidationError(f"No hay suficiente stock{donde} disponible de '{producto.nombre}'")
-        if kilos > 0:
+        if kilos > 0 and not producto.se_vende_por_unidad:
             raise ValidationError(
                 f"'{producto.nombre}' no tiene stock suficiente: una pre-reserva no se puede pesar")
         pendientes = unidades - int(stock_producto)
+
+    if producto.se_vende_por_unidad:
+        # Peso fijo: los kilos salen de las unidades, sin báscula. Con unidades
+        # en pre-reserva la línea queda sin pesar hasta que llegue el stock.
+        kilos = Decimal('0.00') if pendientes else producto.kilos_de_unidades(unidades)
 
     _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(
         producto, unidades - pendientes, congelado=congelado)
@@ -279,14 +313,16 @@ class CrearPedido(APIView):
                     unidades = int(Decimal(str(detalle.get('cantidad_unidades') or 0).replace(',', '.')))
                     if kilos <= 0:
                         kilos = Decimal('0.00')
-                        todo_pesado = False
 
-                    crear_linea_pedido(
+                    linea = crear_linea_pedido(
                         pedido, producto, unidades, kilos, cfg,
                         congelado=_es_verdadero(detalle.get('congelado')),
                         permitir_pre_reserva=permitir_pre_reserva,
                         usuario=request.user,
                     )
+                    # Un producto por unidad queda pesado solo (kilos = unidades x peso).
+                    if linea.cantidad_kilos <= 0:
+                        todo_pesado = False
 
                 # Antes el estado quedaba según la ÚLTIMA línea: un pedido con una
                 # línea sin pesar podía quedar "Preparado" (por cobrar).
@@ -423,6 +459,13 @@ class PedidoDetailView(APIView):
                             if not congelado:
                                 productos_liberados[detalle_obj.producto_id] = detalle_obj.producto
 
+                    if detalle_obj.producto.se_vende_por_unidad:
+                        # Peso fijo: los kilos siguen a las unidades; las que
+                        # esperan stock dejan la línea sin pesar.
+                        detalle_obj.cantidad_kilos = (
+                            Decimal('0.00') if detalle_obj.unidades_pendientes
+                            else detalle_obj.producto.kilos_de_unidades(nuevas_unidades))
+
                     if detalle_obj.unidades_pendientes > 0 and detalle_obj.cantidad_kilos > 0:
                         raise ValidationError(
                             f"'{detalle_obj.producto.nombre}' tiene {detalle_obj.unidades_pendientes} "
@@ -512,6 +555,8 @@ class ActualizarKilosPedido(APIView):
 
                     kilos_anteriores = Decimal(str(detalle.cantidad_kilos or 0))
                     kilos_nuevos = Decimal(str(cantidad_kilos or 0).replace(',', '.'))
+                    if detalle.producto.se_vende_por_unidad and not detalle.unidades_pendientes:
+                        kilos_nuevos = detalle.producto.kilos_de_unidades(detalle.cantidad_unidades)
                     delta = kilos_nuevos - kilos_anteriores
                     if kilos_nuevos > 0 and detalle.unidades_pendientes > 0:
                         raise ValidationError(
@@ -1091,7 +1136,7 @@ class AgregarProductoPedido(APIView):
                 # Si el pedido ya estaba Preparado/Pagado y la línea nueva viene
                 # sin pesar, no lo degradamos; si estaba Reservado y esta línea
                 # trae peso, sigue el mismo criterio que CrearPedido.
-                if pedido.estado == "Reservado" and kilos > 0:
+                if pedido.estado == "Reservado" and linea.cantidad_kilos > 0:
                     pedido.estado = "Preparado"
                 if linea.unidades_pendientes > 0 and pedido.estado in ("Preparado", "Pagado"):
                     raise ValidationError(
@@ -1207,6 +1252,8 @@ class StockProductos(APIView):
                 'id': producto.id,
                 'producto': producto.nombre,
                 'precio_por_kilo': producto.precio_por_kilo,
+                'peso_unidad': producto.peso_unidad,
+                'precio_unidad': producto.precio_unidad,
                 'categoria': producto.categoria,
                 'venta_por_unidad': producto.venta_por_unidad,
                 'peso_flyer': producto.peso_flyer,
@@ -1314,7 +1361,7 @@ class UpdateProducto(APIView):
 
             # Actualizamos todos los campos enviados desde el Frontend
             producto.nombre = data.get('nombre', producto.nombre)
-            producto.precio_por_kilo = data.get('precio_por_kilo', producto.precio_por_kilo)
+            aplicar_peso_y_precio(producto, data)
             producto.peso_minimo = data.get('peso_minimo', producto.peso_minimo)
             producto.estado = data.get('estado', producto.estado)
             producto.categoria = data.get('categoria', producto.categoria)
@@ -1335,6 +1382,8 @@ class UpdateProducto(APIView):
             return Response(ProductoSerializer(producto).data, status=status.HTTP_200_OK)
         except Producto.DoesNotExist:
             return Response({'error': 'Producto no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as e:
+            return Response({'error': str(e.detail[0])}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

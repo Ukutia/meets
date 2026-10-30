@@ -69,9 +69,11 @@ class ClienteSerializer(serializers.ModelSerializer):
         return attrs
 
 class ProductoSerializer(serializers.ModelSerializer):
+    precio_unidad = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
     class Meta:
         model = Producto
-        fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado', 'peso_minimo', 'venta_por_unidad', 'peso_flyer']
+        fields = ['id', 'nombre', 'descripcion', 'categoria', 'precio_por_kilo', 'estado', 'peso_minimo', 'peso_unidad', 'precio_unidad', 'venta_por_unidad', 'peso_flyer']
 
 class HistorialPrecioProductoSerializer(serializers.ModelSerializer):
     usuario_nombre = serializers.SerializerMethodField()
