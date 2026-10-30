@@ -3,6 +3,7 @@ import { KeyRound, LogOut, UserRound } from 'lucide-react';
 import { InsetGroup, ListRow } from '@/components/shared/InsetList';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { useAuth } from '@/contexts/AuthContext';
+import { PeriodoSelector } from '@/components/shared/PeriodoSelector';
 import { NAV_GROUPS, TAB_ITEMS } from '@/components/layout/nav';
 
 const URLS_EN_PESTANAS = new Set(TAB_ITEMS.map((t) => t.url));
@@ -25,6 +26,10 @@ export default function Mas() {
     <div className="space-y-6 pb-4">
       {dialog}
       <h1 className="tracking-tight">Más</h1>
+
+      <InsetGroup title="Período">
+        <div className="p-3"><PeriodoSelector className="w-full" /></div>
+      </InsetGroup>
 
       {grupos.map((g) => (
         <InsetGroup key={g.label} title={g.label}>

@@ -17,6 +17,7 @@ import {
   Tag,
   Ellipsis,
   ClipboardCheck,
+  CalendarCheck,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -56,6 +57,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Finanzas',
     items: [
+      { title: 'Cierre de mes', url: '/cierre-mes', icon: CalendarCheck },
       { title: 'Tesorería', url: '/tesoreria', icon: Landmark },
       { title: 'Reportes', url: '/reportes', icon: TrendingUp },
     ],

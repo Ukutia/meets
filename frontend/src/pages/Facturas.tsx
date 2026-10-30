@@ -25,11 +25,13 @@ import {
 import { useForm, Controller } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { resumenPreReservas } from '@/lib/preReservas';
-import { getFacturas, createFactura, updateFactura, getProveedores, getProductos, getMargenProductos, pagarFactura, createNotaCredito, deleteNotaCredito } from '@/services/api';
+import { getFacturas, createFactura, updateFactura, getProveedores, getProductos, getMargenProductos, pagarFactura, createNotaCredito, deleteNotaCredito, getConfiguracionContable } from '@/services/api';
+import { Switch } from '@/components/ui/switch';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { totalAPagar, type Factura, type EstadoEdicionLinea } from '@/types';
 import { useToast } from '@/hooks/use-toast';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { diasDesde, enRango, formatCLP, formatFecha, hoyISO, mediaUrl, parseDecimal } from '@/lib/utils';
 import { useSearchParams } from 'react-router-dom';
 import { StatCard } from '@/components/shared/StatCard';
@@ -95,6 +97,9 @@ export default function Facturas() {
   const [nc, setNc] = useState({ numero: '', fecha: hoyISO(), neto: '', motivo: '' });
   const [ncFoto, setNcFoto] = useState<File | null>(null);
   const [ncAbierta, setNcAbierta] = useState(false);
+  // Anticipo de IVA de la carne (5% del neto) que suman los frigoríficos.
+  const [conAnticipo, setConAnticipo] = useState(false);
+  const [editConAnticipo, setEditConAnticipo] = useState(false);
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -120,6 +125,9 @@ export default function Facturas() {
 
   const { data: proveedores } = useQuery({ queryKey: ['proveedores'], queryFn: async () => (await getProveedores()).data });
   const { data: productos } = useQuery({ queryKey: ['productos'], queryFn: async () => (await getProductos()).data });
+  const { data: config } = useQuery({ queryKey: ['configuracion-contable'], queryFn: async () => (await getConfiguracionContable()).data });
+  const tasaIva = Number(config?.tasa_iva ?? 19) / 100;
+  const tasaAnticipo = Number(config?.tasa_anticipo_carne ?? 5) / 100;
   // Margen actual/histórico por producto para la vista previa en vivo (Plan 03)
   const { data: margenProductos } = useQuery({
     queryKey: ['margen-productos'],
@@ -157,10 +165,12 @@ export default function Facturas() {
     const mejor = hist == null ? margenUnit >= 0 : pct >= Number(hist);
     return { precio, margenUnit, pct, hist, mejor, tieneInfo: !!info };
   };
-  const { data: facturasData, isLoading, error } = useQuery({
+  const { enPeriodo } = usePeriodo();
+  const { data: facturasTodas, isLoading, error } = useQuery({
     queryKey: ['facturas'],
     queryFn: async () => (await getFacturas()).data as Factura[],
   });
+  const facturasData = useMemo(() => facturasTodas?.filter((f) => enPeriodo(f.fecha)), [facturasTodas, enPeriodo]);
 
   const agregarItem = () => {
     const prod = productos?.find(p => p.id.toString() === nuevoItem.producto_id);
@@ -186,13 +196,23 @@ export default function Facturas() {
     setNuevoItem({ producto_id: '', cantidad_kilos: '', cantidad_unidades: '0', costo_por_kilo: '' });
   };
 
+  // Al elegir proveedor se propone el anticipo si su última factura lo traía.
+  const proveedorElegido = form.watch('proveedor_id');
   useEffect(() => {
-    const subtotal = detalles.reduce((acc, curr) => acc + curr.costo_total, 0);
-    const iva = subtotal * 0.19;
-    form.setValue('subtotal', subtotal.toFixed(0));
-    form.setValue('iva', iva.toFixed(0));
-    form.setValue('total', (subtotal + iva).toFixed(0));
-  }, [detalles, form]);
+    if (!proveedorElegido) return;
+    const ultima = facturasTodas?.find((f) => String(f.proveedor) === proveedorElegido);
+    setConAnticipo(Number(ultima?.anticipo_iva ?? 0) > 0);
+  }, [proveedorElegido, facturasTodas]);
+
+  const anticipo = conAnticipo ? Math.round(Number(form.watch('subtotal')) * tasaAnticipo) : 0;
+  useEffect(() => {
+    const subtotal = Math.round(detalles.reduce((acc, curr) => acc + curr.costo_total, 0));
+    const iva = Math.round(subtotal * tasaIva);
+    const ant = conAnticipo ? Math.round(subtotal * tasaAnticipo) : 0;
+    form.setValue('subtotal', String(subtotal));
+    form.setValue('iva', String(iva));
+    form.setValue('total', String(subtotal + iva + ant));
+  }, [detalles, form, conAnticipo, tasaIva, tasaAnticipo]);
 
   
   const createMutation = useMutation({
@@ -204,6 +224,7 @@ export default function Facturas() {
         fecha_vencimiento: values.fecha_vencimiento || null,
         subtotal: Number(values.subtotal),
         iva: Number(values.iva),
+        anticipo_iva: anticipo,
         total: Number(values.total),
         detalles: detalles.map(d => ({
           producto: d.producto, // ID del producto
@@ -250,6 +271,7 @@ export default function Facturas() {
     setEditProveedor(f.proveedor != null ? String(f.proveedor) : '');
     setEditFecha(f.fecha ? String(f.fecha).split('T')[0] : '');
     setEditVencimiento(f.fecha_vencimiento ?? '');
+    setEditConAnticipo(Number(f.anticipo_iva ?? 0) > 0);
     setEditDetalles((f.detalles || []).map((d: any) => ({
       id: d.id,
       producto: Number(d.producto),
@@ -267,9 +289,10 @@ export default function Facturas() {
   const updateLinea = (idx: number, patch: Partial<EditLinea>) =>
     setEditDetalles(prev => prev.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
 
-  // Totales proyectados de la edición (mismo cálculo que en creación: subtotal + IVA 19%).
+  // Totales proyectados de la edición (mismo cálculo que en creación: subtotal + IVA + anticipo).
   const editSubtotal = editDetalles.reduce((acc, l) => acc + l.cantidad_kilos * l.costo_por_kilo, 0);
-  const editTotal = editSubtotal + editSubtotal * 0.19;
+  const editAnticipo = editConAnticipo ? Math.round(editSubtotal * tasaAnticipo) : 0;
+  const editTotal = Math.round(editSubtotal) + Math.round(editSubtotal * tasaIva) + editAnticipo;
   // Una línea parcial no puede quedar por debajo de lo ya vendido.
   const editTieneError = editDetalles.some(
     l => l.estado_edicion === 'parcial' && l.cantidad_unidades < l.unidades_consumidas
@@ -285,6 +308,7 @@ export default function Facturas() {
         proveedor: editProveedor,
         fecha: editFecha,
         fecha_vencimiento: editVencimiento || null,
+        con_anticipo: editConAnticipo,
         detalles: editDetalles.map(l => ({
           id: l.id,
           producto: l.producto,
@@ -537,9 +561,17 @@ export default function Facturas() {
                 </div>
               </div>
 
-              <div className="flex justify-end border-t pt-4 gap-8">
-                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Subtotal</p><p className="font-bold">{formatCLP(form.watch('subtotal'))}</p></div>
-                <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Total Factura</p><p className="font-black text-xl text-primary">{formatCLP(form.watch('total'))}</p></div>
+              <div className="flex flex-wrap items-end justify-between border-t pt-4 gap-4">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <Switch checked={conAnticipo} onCheckedChange={setConAnticipo} />
+                  <span>Trae anticipo IVA carne ({Math.round(tasaAnticipo * 1000) / 10}%)</span>
+                </label>
+                <div className="flex gap-8">
+                  <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Subtotal</p><p className="font-bold">{formatCLP(form.watch('subtotal'))}</p></div>
+                  <div className="text-right"><p className="text-xs text-muted-foreground uppercase">IVA</p><p className="font-bold">{formatCLP(form.watch('iva'))}</p></div>
+                  {conAnticipo && <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Anticipo</p><p className="font-bold">{formatCLP(anticipo)}</p></div>}
+                  <div className="text-right"><p className="text-xs text-muted-foreground uppercase">Total Factura</p><p className="font-black text-xl text-primary">{formatCLP(form.watch('total'))}</p></div>
+                </div>
               </div>
             </div>
             <DialogFooter>
@@ -774,9 +806,15 @@ export default function Facturas() {
                   <span className="font-medium">${Number(selectedFactura.subtotal).toLocaleString('es-CL')}</span>
                 </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">IVA (19%):</span>
+                  <span className="text-muted-foreground">IVA:</span>
                   <span className="font-medium">${Number(selectedFactura.iva).toLocaleString('es-CL')}</span>
                 </div>
+                {Number(selectedFactura.anticipo_iva) > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Anticipo IVA carne:</span>
+                    <span className="font-medium">{formatCLP(selectedFactura.anticipo_iva)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-xl font-black text-primary border-t pt-2">
                   <span>TOTAL:</span>
                   <span>${Number(selectedFactura.total).toLocaleString('es-CL')}</span>
@@ -1048,7 +1086,11 @@ export default function Facturas() {
               )}
 
               {/* Totales proyectados */}
-              <div className="flex justify-end border-t pt-4 gap-8">
+              <div className="flex flex-wrap items-end justify-end border-t pt-4 gap-8">
+                <label className="flex items-center gap-2 text-sm cursor-pointer mr-auto">
+                  <Switch checked={editConAnticipo} onCheckedChange={setEditConAnticipo} />
+                  <span>Anticipo IVA carne{editAnticipo > 0 && `: ${formatCLP(editAnticipo)}`}</span>
+                </label>
                 <div className="text-right">
                   <p className="text-xs text-muted-foreground uppercase">Subtotal</p>
                   <p className="font-bold">${Math.round(editSubtotal).toLocaleString('es-CL')}</p>

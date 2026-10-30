@@ -194,9 +194,9 @@ export default function Productos() {
   const ganLiveUnit = (costoRecienteEditado != null && precioEditado > 0)
     ? (precioEditado - costoRecienteEditado) / IVA_RATE
     : null;
-  // El porcentaje es sobre el precio de venta SIN IVA (el mismo que el backend).
-  const ganLivePct = (ganLiveUnit != null && precioNetoEditado != null)
-    ? (ganLiveUnit / precioNetoEditado) * 100
+  // El porcentaje es sobre el costo neto (el mismo que el backend).
+  const ganLivePct = (ganLiveUnit != null && costoNetoEditado)
+    ? (ganLiveUnit / costoNetoEditado) * 100
     : null;
 
   if (isLoading) return <LoadingSpinner />;

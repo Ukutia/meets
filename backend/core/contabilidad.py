@@ -6,7 +6,7 @@ Convenciones (las mismas de todo el sistema):
 
 IVA (como en el Formulario 29): el débito sale de las VENTAS del mes y el
 crédito de las COMPRAS del mes (facturas de proveedor, menos sus notas de
-crédito, más el IVA de gastos con factura). No del costo de lo vendido: la
+crédito, más el anticipo de IVA de la carne, más el IVA de gastos con factura). No del costo de lo vendido: la
 mercadería comprada este mes da crédito este mes aunque se venda el próximo.
 Si el crédito supera al débito queda remanente para el mes siguiente.
 """
@@ -18,8 +18,13 @@ from django.db.models.functions import Coalesce, TruncMonth
 from .models import (AjusteInventario, ConfiguracionContable, DetalleFactura,
                      DetallePedido, Factura, Gasto, NotaCredito)
 
-IVA_RATE = Decimal('1.19')
 CERO = Decimal('0')
+
+
+def factor_iva(config=None):
+    """1 + tasa de IVA configurada (1,19 con el 19%)."""
+    config = config or ConfiguracionContable.actual()
+    return 1 + Decimal(str(config.tasa_iva)) / 100
 
 
 def _rango(qs, campo, desde=None, hasta=None):
@@ -81,9 +86,10 @@ def resumen_mensual(desde=None, hasta=None):
     config = ConfiguracionContable.actual()
     tasa_renta = Decimal(str(config.tasa_impuesto_renta)) / 100
     tasa_ppm = Decimal(str(config.tasa_ppm)) / 100
+    iva_rate = factor_iva(config)
 
     ventas = _por_mes(lineas_venta(), 'fecha', ventas='total_venta', costo='total_costo')
-    compras = _por_mes(Factura.objects.all(), 'fecha', neto='subtotal', iva='iva')
+    compras = _por_mes(Factura.objects.all(), 'fecha', neto='subtotal', iva='iva', anticipo='anticipo_iva')
     notas = _por_mes(NotaCredito.objects.all(), 'fecha', neto='neto', iva='iva')
     gastos = _por_mes(Gasto.objects.all(), 'fecha', neto='neto', iva='iva', total='total')
     mermas = {}
@@ -97,14 +103,15 @@ def resumen_mensual(desde=None, hasta=None):
     for mes in meses:
         v = ventas.get(mes, {})
         ventas_brutas = v.get('ventas', CERO)
-        ventas_netas = ventas_brutas / IVA_RATE
+        ventas_netas = ventas_brutas / iva_rate
         iva_debito = ventas_brutas - ventas_netas
         costo = v.get('costo', CERO)
 
         c, n, g = compras.get(mes, {}), notas.get(mes, {}), gastos.get(mes, {})
         iva_compras = c.get('iva', CERO) - n.get('iva', CERO)
+        iva_anticipo = c.get('anticipo', CERO)
         iva_gastos = g.get('iva', CERO)
-        iva_credito = iva_compras + iva_gastos
+        iva_credito = iva_compras + iva_anticipo + iva_gastos
 
         remanente_anterior = remanente
         saldo = iva_debito - iva_credito - remanente_anterior
@@ -129,6 +136,7 @@ def resumen_mensual(desde=None, hasta=None):
             'utilidad': utilidad,
             'iva_debito': iva_debito,
             'iva_credito_compras': iva_compras,
+            'iva_credito_anticipo': iva_anticipo,
             'iva_credito_gastos': iva_gastos,
             'iva_credito': iva_credito,
             'remanente_anterior': remanente_anterior,

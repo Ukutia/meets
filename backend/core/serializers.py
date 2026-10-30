@@ -239,7 +239,7 @@ class ProveedorSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Proveedor
-        fields = ['id', 'nombre', 'cantidad_facturas']
+        fields = ['id', 'nombre', 'rut', 'cantidad_facturas']
 
     def get_cantidad_facturas(self, obj):
         # La lista lo trae anotado; en create/update se cuenta directo.
@@ -328,6 +328,7 @@ class FacturaSerializer(serializers.ModelSerializer):
             'total',
             'subtotal',
             'iva',
+            'anticipo_iva',
             'pago_factura',
             'notas_credito',
             'total_notas_credito',

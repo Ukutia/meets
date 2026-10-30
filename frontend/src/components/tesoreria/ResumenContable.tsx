@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatCard } from '@/components/shared/StatCard';
 import { DecimalInput } from '@/components/shared/DecimalInput';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
@@ -19,14 +20,14 @@ type Num = number | string;
 interface Mes {
   mes: string;
   ventas_netas: Num; costo_ventas: Num; ganancia_bruta: Num; gastos_netos: Num; mermas: Num; utilidad: Num;
-  iva_debito: Num; iva_credito_compras: Num; iva_credito_gastos: Num; iva_credito: Num;
+  iva_debito: Num; iva_credito_compras: Num; iva_credito_anticipo: Num; iva_credito_gastos: Num; iva_credito: Num;
   remanente_anterior: Num; iva_a_pagar: Num; remanente: Num; ppm: Num;
 }
 interface Anio { anio: string; utilidad: Num; ppm: Num; impuesto_estimado: Num; saldo_abril: Num }
 interface Contabilidad {
   meses: Mes[];
   anios: Anio[];
-  config: { tasa_impuesto_renta: Num; tasa_ppm: Num };
+  config: { tasa_impuesto_renta: Num; tasa_ppm: Num; tasa_iva: Num; tasa_anticipo_carne: Num; receptor_cobro: 'vendedor' | 'empresa' };
   estado: {
     por_cobrar: Num; por_pagar: Num; facturas_vencidas: number; saldo_banco: Num | null;
     movimientos_sin_clasificar: number; abonos_sin_asociar: number;
@@ -140,7 +141,7 @@ export function ResumenContable({ rango }: { rango: RangoFecha }) {
                   <TableRow key={m.mes}>
                     <TableCell className="capitalize">{nombreMes(m.mes)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatCLP(m.iva_debito)}</TableCell>
-                    <TableCell className="text-right tabular-nums" title={`Compras ${formatCLP(m.iva_credito_compras)} · gastos ${formatCLP(m.iva_credito_gastos)}`}>
+                    <TableCell className="text-right tabular-nums" title={`Compras ${formatCLP(m.iva_credito_compras)} · anticipo carne ${formatCLP(m.iva_credito_anticipo)} · gastos ${formatCLP(m.iva_credito_gastos)}`}>
                       {formatCLP(m.iva_credito)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-muted-foreground">{n(m.remanente_anterior) ? formatCLP(m.remanente_anterior) : '—'}</TableCell>
@@ -245,11 +246,18 @@ function ConfigTasas({ config }: { config: Contabilidad['config'] }) {
   const { toast } = useToast();
   const [renta, setRenta] = useState(decimalATexto(config.tasa_impuesto_renta));
   const [ppm, setPpm] = useState(decimalATexto(config.tasa_ppm));
+  const [iva, setIva] = useState(decimalATexto(config.tasa_iva));
+  const [anticipo, setAnticipo] = useState(decimalATexto(config.tasa_anticipo_carne));
+  const [receptor, setReceptor] = useState(config.receptor_cobro);
 
   const guardar = async () => {
     try {
-      await updateConfiguracionContable({ tasa_impuesto_renta: parseDecimal(renta), tasa_ppm: parseDecimal(ppm) });
+      await updateConfiguracionContable({
+        tasa_impuesto_renta: parseDecimal(renta), tasa_ppm: parseDecimal(ppm),
+        tasa_iva: parseDecimal(iva), tasa_anticipo_carne: parseDecimal(anticipo), receptor_cobro: receptor,
+      });
       queryClient.invalidateQueries({ queryKey: ['contabilidad'] });
+      queryClient.invalidateQueries({ queryKey: ['configuracion-contable'] });
       toast({ title: 'Tasas guardadas' });
     } catch (e: any) {
       toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo guardar', variant: 'destructive' });
@@ -269,6 +277,24 @@ function ConfigTasas({ config }: { config: Contabilidad['config'] }) {
         <div className="space-y-1">
           <Label className="text-xs">PPM sobre ventas netas (%)</Label>
           <DecimalInput value={ppm} onValueChange={setPpm} />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">IVA (%)</Label>
+          <DecimalInput value={iva} onValueChange={setIva} />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Anticipo IVA carne en compras (%)</Label>
+          <DecimalInput value={anticipo} onValueChange={setAnticipo} />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Los cobros nuevos los recibe</Label>
+          <Select value={receptor} onValueChange={(v) => setReceptor(v as 'vendedor' | 'empresa')}>
+            <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="vendedor">El vendedor del pedido</SelectItem>
+              <SelectItem value="empresa">La cuenta de la empresa</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <Button size="sm" className="w-full" onClick={guardar}>Guardar</Button>
       </PopoverContent>

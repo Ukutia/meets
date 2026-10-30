@@ -12,6 +12,7 @@ import {
 } from '@/services/api';
 import { totalAPagar, type Factura, type Pedido, type StockItem, type Vendedor } from '@/types';
 import { cn, diasDesde, enRango, formatCLP, formatFecha, rangoDesdePreset } from '@/lib/utils';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { calcularSaldosVendedores, pagosDesdeRespuesta } from '@/lib/saldos';
 
 // Bajo este número de unidades disponibles un corte aparece en "Stock bajo".
@@ -37,6 +38,7 @@ const TONO: Record<Tono, string> = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { enPeriodo } = usePeriodo();
   const [lista, setLista] = useState<'pesar' | 'cobrar'>('pesar');
 
   // Mismas claves y formas que las páginas de detalle para compartir caché.
@@ -49,9 +51,9 @@ export default function Dashboard() {
   const vendedoresQ = useQuery({ queryKey: ['vendedores'], queryFn: async () => (await getVendedores()).data as Vendedor[] });
   const pagosQ = useQuery({ queryKey: ['pagos-vendedor'], queryFn: async () => pagosDesdeRespuesta((await getPagosVendedor()).data) });
 
-  const pedidos = useMemo(() => (pedidosQ.data ?? []).filter((p) => p.estado !== 'Anulado'), [pedidosQ.data]);
+  const pedidos = useMemo(() => (pedidosQ.data ?? []).filter((p) => p.estado !== 'Anulado' && enPeriodo(p.fecha)), [pedidosQ.data, enPeriodo]);
   const stock: StockItem[] = Array.isArray(stockQ.data) ? stockQ.data : [];
-  const facturas = facturasQ.data ?? [];
+  const facturas = useMemo(() => (facturasQ.data ?? []).filter((f) => enPeriodo(f.fecha)), [facturasQ.data, enPeriodo]);
 
   // Ventas del mes vs. el mismo tramo del mes anterior (1 al día de hoy).
   const ventas = useMemo(() => {
@@ -88,8 +90,8 @@ export default function Dashboard() {
     .sort((a, b) => a.disponibles - b.disponibles);
 
   const saldos = useMemo(
-    () => calcularSaldosVendedores(vendedoresQ.data ?? [], pedidos, pagosQ.data ?? []),
-    [vendedoresQ.data, pedidos, pagosQ.data]
+    () => calcularSaldosVendedores(vendedoresQ.data ?? [], pedidos, (pagosQ.data ?? []).filter((p) => enPeriodo(p.fecha))),
+    [vendedoresQ.data, pedidos, pagosQ.data, enPeriodo]
   );
   const saldoTotal = saldos.reduce((s, v) => s + v.saldo, 0);
 

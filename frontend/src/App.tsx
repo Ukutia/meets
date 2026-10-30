@@ -21,9 +21,11 @@ import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
+import CierreMes from "./pages/CierreMes";
 import PreReservas from "./pages/PreReservas";
 import Precios from "./pages/Precios";
 import Mas from "./pages/Mas";
+import { PeriodoProvider } from "./contexts/PeriodoContext";
 
 const queryClient = new QueryClient();
 
@@ -48,6 +50,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
+      <PeriodoProvider>
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>
@@ -216,6 +219,16 @@ const App = () => (
               }
             />
             <Route
+              path="/cierre-mes"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <CierreMes />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/tesoreria"
               element={
                 <ProtectedRoute>
@@ -240,6 +253,7 @@ const App = () => (
           </Routes>
         </BrowserRouter>
       </TooltipProvider>
+      </PeriodoProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

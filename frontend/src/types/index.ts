@@ -7,6 +7,7 @@ export interface Vendedor {
 export interface Proveedor {
   id: number;
   nombre: string;
+  rut?: string;
   cantidad_facturas: number;
 }
 
@@ -145,6 +146,7 @@ export interface Factura {
   total: number;
   subtotal: number;
   iva: number;
+  anticipo_iva?: number;
 }
 
 // Lo que se le debe al proveedor: el total menos sus notas de crédito.

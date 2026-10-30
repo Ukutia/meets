@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { AppSidebar } from './Sidebar';
 import { MobileShell } from './MobileShell';
 import { navInfo } from './nav';
+import { PeriodoSelector } from '@/components/shared/PeriodoSelector';
 
 // Ancho de teléfono. Se lee de forma síncrona para no pintar un cuadro con el layout de escritorio.
 const CONSULTA_MOVIL = '(max-width: 767px)';
@@ -51,6 +52,7 @@ export function Layout({ children }: LayoutProps) {
                 <span className="font-semibold">MeatME</span>
               )}
             </div>
+            <PeriodoSelector />
           </header>
           
           <div className="flex-1 overflow-y-auto">
