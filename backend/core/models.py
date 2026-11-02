@@ -197,7 +197,7 @@ class Pedido(models.Model):
     vendedor = models.ForeignKey(
         'Vendedor', on_delete=models.SET_NULL, null=True, verbose_name="Vendedor"
     )
-    fecha = models.DateTimeField(auto_now_add=True, verbose_name="Fecha del pedido")
+    fecha = models.DateTimeField(default=timezone.now, verbose_name="Fecha del pedido")
     estado = models.CharField(
         max_length=20,
         choices=[
