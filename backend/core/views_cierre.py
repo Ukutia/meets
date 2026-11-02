@@ -51,7 +51,7 @@ def _rango_mes(anio, mes):
 
 
 def _redondo(valor):
-    return Decimal(valor).quantize(Decimal('1'))
+    return Decimal(valor).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
 
 
 def _cobro_json(c):
@@ -85,7 +85,7 @@ def estado_cobro(total, cobrado):
 
 def estado_tributario(pedido, documentos):
     """emitido / pendiente / por_revisar, más el motivo cuando hay que revisar."""
-    documentos = [d for d in documentos if d.ambiente == 'produccion']
+    documentos = [d for d in documentos if d.ambiente == 'produccion' and d.operacion == 'ventas']
     ventas = [d for d in documentos if d.tipo in TIPOS_VENTA]
     if not ventas:
         return 'pendiente', None
@@ -212,7 +212,7 @@ class VentasMesView(APIView):
 
         # Lo emitido en el mes según los documentos (lo que va al F29), aparte
         # de la cifra teórica que sale de las ventas.
-        docs_mes = DocumentoTributario.objects.filter(ambiente='produccion',
+        docs_mes = DocumentoTributario.objects.filter(operacion='ventas', ambiente='produccion',
                                                      fecha_emision__gte=inicio.date(), fecha_emision__lt=fin.date())
         iva_documentos = Decimal('0')
         sin_pedido = []
@@ -352,6 +352,7 @@ def _datos_documento(data, actual=None):
             raise ValueError('Tipo de documento inválido')
         if datos['folio'] <= 0:
             raise ValueError('Folio inválido')
+        datos['rut_emisor'] = ConfiguracionContable.actual().rut_empresa
     # Lo que viene del SII no se edita a mano (fecha y montos); solo el pedido
     # asociado y el comentario.
     editable_montos = actual is None or actual.origen == 'manual'
@@ -371,7 +372,7 @@ def _datos_documento(data, actual=None):
         else:
             datos['neto'] = _redondo(datos['total'] / factor_iva())
             datos['iva'] = datos['total'] - datos['neto']
-    if 'pedido' in data:
+    if 'pedido' in data and actual is None:
         datos['pedido'] = Pedido.objects.filter(pk=data['pedido']).first() if data['pedido'] else None
     for campo in ('rut_receptor', 'razon_social', 'comentario'):
         if campo in data and (editable_montos or campo == 'comentario'):
@@ -384,7 +385,7 @@ class DocumentoListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        docs = DocumentoTributario.objects.select_related('usuario')
+        docs = DocumentoTributario.objects.filter(operacion='ventas').select_related('usuario')
         mes = request.query_params.get('mes')
         if mes:
             docs = docs.filter(**sii.filtro_mes('fecha_emision', mes))
@@ -402,7 +403,16 @@ class DocumentoListView(APIView):
             datos['rut_receptor'] = pedido.cliente.rut
             datos['razon_social'] = pedido.cliente.razon_social or pedido.cliente.nombre
         try:
-            doc = DocumentoTributario.objects.create(usuario=request.user, origen='manual', **datos)
+            from .conciliacion import auditar, vincular
+            with transaction.atomic():
+                pedido = datos.pop('pedido', None)
+                doc = DocumentoTributario.objects.create(usuario=request.user, origen='manual', **datos)
+                auditar(doc, 'registrar_manual', {}, request.user)
+                if pedido:
+                    doc = vincular(doc.pk, {'registro_tipo': 'pedido', 'registro_id': pedido.pk,
+                                           'justificacion': request.data.get('comentario') or 'Documento registrado y vinculado manualmente'}, request.user)
+        except ValueError as e:
+            return _error(str(e))
         except IntegrityError:
             return _error(f"Ya existe {NOMBRE_TIPO[datos['tipo']].lower()} folio {datos['folio']}")
         return Response(_documento_json(doc), status=status.HTTP_201_CREATED)
@@ -411,17 +421,33 @@ class DocumentoListView(APIView):
 class DocumentoDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, pk):
-        doc = DocumentoTributario.objects.filter(pk=pk).first()
+        doc = DocumentoTributario.objects.select_for_update().filter(pk=pk).first()
         if not doc:
             return _error('Documento no encontrado', status.HTTP_404_NOT_FOUND)
+        from .conciliacion import auditar, instantanea
+        antes = instantanea(doc)
+        if 'pedido' in request.data:
+            from .conciliacion import vincular
+            try:
+                doc = vincular(pk, {'registro_tipo': 'pedido' if request.data['pedido'] else None,
+                                    'registro_id': request.data['pedido'],
+                                    'justificacion': request.data.get('comentario') or 'Vínculo revisado desde el cierre de ventas'}, request.user)
+            except (ValueError, TypeError) as e:
+                return _error(str(e))
         try:
             datos = _datos_documento(request.data, actual=doc)
         except ValueError as e:
             return _error(str(e))
         for k, v in datos.items():
             setattr(doc, k, v)
+        despues = instantanea(doc)
+        if any(antes.get(c) != despues.get(c) for c in ('total', 'neto', 'iva', 'exento', 'fecha_emision', 'rut_receptor')):
+            doc.estado_conciliacion = 'por_revisar'
         doc.save()
+        if datos:
+            auditar(doc, 'editar_documento', antes, request.user)
         return Response(_documento_json(doc))
 
     def delete(self, request, pk):
@@ -432,6 +458,8 @@ class DocumentoDetailView(APIView):
             return _error('Este documento viene del SII; no se puede borrar, solo desasociar del pedido')
         if doc.origen == 'openfactura' and doc.ambiente == 'produccion':
             return _error('Esta boleta ya fue emitida en el SII; para anularla hay que emitir una nota de crédito')
+        if doc.historial_conciliacion.exists():
+            return _error('Este documento tiene historial de conciliación; conserva la auditoría y desvincúlalo para corregir la asociación')
         doc.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -439,7 +467,9 @@ class DocumentoDetailView(APIView):
 def _importacion_json(i):
     return {'id': i.id, 'nombre_archivo': i.nombre_archivo, 'tipo': i.tipo, 'mes': i.mes, 'filas': i.filas,
             'nuevos': i.nuevos, 'actualizados': i.actualizados, 'resultado': i.resultado,
-            'usuario': i.usuario.username if i.usuario else None, 'subida': i.subida}
+            'usuario': i.usuario.username if i.usuario else None, 'subida': i.subida,
+            'sha256': i.sha256, 'encabezados': i.encabezados, 'estado_registro': i.estado_registro,
+            'datos_actualizados_al': i.datos_actualizados_al}
 
 
 class ImportacionSIIView(APIView):
@@ -455,7 +485,9 @@ class ImportacionSIIView(APIView):
         if not archivo:
             return _error('Sube el archivo CSV descargado del SII')
         try:
-            datos = sii.leer_rcv(archivo.read(), archivo.name)
+            if archivo.size > 10 * 1024 * 1024:
+                return _error('El archivo supera 10 MB')
+            datos = sii.leer_rcv(archivo.read(), archivo.name, request.data.get('operacion', ''))
         except ValueError as e:
             return _error(str(e))
         mes = request.data.get('mes') or datos['mes']
@@ -463,20 +495,29 @@ class ImportacionSIIView(APIView):
             return _error('El archivo no trae documentos')
         if datos['tipo'] == 'resumen' and not mes:
             return _error('Indica el mes del resumen')
-
-        with transaction.atomic():
-            importacion = ImportacionSII.objects.create(
-                nombre_archivo=archivo.name, tipo=datos['tipo'], mes=mes, filas=len(datos['filas']),
-                usuario=request.user)
-            if datos['tipo'] == 'ventas':
-                resultado = sii.importar_ventas(datos['filas'], importacion, request.user)
-                importacion.nuevos, importacion.actualizados = resultado['nuevos'], resultado['actualizados']
-            elif datos['tipo'] == 'compras':
-                resultado = sii.cruzar_compras(datos['filas'], mes)
-            else:
-                resultado = sii.resumen_boletas(datos['filas'], mes)
-            importacion.resultado = json.loads(json.dumps(resultado, cls=DjangoJSONEncoder))
-            importacion.save()
+        try:
+            sii.validar_mes(mes)
+            actualizado = request.data.get('datos_actualizados_al')
+            actualizado = date.fromisoformat(actualizado) if actualizado else None
+            with transaction.atomic():
+                # Serializa importaciones de la empresa, además de la clave única documental.
+                ConfiguracionContable.actual()
+                config = ConfiguracionContable.objects.select_for_update().get(pk=1)
+                if datos['rut_empresa_archivo'] and datos['rut_empresa_archivo'] != sii.validar_rut(config.rut_empresa):
+                    raise ValueError('El RUT del nombre de archivo no corresponde a la empresa')
+                importacion = ImportacionSII.objects.create(
+                    nombre_archivo=archivo.name, tipo=datos['tipo'], mes=mes, filas=len(datos['filas']),
+                    usuario=request.user, sha256=datos['sha256'], encabezados=datos['encabezados'],
+                    estado_registro=request.data.get('estado_registro', ''), datos_actualizados_al=actualizado)
+                if datos['tipo'] in ('ventas', 'compras'):
+                    resultado = sii.importar_documentos(datos['filas'], importacion, request.user)
+                    importacion.nuevos, importacion.actualizados = resultado['nuevos'], resultado['actualizados']
+                else:
+                    resultado = sii.resumen_boletas(datos['filas'], mes)
+                importacion.resultado = sii.json_seguro(resultado)
+                importacion.save()
+        except (ValueError, IntegrityError) as e:
+            return _error(str(e) if isinstance(e, ValueError) else 'Conflicto de identidad documental; revisa los RUT y folios')
         return Response(_importacion_json(importacion), status=status.HTTP_201_CREATED)
 
 
@@ -557,6 +598,7 @@ class EmitirBoletaView(APIView):
         totales = dte['Encabezado']['Totales']
         doc = DocumentoTributario(
             tipo=39, folio=r['folio'], fecha_emision=date.fromisoformat(dte['Encabezado']['IdDoc']['FchEmis']),
+            rut_emisor=ConfiguracionContable.actual().rut_empresa,
             pedido=pedido, rut_receptor=dte['Encabezado']['Receptor']['RUTRecep'],
             razon_social=dte['Encabezado']['Receptor'].get('RznSocRecep', ''),
             neto=totales['MntNeto'], iva=totales['IVA'], total=totales['MntTotal'],
@@ -573,7 +615,8 @@ class EmitirBoletaView(APIView):
             doc.save()
         except IntegrityError:
             # Ya estaba registrada (reintento que recuperó el mismo folio).
-            doc = DocumentoTributario.objects.get(tipo=39, folio=r['folio'], ambiente=ambiente)
+            doc = DocumentoTributario.objects.get(tipo=39, folio=r['folio'], ambiente=ambiente, operacion='ventas',
+                                                 rut_emisor=ConfiguracionContable.actual().rut_empresa)
         return Response(_documento_json(doc), status=status.HTTP_201_CREATED)
 
 

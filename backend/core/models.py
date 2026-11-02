@@ -198,6 +198,7 @@ class Pedido(models.Model):
         'Vendedor', on_delete=models.SET_NULL, null=True, verbose_name="Vendedor"
     )
     fecha = models.DateTimeField(default=timezone.now, verbose_name="Fecha del pedido")
+    fecha_entrega = models.DateField(null=True, blank=True, help_text="Entrega real; no se deduce de la emisión tributaria")
     estado = models.CharField(
         max_length=20,
         choices=[
@@ -320,19 +321,26 @@ class Proveedor(models.Model):
 
 class Factura(models.Model):
     proveedor = models.ForeignKey(Proveedor, on_delete=models.PROTECT, related_name="facturas")
+    tipo_documento = models.IntegerField(default=33, choices=[(33, 'Factura electrónica'), (34, 'Factura exenta'), (46, 'Factura de compra')])
     fecha = models.DateField(verbose_name="Fecha de la factura")
     numero_factura = models.CharField(max_length=50, unique=True, verbose_name="Número de factura" ,primary_key=True)
     subtotal = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Subtotal")
     iva = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="IVA")
-    # Anticipo de IVA que cobra el proveedor de carne (5% del neto). Se paga
-    # junto con la factura y es crédito fiscal, igual que el IVA.
+    # Anticipo separado del crédito fiscal normal; su imputación se valida en el cierre.
     anticipo_iva = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name="Anticipo IVA carne")
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total con IVA")
+    exento = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    otros_impuestos = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_pagadero = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
+                                        help_text='Pagadero según documento; vacío usa total menos notas de crédito')
     fecha_vencimiento = models.DateField(null=True, blank=True, verbose_name="Fecha de vencimiento")
     foto = models.FileField(upload_to="facturas/", blank=True, null=True, verbose_name="Foto o PDF de la factura")
 
     def total_notas_credito(self):
-        return self.notas_credito.aggregate(t=models.Sum('total'))['t'] or 0
+        return sum(n.total for n in self.notas_credito.all())
+
+    def monto_pagadero(self):
+        return (self.total_pagadero if self.total_pagadero is not None else self.total) - self.total_notas_credito()
 
     def __str__(self):
         return f"Factura {self.numero_factura} - {self.proveedor} - {self.fecha}"
@@ -649,6 +657,9 @@ class ConfiguracionContable(models.Model):
     # vendedor; al abrir la cuenta de la empresa basta con cambiarlo aquí.
     receptor_cobro = models.CharField(max_length=10, choices=[("vendedor", "Vendedor"), ("empresa", "Cuenta de la empresa")],
                                       default="vendedor")
+    rut_empresa = models.CharField(max_length=15, blank=True, default='')
+    inicio_actividades = models.DateField(null=True, blank=True)
+    regimen = models.CharField(max_length=100, blank=True, default='')
 
     @classmethod
     def actual(cls):
@@ -742,6 +753,7 @@ TIPOS_DTE = [
     (34, "Factura exenta"),
     (39, "Boleta electrónica"),
     (41, "Boleta exenta"),
+    (46, "Factura de compra"),
     (56, "Nota de débito"),
     (61, "Nota de crédito"),
 ]
@@ -757,6 +769,10 @@ class ImportacionSII(models.Model):
     actualizados = models.IntegerField(default=0)
     # Lo que no se guarda como documento: resumen de boletas, cruce de compras.
     resultado = models.JSONField(default=dict, blank=True)
+    sha256 = models.CharField(max_length=64, blank=True, default='')
+    estado_registro = models.CharField(max_length=20, blank=True, default='')
+    datos_actualizados_al = models.DateField(null=True, blank=True)
+    encabezados = models.JSONField(default=list, blank=True)
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     subida = models.DateTimeField(auto_now_add=True)
 
@@ -772,6 +788,24 @@ class DocumentoTributario(models.Model):
     folio = models.BigIntegerField()
     fecha_emision = models.DateField()
     pedido = models.ForeignKey(Pedido, on_delete=models.SET_NULL, null=True, blank=True, related_name="documentos")
+    operacion = models.CharField(max_length=7, choices=[('ventas', 'Ventas'), ('compras', 'Compras')], default='ventas')
+    rut_emisor = models.CharField(max_length=15, blank=True, default='')
+    periodo_tributario = models.CharField(max_length=7, blank=True, default='', db_index=True)
+    factura = models.ForeignKey(Factura, on_delete=models.SET_NULL, null=True, blank=True, related_name='documentos_sii')
+    gasto = models.ForeignKey(Gasto, on_delete=models.SET_NULL, null=True, blank=True, related_name='documentos_sii')
+    nota_compra = models.ForeignKey(NotaCredito, on_delete=models.SET_NULL, null=True, blank=True, related_name='documentos_sii')
+    anticipo = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    otros_impuestos = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    iva_no_recuperable = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    iva_uso_comun = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    credito_validado = models.BooleanField(default=False)
+    anticipo_validado = models.BooleanField(default=False)
+    estado_conciliacion = models.CharField(max_length=20, default='sin_coincidencia')
+    conciliado_por = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    conciliado_el = models.DateTimeField(null=True, blank=True)
+    justificacion = models.TextField(blank=True, default='')
+    datos_originales = models.JSONField(default=dict, blank=True)
+    actualizado = models.DateTimeField(auto_now=True)
     rut_receptor = models.CharField(max_length=15, blank=True, default='')
     razon_social = models.CharField(max_length=150, blank=True, default='')
     exento = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -794,8 +828,39 @@ class DocumentoTributario(models.Model):
 
     class Meta:
         ordering = ['-fecha_emision', '-folio']
-        constraints = [models.UniqueConstraint(fields=['tipo', 'folio', 'ambiente'], name='documento_tipo_folio_ambiente_unico')]
+        constraints = [
+            models.UniqueConstraint(fields=['tipo', 'folio', 'rut_emisor', 'rut_receptor', 'ambiente'], name='documento_identidad_tributaria_unica'),
+            models.CheckConstraint(condition=(models.Q(pedido__isnull=True) | models.Q(factura__isnull=True, gasto__isnull=True, nota_compra__isnull=True)) & (models.Q(factura__isnull=True) | models.Q(gasto__isnull=True, nota_compra__isnull=True)) & (models.Q(gasto__isnull=True) | models.Q(nota_compra__isnull=True)), name='documento_un_solo_vinculo'),
+        ]
 
     @property
     def es_nota_credito(self):
         return self.tipo == 61
+
+
+class HistorialConciliacion(models.Model):
+    documento = models.ForeignKey(DocumentoTributario, on_delete=models.PROTECT, related_name='historial_conciliacion')
+    accion = models.CharField(max_length=30)
+    antes = models.JSONField(default=dict)
+    despues = models.JSONField(default=dict)
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='+')
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+
+class CierreTributario(models.Model):
+    """Parámetros verificables por mes y copia de lo efectivamente declarado."""
+    mes = models.CharField(max_length=7, unique=True)
+    tasa_ppm = models.DecimalField(max_digits=7, decimal_places=4, null=True, blank=True)
+    base_ppm = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    ppm_informado_sii = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    remanente_anterior = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    remanente_anticipo_anterior = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    otros_impuestos = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    retenciones = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    fundamento = models.TextField(blank=True, default='')
+    declarado = models.JSONField(default=dict, blank=True)
+    historial = models.JSONField(default=list, blank=True)
+    actualizado = models.DateTimeField(auto_now=True)

@@ -6,6 +6,7 @@ from . import views_tesoreria as tes
 from . import views_conteo as conteo
 from . import views_periodos as periodos
 from . import views_cierre as cierre
+from . import views_conciliacion as conciliacion
 
 urlpatterns = [
     path('productos/', ProductosView.as_view(), name='productos'),
@@ -70,6 +71,9 @@ urlpatterns = [
     path('cierre/documentos/', cierre.DocumentoListView.as_view(), name='cierre_documentos'),
     path('cierre/documentos/<int:pk>/', cierre.DocumentoDetailView.as_view(), name='cierre_documento'),
     path('cierre/sii/', cierre.ImportacionSIIView.as_view(), name='cierre_sii'),
+    path('cierre/conciliacion/', conciliacion.ConciliacionMesView.as_view(), name='conciliacion_mes'),
+    path('cierre/conciliacion/<int:pk>/', conciliacion.ConciliacionDocumentoView.as_view(), name='conciliacion_documento'),
+    path('cierre/pedidos/<int:pk>/entrega/', conciliacion.FechaEntregaView.as_view(), name='fecha_entrega'),
     path('cierre/pedidos/<int:pk>/emitir-boleta/', cierre.EmitirBoletaView.as_view(), name='emitir_boleta'),
     path('cierre/documentos/<int:pk>/estado/', cierre.EstadoDocumentoView.as_view(), name='estado_documento'),
     path('token/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),

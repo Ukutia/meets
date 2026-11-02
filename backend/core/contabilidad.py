@@ -4,11 +4,9 @@ Convenciones (las mismas de todo el sistema):
 - Precios de venta (DetallePedido.total_venta) CON IVA incluido (precio de boleta).
 - Costos de compra (DetalleFactura, DetallePedido.total_costo) NETOS, sin IVA.
 
-IVA (como en el Formulario 29): el débito sale de las VENTAS del mes y el
-crédito de las COMPRAS del mes (facturas de proveedor, menos sus notas de
-crédito, más el anticipo de IVA de la carne, más el IVA de gastos con factura). No del costo de lo vendido: la
-mercadería comprada este mes da crédito este mes aunque se venda el próximo.
-Si el crédito supera al débito queda remanente para el mes siguiente.
+Las cifras comerciales son estimaciones. La preparación tributaria usa el
+RCV y los parámetros mensuales de conciliacion.resumen_mes. El anticipo de
+carne se mantiene independiente del IVA crédito normal.
 """
 from decimal import Decimal
 
@@ -16,7 +14,7 @@ from django.db.models import DecimalField, OuterRef, Subquery, Sum
 from django.db.models.functions import Coalesce, TruncMonth
 
 from .models import (AjusteInventario, ConfiguracionContable, DetalleFactura,
-                     DetallePedido, DocumentoTributario, Factura, Gasto, NotaCredito)
+                     DetallePedido, DocumentoTributario, Factura, Gasto, NotaCredito, CierreTributario)
 
 CERO = Decimal('0')
 
@@ -89,9 +87,9 @@ def resumen_mensual(desde=None, hasta=None):
     iva_rate = factor_iva(config)
 
     ventas = _por_mes(lineas_venta(), 'fecha', ventas='total_venta', costo='total_costo')
-    documentos = _por_mes(DocumentoTributario.objects.filter(ambiente='produccion').exclude(tipo=61),
+    documentos = _por_mes(DocumentoTributario.objects.filter(operacion='ventas', ambiente='produccion').exclude(tipo=61),
                           'fecha_emision', iva='iva')
-    notas_venta = _por_mes(DocumentoTributario.objects.filter(ambiente='produccion', tipo=61),
+    notas_venta = _por_mes(DocumentoTributario.objects.filter(operacion='ventas', ambiente='produccion', tipo=61),
                            'fecha_emision', iva='iva')
     compras = _por_mes(Factura.objects.all(), 'fecha', neto='subtotal', iva='iva', anticipo='anticipo_iva')
     notas = _por_mes(NotaCredito.objects.all(), 'fecha', neto='neto', iva='iva')
@@ -101,8 +99,11 @@ def resumen_mensual(desde=None, hasta=None):
         clave = m.fecha.strftime('%Y-%m')
         mermas[clave] = mermas.get(clave, CERO) + valor
 
+    meses_rcv = {periodo or fecha.strftime('%Y-%m') for periodo, fecha in
+                 DocumentoTributario.objects.filter(ambiente='produccion').values_list('periodo_tributario', 'fecha_emision')}
     meses = sorted(set(ventas) | set(compras) | set(notas) | set(gastos) | set(mermas)
-                   | set(documentos) | set(notas_venta))
+                   | set(documentos) | set(notas_venta) | meses_rcv
+                   | set(CierreTributario.objects.values_list('mes', flat=True)))
     filas = []
     remanente = CERO
     remanente_sii = CERO
@@ -117,17 +118,19 @@ def resumen_mensual(desde=None, hasta=None):
         iva_compras = c.get('iva', CERO) - n.get('iva', CERO)
         iva_anticipo = c.get('anticipo', CERO)
         iva_gastos = g.get('iva', CERO)
-        iva_credito = iva_compras + iva_anticipo + iva_gastos
+        iva_credito = iva_compras + iva_gastos
 
         remanente_anterior = remanente
         saldo = iva_debito - iva_credito - remanente_anterior
         iva_a_pagar = max(saldo, CERO)
         remanente = max(-saldo, CERO)
-        iva_debito_sii = documentos.get(mes, {}).get('iva', CERO) - notas_venta.get(mes, {}).get('iva', CERO)
-        remanente_anterior_sii = remanente_sii
-        saldo_sii = iva_debito_sii - iva_credito - remanente_anterior_sii
-        iva_a_pagar_sii = max(saldo_sii, CERO)
-        remanente_sii = max(-saldo_sii, CERO)
+        from .conciliacion import resumen_mes
+        tributario = resumen_mes(mes)
+        f29 = tributario['f29_estimado']
+        iva_debito_sii = f29['iva_debito']
+        remanente_anterior_sii = f29['remanente_anterior'] or CERO
+        iva_a_pagar_sii = f29['iva_a_pagar']
+        remanente_sii = f29['remanente_siguiente']
 
         gastos_netos = g.get('neto', CERO)
         merma = mermas.get(mes, CERO)
@@ -154,6 +157,9 @@ def resumen_mensual(desde=None, hasta=None):
             'iva_a_pagar': iva_a_pagar,
             'remanente': remanente,
             'iva_debito_sii': iva_debito_sii,
+            'iva_credito_sii': f29['iva_credito'],
+            'anticipo_imputado_sii': f29['anticipo_imputado'],
+            'advertencias_tributarias': tributario['advertencias'],
             'remanente_anterior_sii': remanente_anterior_sii,
             'iva_a_pagar_sii': iva_a_pagar_sii,
             'remanente_sii': remanente_sii,

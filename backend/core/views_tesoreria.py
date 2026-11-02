@@ -401,7 +401,7 @@ class ContabilidadView(APIView):
         # Por cobrar / por pagar a la fecha (no depende del rango).
         pedidos_abiertos = Pedido.objects.filter(estado__in=['Preparado', 'Reservado']).aggregate(t=Sum('total'))['t'] or 0
         facturas_pendientes = Factura.objects.filter(pago_factura__isnull=True)
-        por_pagar = sum((f.total - f.total_notas_credito() for f in facturas_pendientes), Decimal('0'))
+        por_pagar = sum((f.monto_pagadero() for f in facturas_pendientes.prefetch_related('notas_credito')), Decimal('0'))
         vencidas = facturas_pendientes.filter(fecha_vencimiento__lt=hoy).count()
         saldo_banco = MovimientoBancario.objects.exclude(saldo__isnull=True).order_by('-fecha', '-id').values_list('saldo', flat=True).first()
         sin_clasificar = MovimientoBancario.objects.filter(categoria='sin_clasificar').count()

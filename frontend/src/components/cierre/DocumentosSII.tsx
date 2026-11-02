@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, FileUp, Info } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
@@ -22,6 +23,9 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
   const { toast } = useToast();
   const archivo = useRef<HTMLInputElement>(null);
   const [ultima, setUltima] = useState<Importacion | null>(null);
+  const [operacion, setOperacion] = useState('ventas');
+  const [estado, setEstado] = useState('registrado');
+  const [actualizado, setActualizado] = useState('');
 
   const { data: importaciones = [] } = useQuery({
     queryKey: ['importaciones-sii'],
@@ -33,6 +37,9 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
       const fd = new FormData();
       fd.append('archivo', file);
       fd.append('mes', mes);
+      fd.append('operacion', operacion);
+      fd.append('estado_registro', estado);
+      if (actualizado) fd.append('datos_actualizados_al', actualizado);
       return importarArchivoSII(fd);
     },
     onSuccess: (r) => {
@@ -40,6 +47,8 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
       queryClient.invalidateQueries({ queryKey: ['importaciones-sii'] });
       queryClient.invalidateQueries({ queryKey: ['cierre-ventas'] });
       queryClient.invalidateQueries({ queryKey: ['proveedores'] });
+      queryClient.invalidateQueries({ queryKey: ['conciliacion'] });
+      queryClient.invalidateQueries({ queryKey: ['contabilidad'] });
       toast({ title: 'Archivo procesado' });
     },
     onError: (e: any) => toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo leer el archivo', variant: 'destructive' }),
@@ -64,6 +73,22 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-3">
+            <label className="text-sm">Archivo
+              <Select value={operacion} onValueChange={setOperacion}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>
+                <SelectItem value="ventas">Ventas / boletas</SelectItem><SelectItem value="compras">Compras</SelectItem>
+              </SelectContent></Select>
+            </label>
+            {operacion === 'compras' && <label className="text-sm">Sección descargada del SII
+              <Select value={estado} onValueChange={setEstado}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>
+                <SelectItem value="registrado">Registradas</SelectItem><SelectItem value="pendiente">Pendientes</SelectItem>
+                <SelectItem value="reclamado">Reclamadas</SelectItem><SelectItem value="no_incluir">No incluir</SelectItem>
+              </SelectContent></Select>
+            </label>}
+            <label className="text-sm">Datos del SII actualizados al (opcional)
+              <Input type="date" value={actualizado} onChange={e => setActualizado(e.target.value)} />
+            </label>
+          </div>
           <input ref={archivo} type="file" accept=".csv,text/csv" className="hidden"
             onChange={(e) => e.target.files?.[0] && subir.mutate(e.target.files[0])} />
           <Button onClick={() => archivo.current?.click()} disabled={subir.isPending}>
@@ -71,7 +96,8 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
           </Button>
           <p className="flex gap-2 text-xs text-muted-foreground">
             <Info className="h-4 w-4 shrink-0" />
-            Las boletas del portal gratuito llegan solo como totales en el resumen; el folio de cada boleta se ingresa en el pedido.
+            El detalle de boletas permite conciliar cada folio. Un resumen solo comprueba cobertura y no crea documentos individuales.
+            El período tributario seleccionado se conserva separado de la emisión y de la entrega.
           </p>
           {ultima && <ResultadoImportacion imp={ultima} />}
         </CardContent>
@@ -149,7 +175,7 @@ function ResultadoImportacion({ imp }: { imp: Importacion }) {
 
       {imp.tipo === 'ventas' && (
         <>
-          <p>{r.nuevos} documento(s) nuevo(s), {r.actualizados} ya estaban. {r.asociados} se asociaron solos a su pedido.</p>
+          <p>{r.nuevos} documento(s) nuevo(s), {r.actualizados} actualizados. Los candidatos comerciales se confirman en Conciliación tributaria.</p>
           {r.fechas_corregidas?.length > 0 && (
             <p className="text-amber-700 dark:text-amber-400">
               {r.fechas_corregidas.length} documento(s) tenían otra fecha ingresada a mano; quedó la fecha del SII.
@@ -183,7 +209,7 @@ function ResultadoImportacion({ imp }: { imp: Importacion }) {
 
       {imp.tipo === 'compras' && (
         <div className="space-y-3">
-          <p>{r.calzan} factura(s) calzan con el sistema.</p>
+          <p>{r.nuevos} documentos nuevos, {r.actualizados} actualizados; {r.asociados} vínculos por folio y RUT. Revisa diferencias y anticipos en Conciliación tributaria.</p>
           {r.ruts_completados?.length > 0 && (
             <p className="text-muted-foreground">Se completó el RUT de: {r.ruts_completados.map((x: any) => x.proveedor).join(', ')}.</p>
           )}

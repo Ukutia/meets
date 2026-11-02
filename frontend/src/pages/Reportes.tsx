@@ -227,7 +227,7 @@ export default function Reportes() {
           accent="text-blue-600"
         />
         <StatCard
-          title={Number(total?.iva_a_pagar) >= 0 ? 'IVA a Pagar' : 'IVA a Favor'}
+          title={Number(total?.iva_a_pagar) >= 0 ? 'IVA comercial estimado a pagar' : 'IVA comercial estimado a favor'}
           value={clp(Math.abs(Number(total?.iva_a_pagar ?? 0)))}
           description="Débito de venta − crédito de compra"
           icon={Landmark}
@@ -280,10 +280,10 @@ export default function Reportes() {
 
           <Card>
             <CardHeader>
-              <CardTitle>IVA por Mes (Formulario 29)</CardTitle>
+              <CardTitle>IVA comercial estimado por mes</CardTitle>
               <p className="text-xs text-muted-foreground">
-                Débito fiscal (IVA recargado en las ventas) menos crédito fiscal (IVA pagado en las
-                compras). Si el neto es negativo, queda como crédito/remanente a favor del negocio.
+                Estimación desde operaciones internas. Para preparar el F29 usa Conciliación tributaria en Cierre de mes,
+                con documentos del SII, crédito procedente y anticipos validados por separado.
               </p>
             </CardHeader>
             <CardContent>

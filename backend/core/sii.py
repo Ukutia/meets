@@ -1,55 +1,59 @@
-"""Lectura del Registro de Compras y Ventas (RCV) que se descarga desde sii.cl
-(Servicios online > Factura electrónica > Registro de compras y ventas >
-Descargar detalles / Descargar resumen). Son CSV separados por ';'.
+"""Importación RCV conservadora: nunca crea ventas ni modifica inventario.
 
-Tres formatos:
-- ventas: una fila por documento emitido (facturas, notas). Las boletas
-  normalmente no vienen aquí, solo en el resumen.
-- compras: una fila por documento recibido de proveedores. El anticipo de IVA
-  de la carne viene en "Otro impuesto" con código 17 o 18.
-- resumen: una fila por tipo de documento con cantidad y montos del mes.
-
-El cruce con pedidos y facturas vive aquí para que la vista solo orqueste.
+Encabezados heredados del lector existente. Validación con CSV reales de la
+empresa pendiente; variantes desconocidas fallan sin importar parcialmente.
 """
 import csv
+import hashlib
 import io
+import json
 import re
 import unicodedata
 from collections import Counter
-from datetime import timedelta
+from datetime import date
 from decimal import Decimal
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Sum
-
 from .cartola import parse_fecha
-from .models import DocumentoTributario, Factura, NotaCredito, Pedido, TIPOS_DTE
+from .models import ConfiguracionContable, DocumentoTributario, TIPOS_DTE
 
 TIPOS_VALIDOS = {t for t, _ in TIPOS_DTE}
 CODIGOS_ANTICIPO_CARNE = {17, 18}
 TOLERANCIA = Decimal('2')
-
-# Nombre normalizado de la columna en el CSV -> campo. Coincidencia exacta:
-# "monto iva" no debe tomar "monto iva no recuperable".
 COLUMNAS = {
-    'tipo': ['tipo doc', 'tipo documento', 'tipo dte'],
-    'folio': ['folio'],
+    'tipo': ['tipo doc', 'tipo documento', 'tipo dte'], 'folio': ['folio'],
     'fecha': ['fecha docto', 'fecha documento', 'fecha emision'],
     'rut': ['rut cliente', 'rut proveedor', 'rut receptor'],
-    'razon_social': ['razon social'],
-    'exento': ['monto exento'],
-    'neto': ['monto neto'],
-    'iva': ['monto iva', 'monto iva recuperable'],
-    'total': ['monto total'],
-    'cantidad': ['total documentos'],
-    'codigo_otro': ['codigo otro impuesto', 'codigo otro imp'],
+    'emisor': ['rut emisor'], 'receptor': ['rut receptor'],
+    'razon_social': ['razon social'], 'exento': ['monto exento'],
+    'neto': ['monto neto'], 'iva': ['monto iva recuperable', 'monto iva'],
+    'no_recuperable': ['monto iva no recuperable', 'monto iva no rec'],
+    'uso_comun': ['monto iva uso comun'], 'total': ['monto total'],
+    'cantidad': ['total documentos'], 'codigo_otro': ['codigo otro impuesto', 'codigo otro imp'],
     'valor_otro': ['valor otro impuesto', 'valor otro imp'],
+    'estado': ['estado', 'estado sii', 'estado documento'], 'periodo': ['periodo tributario'],
 }
+ESTADOS = {'registro': 'registrado', 'registrado': 'registrado', 'registradas': 'registrado',
+           'pendiente': 'pendiente', 'pendientes': 'pendiente', 'reclamado': 'reclamado',
+           'reclamadas': 'reclamado', 'no incluir': 'no_incluir', 'emitido': 'emitido'}
+
+
+def json_seguro(value):
+    return json.loads(json.dumps(value, cls=DjangoJSONEncoder))
+
+
+def validar_mes(mes):
+    if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', str(mes or '')):
+        raise ValueError('Período inválido, usa AAAA-MM')
+    date.fromisoformat(mes + '-01')
+    return mes
 
 
 def filtro_mes(campo, mes):
-    """'2026-10' -> {'campo__year': 2026, 'campo__month': 10}"""
-    anio, m = mes.split('-')
-    return {f'{campo}__year': int(anio), f'{campo}__month': int(m)}
+    validar_mes(mes)
+    anio, m = map(int, mes.split('-'))
+    return {f'{campo}__year': anio, f'{campo}__month': m}
 
 
 def _norm(texto):
@@ -61,18 +65,40 @@ def normalizar_rut(rut):
     return re.sub(r'[^0-9K]', '', str(rut or '').upper()).lstrip('0')
 
 
+def validar_rut(rut):
+    texto = str(rut or '').strip().upper()
+    if not re.fullmatch(r'[\d.]+-?[\dK]', texto):
+        raise ValueError(f'RUT inválido: {rut}')
+    r = normalizar_rut(texto)
+    if not 2 <= len(r) <= 9 or not r[:-1].isdigit():
+        raise ValueError(f'RUT inválido: {rut}')
+    suma = sum(int(n) * (2 + i % 6) for i, n in enumerate(reversed(r[:-1])))
+    dv = 11 - suma % 11
+    esperado = '0' if dv == 11 else 'K' if dv == 10 else str(dv)
+    if r[-1] != esperado:
+        raise ValueError(f'Dígito verificador inválido: {rut}')
+    return f'{r[:-1]}-{r[-1]}'
+
+
 def _monto(valor):
-    s = re.sub(r'[^\d-]', '', str(valor or '').split(',')[0])
-    return Decimal(s) if s not in ('', '-') else Decimal('0')
+    s = str(valor or '').strip().replace('$', '').replace(' ', '')
+    if not s:
+        return Decimal('0')
+    if not re.fullmatch(r'-?(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{1,2})?', s):
+        raise ValueError(f'Monto chileno inválido: {valor}')
+    monto = Decimal(s.replace('.', '').replace(',', '.'))
+    if abs(monto) >= Decimal('10000000000'):
+        raise ValueError('Monto fuera de rango')
+    return monto
 
 
 def _entero(valor):
-    m = re.findall(r'\d+', str(valor or ''))
-    return int(m[-1]) if m else None
+    m = re.fullmatch(r'(?:[^\d]*\()?([0-9]+)\)?', str(valor or '').strip())
+    return int(m.group(1)) if m else None
 
 
 def _decodificar(contenido):
-    for codificacion in ('utf-8-sig', 'latin-1'):
+    for codificacion in ('utf-8-sig', 'cp1252'):
         try:
             return contenido.decode(codificacion)
         except UnicodeDecodeError:
@@ -80,196 +106,170 @@ def _decodificar(contenido):
     raise ValueError('No se pudo leer el archivo')
 
 
-def leer_rcv(contenido, nombre_archivo=''):
-    """bytes del CSV -> {'tipo': ventas|compras|resumen, 'mes': 'YYYY-MM', 'filas': [dict]}"""
+def leer_rcv(contenido, nombre_archivo='', operacion=''):
     texto = _decodificar(contenido)
     separador = ';' if texto.count(';') >= texto.count(',') else ','
     filas = list(csv.reader(io.StringIO(texto), delimiter=separador))
-
-    encabezado_idx = next((i for i, f in enumerate(filas[:20])
-                           if {'folio', 'total documentos'} & {_norm(c) for c in f}), None)
-    if encabezado_idx is None:
-        raise ValueError('No parece un archivo del Registro de Compras y Ventas del SII '
-                         '(no se encontró la columna Folio ni Total Documentos)')
-    encabezado = [_norm(c) for c in filas[encabezado_idx]]
-    mapa = {}
-    for campo, nombres in COLUMNAS.items():
-        for nombre in nombres:
-            if nombre in encabezado:
-                mapa[campo] = encabezado.index(nombre)
-                break
-
+    idx = next((i for i, f in enumerate(filas[:20])
+                if {'folio', 'total documentos'} & {_norm(c) for c in f}), None)
+    if idx is None:
+        raise ValueError('No se reconoce el encabezado RCV (Folio / Total Documentos)')
+    encabezado = [_norm(c) for c in filas[idx]]
+    if len([c for c in encabezado if c]) != len(set(c for c in encabezado if c)):
+        raise ValueError('Encabezados repetidos: requiere revisión del formato')
+    mapa = {campo: encabezado.index(n) for campo, nombres in COLUMNAS.items()
+            for n in reversed(nombres) if n in encabezado}
     if 'cantidad' in mapa:
         tipo = 'resumen'
     elif 'rut proveedor' in encabezado:
         tipo = 'compras'
     elif 'rut cliente' in encabezado:
         tipo = 'ventas'
+    elif operacion in ('compras', 'ventas') and ('receptor' in mapa or operacion == 'ventas'):
+        tipo = operacion
     else:
-        raise ValueError('No se reconoce si el archivo es de ventas o de compras')
-    if tipo != 'resumen' and not {'tipo', 'folio', 'total'} <= set(mapa):
-        raise ValueError('Al archivo le faltan columnas (Tipo Doc, Folio o Monto Total)')
-
+        raise ValueError('Indica ventas/boletas o compras; no se reconoce la contraparte')
+    requeridas = {'tipo', 'total', 'neto', 'exento', 'iva'}
+    if tipo != 'resumen':
+        requeridas |= {'folio', 'fecha'}
+    if not requeridas <= mapa.keys():
+        raise ValueError('Faltan columnas: ' + ', '.join(sorted(requeridas - mapa.keys())))
+    if tipo == 'compras' and 'monto iva recuperable' not in encabezado:
+        raise ValueError('Compras requiere Monto IVA Recuperable; no se deduce del IVA total')
     resultado = []
-    for f in filas[encabezado_idx + 1:]:
+    for numero, f in enumerate(filas[idx + 1:], start=idx + 2):
         if not any(c.strip() for c in f):
             continue
-        celda = lambda campo: f[mapa[campo]] if campo in mapa and mapa[campo] < len(f) else ''
-        fila = {
-            'tipo': _entero(celda('tipo')),
-            'folio': _entero(celda('folio')),
-            'fecha': parse_fecha(celda('fecha').strip()),
-            'rut': celda('rut').strip(),
-            'razon_social': celda('razon_social').strip(),
-            'exento': _monto(celda('exento')),
-            'neto': _monto(celda('neto')),
-            'iva': _monto(celda('iva')),
-            'total': _monto(celda('total')),
-            'cantidad': _entero(celda('cantidad')) or 0,
-            'codigo_otro': _entero(celda('codigo_otro')),
-            'valor_otro': _monto(celda('valor_otro')),
-        }
-        if fila['tipo'] is None or (tipo != 'resumen' and fila['folio'] is None):
-            continue  # filas de totales o notas al pie
-        resultado.append(fila)
+        if len(f) != len(encabezado):
+            raise ValueError(f'Fila {numero}: cantidad de columnas distinta del encabezado')
+        celda = lambda campo: f[mapa[campo]].strip() if campo in mapa else ''
+        try:
+            dte = _entero(celda('tipo'))
+            if dte not in TIPOS_VALIDOS:
+                raise ValueError(f'Tipo de documento no soportado: {celda("tipo")}')
+            folio = celda('folio')
+            if tipo != 'resumen' and (not re.fullmatch(r'\d{1,10}', folio) or int(folio) <= 0):
+                raise ValueError('Folio inválido')
+            fecha_texto = celda('fecha')
+            if tipo != 'resumen' and not re.fullmatch(r'(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?', fecha_texto):
+                raise ValueError('La fecha debe incluir día, mes y año completo')
+            fecha = parse_fecha(fecha_texto)
+            if tipo != 'resumen' and not fecha:
+                raise ValueError('Fecha de emisión inválida')
+            rut = validar_rut(celda('rut')) if celda('rut') else ''
+            if tipo == 'compras' and not rut:
+                raise ValueError('Falta RUT del proveedor')
+            if tipo == 'ventas' and dte not in (39, 41) and not rut:
+                raise ValueError('Falta RUT del receptor')
+            estado = celda('estado')
+            if estado and _norm(estado) not in ESTADOS:
+                raise ValueError(f'Estado SII no soportado: {estado}')
+            fila = {'tipo': dte, 'folio': int(folio) if folio else None,
+                    'fecha': fecha, 'rut': rut, 'razon_social': celda('razon_social'),
+                    'cantidad': _entero(celda('cantidad')) or 0,
+                    'codigo_otro': _entero(celda('codigo_otro')),
+                    'estado': ESTADOS.get(_norm(estado), ''),
+                    'emisor': validar_rut(celda('emisor')) if celda('emisor') else '',
+                    'receptor': validar_rut(celda('receptor')) if celda('receptor') else '',
+                    'periodo': celda('periodo'), 'original': dict(zip(filas[idx], f))}
+            for campo in ('exento', 'neto', 'iva', 'total', 'valor_otro', 'no_recuperable', 'uso_comun'):
+                fila[campo] = _monto(celda(campo))
+                if fila[campo] < 0:
+                    raise ValueError('Los montos deben ser positivos; el signo lo determina el tipo DTE')
+            if fila['valor_otro'] and fila['codigo_otro'] is None:
+                raise ValueError('Otro impuesto sin código: requiere revisión')
+            resultado.append(fila)
+        except ValueError as exc:
+            raise ValueError(f'Fila {numero}: {exc}') from exc
+    meses = Counter(f['fecha'].strftime('%Y-%m') for f in resultado if f['fecha'])
+    m = re.search(r'(20\d{2})(0[1-9]|1[0-2])', nombre_archivo)
+    mes = meses.most_common(1)[0][0] if meses else f'{m[1]}-{m[2]}' if m else ''
+    rut_archivo = re.search(r'(?<!\d)(\d{1,2}\.?\d{3}\.?\d{3}-[\dKk])(?!\d)', nombre_archivo)
+    return {'tipo': tipo, 'mes': mes, 'filas': resultado, 'encabezados': filas[idx],
+            'rut_empresa_archivo': validar_rut(rut_archivo[1]) if rut_archivo else '',
+            'sha256': hashlib.sha256(contenido).hexdigest()}
 
-    return {'tipo': tipo, 'mes': _mes(resultado, nombre_archivo), 'filas': resultado}
 
-
-def _mes(filas, nombre_archivo):
-    meses = Counter(f['fecha'].strftime('%Y-%m') for f in filas if f['fecha'])
-    if meses:
-        return meses.most_common(1)[0][0]
-    m = re.search(r'(20\d{2})(0[1-9]|1[0-2])', nombre_archivo or '')
-    return f'{m.group(1)}-{m.group(2)}' if m else ''
-
-
-# --- Ventas -----------------------------------------------------------------
-
-def buscar_pedido(doc):
-    """El pedido que corresponde a un documento de venta, si hay uno solo
-    candidato: mismo RUT de cliente, mismo total (±$2) y vendido entre 60 días
-    antes y 3 días después de la emisión, sin otro documento ya asociado."""
-    if doc.tipo not in (33, 34, 39, 41) or not doc.fecha_emision:
-        return None
-    desde, hasta = doc.fecha_emision - timedelta(days=60), doc.fecha_emision + timedelta(days=3)
-    candidatos = (Pedido.objects.exclude(estado='Anulado')
-                  .filter(fecha__date__gte=desde, fecha__date__lte=hasta,
-                          total__gte=doc.total - TOLERANCIA, total__lte=doc.total + TOLERANCIA)
-                  .exclude(documentos__tipo__in=[33, 34, 39, 41], documentos__ambiente='produccion')
-                  .select_related('cliente'))
-    rut = normalizar_rut(doc.rut_receptor)
-    if rut:
-        candidatos = [p for p in candidatos if normalizar_rut(p.cliente.rut) == rut]
-    else:
-        candidatos = list(candidatos)
-    return candidatos[0] if len(candidatos) == 1 else None
+def importar_documentos(filas, importacion, usuario):
+    from .conciliacion import auditar, instantanea, coincidencia_exacta, fila_documento
+    empresa = validar_rut(ConfiguracionContable.actual().rut_empresa)
+    nuevos = actualizados = asociados = 0
+    claves = {}
+    for f in filas:
+        venta = importacion.tipo == 'ventas'
+        emisor = f['emisor'] or (empresa if venta else f['rut'])
+        receptor = f['receptor'] or (f['rut'] if venta else empresa)
+        if (venta and emisor != empresa) or (not venta and receptor != empresa):
+            raise ValueError('El RUT de la empresa no coincide con el archivo')
+        clave = (f['tipo'], f['folio'], emisor, receptor)
+        if clave in claves:
+            if claves[clave] != f:
+                raise ValueError(f'Documento duplicado con datos distintos: folio {f["folio"]}')
+            continue
+        claves[clave] = f
+        periodo = validar_mes(f['periodo'] or importacion.mes)
+        if periodo != importacion.mes:
+            raise ValueError('El período de la fila difiere del seleccionado')
+        if venta and f['fecha'].strftime('%Y-%m') != periodo:
+            raise ValueError('El período de ventas debe coincidir con la emisión tributaria; no se traslada al mes seleccionado')
+        doc = DocumentoTributario.objects.select_for_update().filter(
+            tipo=f['tipo'], folio=f['folio'], rut_emisor=emisor, rut_receptor=receptor, ambiente='produccion').first()
+        if not doc and venta:
+            previos = list(DocumentoTributario.objects.select_for_update().filter(
+                tipo=f['tipo'], folio=f['folio'], ambiente='produccion', operacion='ventas'))
+            previos = [d for d in previos if (not d.rut_emisor or normalizar_rut(d.rut_emisor) == normalizar_rut(empresa))
+                       and (not d.rut_receptor or normalizar_rut(d.rut_receptor) == normalizar_rut(receptor))]
+            if len(previos) == 1:
+                doc = previos[0]
+            elif len(previos) > 1:
+                raise ValueError('Hay documentos locales ambiguos para el mismo folio; revisa su identidad antes de importar')
+        antes = instantanea(doc) if doc else {}
+        if doc:
+            actualizados += 1
+            doc.estado_conciliacion = fila_documento(doc)['estado_conciliacion']
+        else:
+            doc = DocumentoTributario(tipo=f['tipo'], folio=f['folio'], usuario=usuario)
+            nuevos += 1
+        doc.operacion, doc.rut_emisor, doc.rut_receptor = importacion.tipo, emisor, receptor
+        doc.fecha_emision, doc.periodo_tributario = f['fecha'], periodo
+        doc.razon_social = f['razon_social']
+        for campo in ('neto', 'iva', 'exento', 'total'):
+            setattr(doc, campo, f[campo])
+        doc.anticipo = f['valor_otro'] if f['codigo_otro'] in CODIGOS_ANTICIPO_CARNE else Decimal('0')
+        doc.otros_impuestos = f['valor_otro'] - doc.anticipo
+        doc.iva_no_recuperable, doc.iva_uso_comun = f['no_recuperable'], f['uso_comun']
+        doc.estado_sii = f['estado'] or ('emitido' if venta else importacion.estado_registro)
+        if not venta and doc.estado_sii not in ('registrado', 'pendiente', 'reclamado', 'no_incluir'):
+            raise ValueError('Selecciona el estado del registro de compras')
+        credito_anterior = doc.credito_validado
+        doc.origen, doc.importacion, doc.datos_originales = 'sii', importacion, f['original']
+        cambio = any(str(antes.get(k, '')) != str(instantanea(doc).get(k, '')) for k in
+                     ('neto', 'iva', 'total', 'anticipo', 'otros_impuestos', 'estado_sii', 'periodo_tributario',
+                      'iva_no_recuperable', 'iva_uso_comun', 'fecha_emision'))
+        doc.credito_validado = (not venta and doc.estado_sii == 'registrado' and doc.tipo != 46) if cambio else credito_anterior
+        if doc.justificacion and antes.get('credito_validado') is False:
+            doc.credito_validado = False
+        if cambio:
+            doc.anticipo_validado = False
+            doc.estado_conciliacion = 'por_revisar'
+        doc.save()
+        if not doc.justificacion and not any((doc.pedido_id, doc.factura_id, doc.gasto_id, doc.nota_compra_id)):
+            asociados += coincidencia_exacta(doc, usuario)
+        auditar(doc, 'importar', antes, usuario)
+    return {'nuevos': nuevos, 'actualizados': actualizados, 'asociados': asociados,
+            'duplicados_omitidos': len(filas) - len(claves)}
 
 
 def importar_ventas(filas, importacion, usuario):
-    nuevos = actualizados = asociados = 0
-    fechas_corregidas = []
-    for f in filas:
-        if f['tipo'] not in TIPOS_VALIDOS:
-            continue
-        datos = {
-            'fecha_emision': f['fecha'], 'rut_receptor': f['rut'], 'razon_social': f['razon_social'],
-            'exento': f['exento'], 'neto': f['neto'], 'iva': f['iva'], 'total': f['total'],
-            'origen': 'sii', 'importacion': importacion,
-        }
-        doc = DocumentoTributario.objects.filter(tipo=f['tipo'], folio=f['folio'], ambiente='produccion').first()
-        if doc:
-            # El SII manda: si se había registrado a mano con otra fecha, queda la
-            # del SII y se informa.
-            if doc.fecha_emision != f['fecha']:
-                fechas_corregidas.append({'tipo': doc.tipo, 'folio': doc.folio,
-                                          'antes': str(doc.fecha_emision), 'sii': str(f['fecha'])})
-            for k, v in datos.items():
-                setattr(doc, k, v)
-            doc.save()
-            actualizados += 1
-        else:
-            doc = DocumentoTributario(tipo=f['tipo'], folio=f['folio'], usuario=usuario, **datos)
-            nuevos += 1
-        if not doc.pedido_id:
-            doc.pedido = buscar_pedido(doc)
-            asociados += bool(doc.pedido)
-        doc.save()
-    return {'nuevos': nuevos, 'actualizados': actualizados, 'asociados': asociados,
-            'fechas_corregidas': fechas_corregidas}
+    return importar_documentos(filas, importacion, usuario)
 
 
 def resumen_boletas(filas, mes):
-    """Compara el resumen del SII (por tipo de documento) con lo registrado aquí."""
     tipos = []
     for f in filas:
-        if f['tipo'] not in TIPOS_VALIDOS:
-            continue
-        registrado = DocumentoTributario.objects.filter(tipo=f['tipo'], ambiente='produccion',
-                                                         **filtro_mes('fecha_emision', mes))
-        agg = registrado.aggregate(total=Sum('total'))
-        tipos.append({
-            'tipo': f['tipo'], 'cantidad_sii': f['cantidad'], 'total_sii': f['total'],
-            'neto_sii': f['neto'], 'iva_sii': f['iva'],
-            'cantidad_registrada': registrado.count(), 'total_registrado': agg['total'] or Decimal('0'),
-        })
+        docs = DocumentoTributario.objects.filter(operacion='ventas', tipo=f['tipo'], ambiente='produccion',
+                                                 **filtro_mes('fecha_emision', mes))
+        tipos.append({'tipo': f['tipo'], 'cantidad_sii': f['cantidad'], 'total_sii': f['total'],
+                      'neto_sii': f['neto'], 'iva_sii': f['iva'], 'cantidad_registrada': docs.count(),
+                      'total_registrado': docs.aggregate(t=Sum('total'))['t'] or Decimal('0')})
     return {'mes': mes, 'tipos': tipos}
-
-
-# --- Compras ----------------------------------------------------------------
-
-def cruzar_compras(filas, mes):
-    """Compara el registro de compras del SII con las facturas de proveedor del
-    sistema. No crea nada: solo informa diferencias. Completa el RUT del
-    proveedor cuando falta y la factura calza por folio."""
-    encontradas = set()
-    calzan = 0
-    faltan_en_sistema, diferencias, ruts_completados = [], [], []
-    for f in filas:
-        base = {'tipo': f['tipo'], 'folio': f['folio'], 'fecha': str(f['fecha'] or ''),
-                'rut': f['rut'], 'razon_social': f['razon_social'], 'total_sii': f['total']}
-        anticipo_sii = f['valor_otro'] if f['codigo_otro'] in CODIGOS_ANTICIPO_CARNE else Decimal('0')
-
-        if f['tipo'] == 61:
-            nc = NotaCredito.objects.filter(numero=str(f['folio'])).first()
-            if not nc:
-                faltan_en_sistema.append(base)
-            elif abs(nc.total - f['total']) > TOLERANCIA:
-                diferencias.append({**base, 'total_sistema': nc.total, 'motivo': 'Total distinto'})
-            continue
-        if f['tipo'] not in (33, 34, 46):
-            continue
-
-        rut = normalizar_rut(f['rut'])
-        candidatas = [fa for fa in Factura.objects.filter(numero_factura=str(f['folio'])).select_related('proveedor')
-                      if not fa.proveedor.rut or normalizar_rut(fa.proveedor.rut) == rut]
-        if not candidatas:
-            faltan_en_sistema.append({**base, 'anticipo_sii': anticipo_sii})
-            continue
-        factura = candidatas[0]
-        encontradas.add(factura.pk)
-        if not factura.proveedor.rut and rut:
-            factura.proveedor.rut = f['rut']
-            factura.proveedor.save(update_fields=['rut'])
-            ruts_completados.append({'proveedor': factura.proveedor.nombre, 'rut': f['rut']})
-        motivos = []
-        if abs(factura.total - f['total']) > TOLERANCIA:
-            motivos.append('Total distinto')
-        if abs(factura.anticipo_iva - anticipo_sii) > TOLERANCIA:
-            motivos.append('Anticipo IVA carne distinto')
-        if motivos:
-            diferencias.append({**base, 'total_sistema': factura.total, 'anticipo_sii': anticipo_sii,
-                                'anticipo_sistema': factura.anticipo_iva, 'motivo': ' y '.join(motivos)})
-        else:
-            calzan += 1
-
-    faltan_en_sii = []
-    if mes:
-        for fa in Factura.objects.filter(**filtro_mes('fecha', mes)).exclude(pk__in=encontradas).select_related('proveedor'):
-            faltan_en_sii.append({'folio': fa.numero_factura, 'fecha': str(fa.fecha),
-                                  'proveedor': fa.proveedor.nombre, 'total_sistema': fa.total})
-    return {
-        'mes': mes, 'filas': len(filas), 'calzan': calzan,
-        'faltan_en_sistema': faltan_en_sistema, 'faltan_en_sii': faltan_en_sii,
-        'diferencias': diferencias, 'ruts_completados': ruts_completados,
-    }

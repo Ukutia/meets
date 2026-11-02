@@ -13,6 +13,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { DetallePedidoCierre, Etiqueta } from '@/components/cierre/DetallePedidoCierre';
 import { DocumentosSII } from '@/components/cierre/DocumentosSII';
+import { ConciliacionTributaria } from '@/components/cierre/ConciliacionTributaria';
 import { getVendedores, getVentasMes } from '@/services/api';
 import { usePeriodo } from '@/contexts/PeriodoContext';
 import { cn, formatCLP, formatFecha } from '@/lib/utils';
@@ -111,6 +112,7 @@ export default function CierreMes() {
         </div>
       </div>
 
+      <ConciliacionTributaria mes={mes} />
       {isLoading ? <LoadingSpinner /> : error || !data ? <ErrorMessage message="No se pudo cargar el cierre" /> : (
         <>
           {!data.rango && <p className="text-sm text-muted-foreground">El mes elegido queda fuera del período seleccionado. Elige otro mes o período.</p>}

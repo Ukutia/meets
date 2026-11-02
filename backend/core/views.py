@@ -9,7 +9,7 @@ from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_pondera
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import IsAuthenticated
@@ -590,14 +590,25 @@ class CrearFacturaEntrada(APIView):
             # 2. Crear la Factura
             if Factura.objects.filter(numero_factura=data.get('numero_factura')).exists():
                 raise ValidationError("Ya existe una factura con ese número")
+            if int(data.get('tipo_documento') or 33) not in (33, 34, 46):
+                raise ValidationError('Tipo DTE de compra inválido')
+            for campo in ('exento', 'otros_impuestos', 'total_pagadero'):
+                if data.get(campo) is not None:
+                    valor = Decimal(str(data[campo]))
+                    if not valor.is_finite() or valor < 0:
+                        raise ValidationError(f'{campo} inválido')
             factura = Factura.objects.create(
                 numero_factura=data.get('numero_factura'),
+                tipo_documento=int(data.get('tipo_documento') or 33),
                 proveedor=proveedor,
                 fecha=data.get('fecha') or timezone.now().date(),
                 fecha_vencimiento=data.get('fecha_vencimiento') or None,
                 subtotal=Decimal(str(data.get('subtotal', 0))),
                 iva=Decimal(str(data.get('iva', 0))),
                 anticipo_iva=Decimal(str(data.get('anticipo_iva') or 0)),
+                exento=Decimal(str(data.get('exento') or 0)),
+                otros_impuestos=Decimal(str(data.get('otros_impuestos') or 0)),
+                total_pagadero=Decimal(str(data['total_pagadero'])) if data.get('total_pagadero') is not None else None,
                 total=Decimal(str(data.get('total', 0)))
             )
 
@@ -705,6 +716,21 @@ class UpdateFacturaEntrada(APIView):
                     factura.foto = request.FILES['foto']
                 elif data.get('quitar_foto') in (True, 'true', '1'):
                     factura.foto = None
+                if 'tipo_documento' in data:
+                    tipo_doc = int(data['tipo_documento'])
+                    if tipo_doc not in (33, 34, 46):
+                        raise ValidationError('Tipo DTE de compra inválido')
+                    factura.tipo_documento = tipo_doc
+                for campo in ('exento', 'otros_impuestos', 'total_pagadero'):
+                    if campo in data:
+                        valor = data[campo]
+                        if campo == 'total_pagadero' and valor is None:
+                            factura.total_pagadero = None
+                            continue
+                        valor = Decimal(str(valor).replace(',', '.'))
+                        if not valor.is_finite() or valor < 0:
+                            raise ValidationError(f'{campo} inválido')
+                        setattr(factura, campo, valor)
 
                 detalles_put = data.get('detalles', [])
                 if isinstance(detalles_put, str):
@@ -773,14 +799,15 @@ class UpdateFacturaEntrada(APIView):
                 if detalles_put or 'con_anticipo' in data:
                     config = ConfiguracionContable.actual()
                     subtotal = factura.detalles.aggregate(total=Sum('costo_total'))['total'] or Decimal('0')
-                    iva = (subtotal * config.tasa_iva / 100).quantize(Decimal('1'))
+                    iva = ((subtotal * config.tasa_iva / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+                           if factura.tipo_documento != 34 else Decimal('0'))
                     con_anticipo = (str(data['con_anticipo']).lower() in ('true', '1')
                                     if 'con_anticipo' in data else factura.anticipo_iva > 0)
-                    anticipo = (subtotal * config.tasa_anticipo_carne / 100).quantize(Decimal('1')) if con_anticipo else Decimal('0')
+                    anticipo = (subtotal * config.tasa_anticipo_carne / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP) if con_anticipo else Decimal('0')
                     factura.subtotal = subtotal.quantize(Decimal('0.01'))
                     factura.iva = iva
                     factura.anticipo_iva = anticipo
-                    factura.total = (subtotal + iva + anticipo).quantize(Decimal('0.01'))
+                    factura.total = (subtotal + iva + anticipo + factura.exento + factura.otros_impuestos).quantize(Decimal('0.01'))
                 factura.save()
 
                 # Si la edición sumó unidades, pueden cubrir pre-reservas.

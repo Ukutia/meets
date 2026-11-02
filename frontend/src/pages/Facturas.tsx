@@ -196,13 +196,12 @@ export default function Facturas() {
     setNuevoItem({ producto_id: '', cantidad_kilos: '', cantidad_unidades: '0', costo_por_kilo: '' });
   };
 
-  // Al elegir proveedor se propone el anticipo si su última factura lo traía.
+  // Cada documento requiere confirmación; el proveedor no determina el anticipo.
   const proveedorElegido = form.watch('proveedor_id');
   useEffect(() => {
     if (!proveedorElegido) return;
-    const ultima = facturasTodas?.find((f) => String(f.proveedor) === proveedorElegido);
-    setConAnticipo(Number(ultima?.anticipo_iva ?? 0) > 0);
-  }, [proveedorElegido, facturasTodas]);
+    setConAnticipo(false);
+  }, [proveedorElegido]);
 
   const anticipo = conAnticipo ? Math.round(Number(form.watch('subtotal')) * tasaAnticipo) : 0;
   useEffect(() => {
@@ -815,10 +814,13 @@ export default function Facturas() {
                     <span className="font-medium">{formatCLP(selectedFactura.anticipo_iva)}</span>
                   </div>
                 )}
+                <div className="flex justify-between text-sm"><span>Exento / otros impuestos:</span><span>{formatCLP(selectedFactura.exento ?? 0)} / {formatCLP(selectedFactura.otros_impuestos ?? 0)}</span></div>
+                <p className="text-xs text-muted-foreground">El crédito fiscal y la imputación del anticipo se verifican en Conciliación tributaria del cierre mensual.</p>
                 <div className="flex justify-between text-xl font-black text-primary border-t pt-2">
                   <span>TOTAL:</span>
                   <span>${Number(selectedFactura.total).toLocaleString('es-CL')}</span>
                 </div>
+                {selectedFactura.total_pagadero != null && <div className="flex justify-between text-sm"><span>Pagadero según documento:</span><span>{formatCLP(selectedFactura.total_pagadero)}</span></div>}
                 {Number(selectedFactura.total_notas_credito) > 0 && (
                   <>
                     <div className="flex justify-between text-sm text-muted-foreground">

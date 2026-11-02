@@ -163,21 +163,21 @@ class CobrosBancoTests(CierreBase):
 
 
 class ImportacionSIITests(CierreBase):
-    def test_ventas_rcv_crea_y_asocia_factura(self):
-        self.cliente.rut = "76.123.456-7"
+    def test_ventas_rcv_crea_sin_confirmar_candidato_comercial(self):
+        self.cliente.rut = "76.123.456-0"
         self.cliente.save()
         f = self.fecha.strftime("%d/%m/%Y")
         archivo = csv(VENTAS_ENC,
-                      [1, 33, "Del Giro", "76123456-7", "Restaurante SpA", 501, f, f, 0, 20168, 3832, 24000],
+                      [1, 33, "Del Giro", "76123456-0", "Restaurante SpA", 501, f, f, 0, 20168, 3832, 24000],
                       [2, 33, "Del Giro", "11111111-1", "Otro", 502, f, f, 0, 1000, 190, 1190])
         r = self.client.post(reverse("cierre_sii"), {"archivo": archivo})
         self.assertEqual(r.status_code, 201, r.content)
         self.assertEqual(r.json()["tipo"], "ventas")
         self.assertEqual(r.json()["resultado"]["nuevos"], 2)
-        self.assertEqual(r.json()["resultado"]["asociados"], 1)
-        self.assertEqual(DocumentoTributario.objects.get(folio=501).pedido_id, self.pedido.id)
+        self.assertEqual(r.json()["resultado"]["asociados"], 0)
+        self.assertIsNone(DocumentoTributario.objects.get(folio=501).pedido_id)
         datos = self.ventas()
-        self.assertEqual(len(datos["documentos_sin_pedido"]), 1)
+        self.assertEqual(len(datos["documentos_sin_pedido"]), 2)
         # Subirlo de nuevo no duplica.
         archivo.seek(0)
         r = self.client.post(reverse("cierre_sii"), {"archivo": archivo})
@@ -201,14 +201,15 @@ class ImportacionSIITests(CierreBase):
                        198400, 18, 8000, 5],
                       [2, 33, "Del Giro", "77.777.777-7", "Frigorífico", 999, "02/10/2026", 0, 1000, 190, 0,
                        1240, 18, 50, 5])
-        r = self.client.post(reverse("cierre_sii"), {"archivo": archivo})
+        r = self.client.post(reverse("cierre_sii"), {"archivo": archivo, 'estado_registro': 'registrado'})
         self.assertEqual(r.status_code, 201, r.content)
         res = r.json()["resultado"]
         self.assertEqual(r.json()["tipo"], "compras")
-        self.assertEqual([d["folio"] for d in res["diferencias"]], [100])
-        self.assertIn("Anticipo", res["diferencias"][0]["motivo"])
-        self.assertEqual([d["folio"] for d in res["faltan_en_sistema"]], [999])
-        self.assertEqual(res["ruts_completados"][0]["rut"], "77.777.777-7")
+        self.assertEqual(res['nuevos'], 2)
+        self.assertEqual(res['asociados'], 0)  # Sin RUT proveedor no se confirma por folio.
+        self.proveedor.refresh_from_db()
+        self.assertEqual(self.proveedor.rut, '')
+        self.assertEqual(DocumentoTributario.objects.get(folio=100).anticipo, Decimal('8000'))
 
     def test_resumen_boletas(self):
         archivo = csv(["Tipo Documento", "Total Documentos", "Monto Exento", "Monto Neto", "Monto IVA", "Monto Total"],
@@ -224,7 +225,7 @@ class ImportacionSIITests(CierreBase):
 
 
 class AnticipoCarneTests(BaseFinanzas):
-    def test_anticipo_suma_al_total_y_al_credito(self):
+    def test_anticipo_suma_al_total_separado_del_credito_normal(self):
         r = self.client.post(reverse("crear_factura"), {
             "numero_factura": "200", "proveedor": self.proveedor.id, "fecha": "2026-09-10",
             "subtotal": 100000, "iva": 19000, "anticipo_iva": 5000, "total": 124000,
@@ -234,7 +235,7 @@ class AnticipoCarneTests(BaseFinanzas):
         self.assertEqual(r.status_code, 201, r.content)
         fila = next(f for f in resumen_mensual()[0] if f["mes"] == "2026-09")
         self.assertEqual(fila["iva_credito_anticipo"], Decimal("5000"))
-        self.assertEqual(fila["iva_credito"], Decimal("24000"))
+        self.assertEqual(fila["iva_credito"], Decimal("19000"))
 
     def test_editar_lineas_recalcula_anticipo(self):
         Factura.objects.filter(pk="100").update(anticipo_iva=8000, total=198400)

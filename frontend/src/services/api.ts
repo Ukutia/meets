@@ -349,6 +349,11 @@ export const emitirBoleta = (pedidoId: number) =>
   api.post(`/cierre/pedidos/${pedidoId}/emitir-boleta/`, undefined, { timeout: 120_000 });
 export const actualizarEstadoDocumento = (id: number) => api.post(`/cierre/documentos/${id}/estado/`);
 export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
+export const getConciliacionMes = (mes: string) => api.get('/cierre/conciliacion/', { params: { mes } });
+export const guardarConciliacionMes = (data: Record<string, unknown>) => api.put('/cierre/conciliacion/', data);
+export const getConciliacionDocumento = (id: number) => api.get(`/cierre/conciliacion/${id}/`);
+export const vincularDocumentoSII = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/conciliacion/${id}/`, data);
+export const guardarFechaEntrega = (id: number, fecha_entrega: string | null) => api.patch(`/cierre/pedidos/${id}/entrega/`, { fecha_entrega });
 
 export default api;
 

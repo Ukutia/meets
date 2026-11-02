@@ -147,6 +147,10 @@ export interface Factura {
   subtotal: number;
   iva: number;
   anticipo_iva?: number;
+  tipo_documento?: number;
+  exento?: number;
+  otros_impuestos?: number;
+  total_pagadero?: number | null;
 }
 
 // Lo que se le debe al proveedor: el total menos sus notas de crédito.

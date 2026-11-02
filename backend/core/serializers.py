@@ -210,7 +210,7 @@ class PedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'fecha_entrega', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco']
         read_only_fields = ['fecha']
 
     def get_pagado_banco(self, obj):
@@ -320,6 +320,7 @@ class FacturaSerializer(serializers.ModelSerializer):
         model = Factura
         fields = [
             'numero_factura',
+            'tipo_documento', 'exento', 'otros_impuestos', 'total_pagadero',
             'proveedor',
             'proveedor_nombre',
             'fecha',
@@ -340,4 +341,4 @@ class FacturaSerializer(serializers.ModelSerializer):
         return sum((nc.total for nc in obj.notas_credito.all()), Decimal('0'))
 
     def get_total_a_pagar(self, obj):
-        return obj.total - self.get_total_notas_credito(obj)
+        return obj.monto_pagadero()
