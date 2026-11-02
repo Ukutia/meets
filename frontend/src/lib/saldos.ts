@@ -1,4 +1,5 @@
 import type { Pedido, Vendedor } from '@/types';
+import { enRango, type RangoFecha } from '@/lib/utils';
 
 export interface PagoVendedor {
   id: number;
@@ -11,10 +12,11 @@ export interface PagoVendedor {
 }
 
 export interface SaldoVendedor extends Vendedor {
+  saldoInicial: number;
   ventas: number;
   pagos: number;
   adelantos: number;
-  // Lo que el vendedor aún debe rendir: ventas − pagos − adelantos.
+  // Lo que el vendedor aún debe rendir, incluido el saldo anterior.
   // Negativo = saldo a favor del vendedor.
   saldo: number;
 }
@@ -34,18 +36,26 @@ const idVendedorDe = (v: unknown) =>
 export function calcularSaldosVendedores(
   vendedores: Vendedor[],
   pedidos: Pedido[],
-  pagos: PagoVendedor[]
+  pagos: PagoVendedor[],
+  rango: RangoFecha = {}
 ): SaldoVendedor[] {
   return vendedores.map((v) => {
+    const anteriores = rango.desde ? { hasta: rango.desde } : null;
+    const esAnterior = (fecha: string) => !!anteriores && enRango(fecha, anteriores) && !enRango(fecha, { desde: rango.desde });
+    const saldoInicial = pedidos
+      .filter((p) => idVendedorDe(p.vendedor) === v.id && esAnterior(p.fecha))
+      .reduce((s, p) => s + Number(p.total || 0), 0)
+      - pagos.filter((p) => idVendedorDe(p.vendedor) === v.id && esAnterior(p.fecha))
+        .reduce((s, p) => s + Number(p.monto || 0), 0);
     const ventas = pedidos
-      .filter((p) => idVendedorDe(p.vendedor) === v.id)
+      .filter((p) => idVendedorDe(p.vendedor) === v.id && enRango(p.fecha, rango))
       .reduce((s, p) => s + Number(p.total || 0), 0);
     const suma = (tipo: PagoVendedor['tipo']) =>
       pagos
-        .filter((p) => idVendedorDe(p.vendedor) === v.id && p.tipo === tipo)
+        .filter((p) => idVendedorDe(p.vendedor) === v.id && p.tipo === tipo && enRango(p.fecha, rango))
         .reduce((s, p) => s + Number(p.monto || 0), 0);
     const pagosV = suma('pago');
     const adelantos = suma('adelanto');
-    return { ...v, ventas, pagos: pagosV, adelantos, saldo: ventas - pagosV - adelantos };
+    return { ...v, saldoInicial, ventas, pagos: pagosV, adelantos, saldo: saldoInicial + ventas - pagosV - adelantos };
   });
 }

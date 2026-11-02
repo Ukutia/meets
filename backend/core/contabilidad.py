@@ -16,7 +16,7 @@ from django.db.models import DecimalField, OuterRef, Subquery, Sum
 from django.db.models.functions import Coalesce, TruncMonth
 
 from .models import (AjusteInventario, ConfiguracionContable, DetalleFactura,
-                     DetallePedido, Factura, Gasto, NotaCredito)
+                     DetallePedido, DocumentoTributario, Factura, Gasto, NotaCredito)
 
 CERO = Decimal('0')
 
@@ -89,6 +89,10 @@ def resumen_mensual(desde=None, hasta=None):
     iva_rate = factor_iva(config)
 
     ventas = _por_mes(lineas_venta(), 'fecha', ventas='total_venta', costo='total_costo')
+    documentos = _por_mes(DocumentoTributario.objects.filter(ambiente='produccion').exclude(tipo=61),
+                          'fecha_emision', iva='iva')
+    notas_venta = _por_mes(DocumentoTributario.objects.filter(ambiente='produccion', tipo=61),
+                           'fecha_emision', iva='iva')
     compras = _por_mes(Factura.objects.all(), 'fecha', neto='subtotal', iva='iva', anticipo='anticipo_iva')
     notas = _por_mes(NotaCredito.objects.all(), 'fecha', neto='neto', iva='iva')
     gastos = _por_mes(Gasto.objects.all(), 'fecha', neto='neto', iva='iva', total='total')
@@ -97,9 +101,11 @@ def resumen_mensual(desde=None, hasta=None):
         clave = m.fecha.strftime('%Y-%m')
         mermas[clave] = mermas.get(clave, CERO) + valor
 
-    meses = sorted(set(ventas) | set(compras) | set(notas) | set(gastos) | set(mermas))
+    meses = sorted(set(ventas) | set(compras) | set(notas) | set(gastos) | set(mermas)
+                   | set(documentos) | set(notas_venta))
     filas = []
     remanente = CERO
+    remanente_sii = CERO
     for mes in meses:
         v = ventas.get(mes, {})
         ventas_brutas = v.get('ventas', CERO)
@@ -117,6 +123,11 @@ def resumen_mensual(desde=None, hasta=None):
         saldo = iva_debito - iva_credito - remanente_anterior
         iva_a_pagar = max(saldo, CERO)
         remanente = max(-saldo, CERO)
+        iva_debito_sii = documentos.get(mes, {}).get('iva', CERO) - notas_venta.get(mes, {}).get('iva', CERO)
+        remanente_anterior_sii = remanente_sii
+        saldo_sii = iva_debito_sii - iva_credito - remanente_anterior_sii
+        iva_a_pagar_sii = max(saldo_sii, CERO)
+        remanente_sii = max(-saldo_sii, CERO)
 
         gastos_netos = g.get('neto', CERO)
         merma = mermas.get(mes, CERO)
@@ -142,6 +153,10 @@ def resumen_mensual(desde=None, hasta=None):
             'remanente_anterior': remanente_anterior,
             'iva_a_pagar': iva_a_pagar,
             'remanente': remanente,
+            'iva_debito_sii': iva_debito_sii,
+            'remanente_anterior_sii': remanente_anterior_sii,
+            'iva_a_pagar_sii': iva_a_pagar_sii,
+            'remanente_sii': remanente_sii,
             'ppm': ventas_netas * tasa_ppm,
             'impuesto_renta_mes': max(utilidad, CERO) * tasa_renta,
         })

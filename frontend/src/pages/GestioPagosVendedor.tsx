@@ -48,7 +48,7 @@ export default function GestionPagosVendedor() {
     queryKey: ['vendedores'],
     queryFn: async () => (await getVendedores()).data as Vendedor[],
   });
-  const { enPeriodo } = usePeriodo();
+  const { enPeriodo, rango } = usePeriodo();
   const { data: todosPedidos } = useQuery({
     queryKey: ['pedidos'],
     queryFn: async () => (await getPedidos(true)).data as Pedido[],
@@ -60,21 +60,22 @@ export default function GestionPagosVendedor() {
 
   const todosPagos = useMemo(() => pagosTodos.filter((p) => enPeriodo(p.fecha)), [pagosTodos, enPeriodo]);
   const pedidosVigentes = useMemo(
-    () => (todosPedidos ?? []).filter((p) => p.estado !== 'Anulado' && enPeriodo(p.fecha)),
-    [todosPedidos, enPeriodo]
+    () => (todosPedidos ?? []).filter((p) => p.estado !== 'Anulado'),
+    [todosPedidos]
   );
   const resumen = useMemo(
-    () => calcularSaldosVendedores(vendedores, pedidosVigentes, todosPagos),
-    [vendedores, pedidosVigentes, todosPagos]
+    () => calcularSaldosVendedores(vendedores, pedidosVigentes, pagosTodos, rango),
+    [vendedores, pedidosVigentes, pagosTodos, rango]
   );
   const totales = resumen.reduce(
     (acc, v) => ({
+      saldoInicial: acc.saldoInicial + v.saldoInicial,
       ventas: acc.ventas + v.ventas,
       pagos: acc.pagos + v.pagos,
       adelantos: acc.adelantos + v.adelantos,
       saldo: acc.saldo + v.saldo,
     }),
-    { ventas: 0, pagos: 0, adelantos: 0, saldo: 0 }
+    { saldoInicial: 0, ventas: 0, pagos: 0, adelantos: 0, saldo: 0 }
   );
 
   const seleccionado = resumen.find((v) => String(v.id) === vendedorId);
@@ -159,6 +160,7 @@ export default function GestionPagosVendedor() {
             <TableHeader>
               <TableRow className="bg-muted/50">
                 <TableHead>Vendedor</TableHead>
+                <TableHead className="text-right">Saldo anterior</TableHead>
                 <TableHead className="text-right">Ventas</TableHead>
                 <TableHead className="text-right">Pagado</TableHead>
                 <TableHead className="text-right">Adelantos</TableHead>
@@ -169,6 +171,7 @@ export default function GestionPagosVendedor() {
               {resumen.map((v) => (
                 <TableRow key={v.id} className="cursor-pointer" onClick={() => setVendedorId(v.id.toString())}>
                   <TableCell className="font-semibold">{v.nombre}</TableCell>
+                  <TableCell className="text-right tabular-nums">{saldoTexto(v.saldoInicial)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatCLP(v.ventas)}</TableCell>
                   <TableCell className="text-right tabular-nums text-green-600">{formatCLP(v.pagos)}</TableCell>
                   <TableCell className="text-right tabular-nums text-blue-600">{formatCLP(v.adelantos)}</TableCell>
@@ -181,6 +184,7 @@ export default function GestionPagosVendedor() {
             <TableFooter>
               <TableRow className="font-bold">
                 <TableCell>Total</TableCell>
+                <TableCell className="text-right tabular-nums">{saldoTexto(totales.saldoInicial)}</TableCell>
                 <TableCell className="text-right tabular-nums">{formatCLP(totales.ventas)}</TableCell>
                 <TableCell className="text-right tabular-nums text-green-600">{formatCLP(totales.pagos)}</TableCell>
                 <TableCell className="text-right tabular-nums text-blue-600">{formatCLP(totales.adelantos)}</TableCell>
@@ -189,13 +193,14 @@ export default function GestionPagosVendedor() {
             </TableFooter>
           </Table>
           <p className="px-4 py-3 text-xs text-muted-foreground border-t">
-            Ventas = pedidos no anulados (con IVA). Saldo = ventas − pagos − adelantos. Toca un vendedor para ver su detalle.
+            Ventas = pedidos no anulados del período (con IVA). Saldo = saldo anterior + ventas − pagos − adelantos. Toca un vendedor para ver su detalle.
           </p>
         </Card>
       ) : (
         <div className="space-y-6">
           {seleccionado && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard title="Saldo anterior" value={saldoTexto(seleccionado.saldoInicial)} icon={HandCoins} />
               <StatCard title="Ventas" value={formatCLP(seleccionado.ventas)} icon={ShoppingCart} />
               <StatCard title="Pagado" value={formatCLP(seleccionado.pagos)} icon={BadgeCheck} accent="text-green-600" />
               <StatCard title="Adelantos" value={formatCLP(seleccionado.adelantos)} icon={HandCoins} accent="text-blue-600" />
