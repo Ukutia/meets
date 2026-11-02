@@ -1175,6 +1175,13 @@ class StockProductos(APIView):
     def get(self, request, *args, **kwargs):
         productos = Producto.objects.exclude(estado="desactivado")
         stock_data = []
+        from .models import StockBodega
+        bodegas_por_producto = {}
+        for existencia in StockBodega.objects.select_related('bodega'):
+            bodegas_por_producto.setdefault(existencia.producto_id, []).append({
+                'bodega': existencia.bodega_id, 'nombre': existencia.bodega.nombre,
+                'unidades': existencia.unidades, 'kilos': existencia.kilos,
+            })
 
         # Todo se agrupa por producto en 3 consultas fijas, en vez de 3 por
         # producto: con la base remota cada consulta cuesta un viaje de red.
@@ -1256,6 +1263,7 @@ class StockProductos(APIView):
                 'congelado_kilos': round(congelado.get('k') or 0, 2),
                 'congelado_reservas': reservas_congelado,
                 'lotes_congelado': lotes_congelado,
+                'bodegas': bodegas_por_producto.get(producto.id, []),
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)

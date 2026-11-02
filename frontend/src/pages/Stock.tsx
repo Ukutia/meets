@@ -26,6 +26,7 @@ import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { StatCard } from '@/components/shared/StatCard';
 import type { MargenProducto, StockItem } from '@/types';
 import { formatCLP, parseDecimal } from '@/lib/utils';
+import { BodegasStock, useBodegas } from '@/components/shared/BodegasStock';
 import {
   Tooltip,
   TooltipContent,
@@ -39,6 +40,7 @@ const UMBRAL_STOCK_BAJO = 10;
 type Filtro = 'todos' | 'bajo' | 'reservado' | 'congelado' | 'prereserva';
 
 export default function Stock() {
+  const { data: bodegas = [] } = useBodegas();
   const [search, setSearch] = useState('');
   const [filtro, setFiltro] = useState<Filtro>('todos');
   const [moverItem, setMoverItem] = useState<StockItem | null>(null);
@@ -203,6 +205,7 @@ export default function Stock() {
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3">
+        <BodegasStock productos={stock} />
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -233,6 +236,7 @@ export default function Stock() {
               <TableHead className="text-center">Reservas</TableHead>
               <TableHead className="text-center">Pre-reservas</TableHead>
               <TableHead className="text-center">Congelado</TableHead>
+              {bodegas.map((b) => <TableHead key={b.id} className="text-center">{b.nombre}</TableHead>)}
               <TableHead className="text-center hidden md:table-cell">Stock físico</TableHead>
               <TableHead className="text-right">Kilos</TableHead>
               <TableHead className="text-right hidden md:table-cell">Peso prom.</TableHead>
@@ -244,7 +248,7 @@ export default function Stock() {
           <TableBody>
             {filteredStock.length === 0 && (
               <TableRow>
-                <TableCell colSpan={11} className="h-24 text-center text-muted-foreground">No hay cortes con estos filtros.</TableCell>
+                <TableCell colSpan={11 + bodegas.length} className="h-24 text-center text-muted-foreground">No hay cortes con estos filtros.</TableCell>
               </TableRow>
             )}
             {filteredStock.map((item) => {
@@ -287,6 +291,13 @@ export default function Stock() {
                       <span className="text-muted-foreground">0</span>
                     )}
                   </TableCell>
+                  {bodegas.map((b) => {
+                    const existencia = item.bodegas?.find((e) => e.bodega === b.id);
+                    return <TableCell key={b.id} className="text-center tabular-nums whitespace-nowrap">
+                      <span className="font-bold">{existencia?.unidades ?? 0}</span>
+                      <span className="block text-[10px] text-muted-foreground">{Number(existencia?.kilos ?? 0).toFixed(2)} kg</span>
+                    </TableCell>;
+                  })}
                   <TableCell className="text-center font-medium hidden md:table-cell tabular-nums">{item.stock}</TableCell>
                   <TableCell className="text-right font-medium tabular-nums whitespace-nowrap">
                     {Number(item.kilos_actuales).toFixed(2)} <span className="text-[10px] text-muted-foreground">kg</span>

@@ -8,7 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import conciliacion as c
-from .models import CierreTributario, DocumentoTributario, Pedido
+from .models import CierreTributario, DocumentoTributario, Pedido, Periodo
 from .sii import json_seguro, validar_mes
 from .views_tesoreria import _error
 
@@ -18,8 +18,10 @@ class ConciliacionMesView(APIView):
 
     def get(self, request):
         try:
-            resultado = c.resumen_mes(request.query_params.get('mes'))
-        except (ValueError, TypeError):
+            periodo_id = request.query_params.get('periodo')
+            periodo = Periodo.objects.get(pk=int(periodo_id)) if periodo_id else None
+            resultado = c.resumen_mes(request.query_params.get('mes'), periodo=periodo)
+        except (ValueError, TypeError, Periodo.DoesNotExist):
             return _error('Período inválido, usa AAAA-MM')
         for campo in ('tipo', 'estado_conciliacion', 'operacion'):
             if request.query_params.get(campo):

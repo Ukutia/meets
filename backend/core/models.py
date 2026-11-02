@@ -57,6 +57,23 @@ class Cliente(models.Model):
         return self.nombre  # Mostrar el nombre del cliente en el admin de Django
 
 
+class Bodega(models.Model):
+    nombre = models.CharField(max_length=80, unique=True)
+
+    class Meta:
+        ordering = ['id']
+
+
+class StockBodega(models.Model):
+    bodega = models.ForeignKey(Bodega, on_delete=models.CASCADE, related_name='existencias')
+    producto = models.ForeignKey('Producto', on_delete=models.CASCADE)
+    unidades = models.PositiveIntegerField(default=0)
+    kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['bodega', 'producto'], name='stock_bodega_producto_unico')]
+
+
 class Producto(models.Model):
     id = models.AutoField(primary_key=True)  # Campo ID automático
     nombre = models.CharField(max_length=100, verbose_name="Nombre del producto")

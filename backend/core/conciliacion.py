@@ -74,8 +74,6 @@ def diferencias(doc):
             for campo in ('neto', 'iva'):
                 if abs(getattr(obj, campo) - getattr(doc, campo)) > TOLERANCIA:
                     resultado['motivos'].append(f'{campo} distinto')
-        if isinstance(obj, Pedido) and obj.fecha_entrega and obj.fecha_entrega != doc.fecha_emision:
-            resultado['motivos'].append('Entrega distinta de emisión')
         if isinstance(obj, Pedido) and obj.estado == 'Anulado':
             resultado['motivos'].append('Pedido anulado después del vínculo')
         if isinstance(obj, Factura) and normalizar_rut(obj.proveedor.rut) != normalizar_rut(doc.rut_emisor):
@@ -236,7 +234,7 @@ def fila_documento(doc):
             'datos_actualizados_al': doc.importacion.datos_actualizados_al if doc.importacion else None}
 
 
-def resumen_mes(mes):
+def resumen_mes(mes, periodo=None):
     validar_mes(mes)
     config = ConfiguracionContable.actual()
     cierre = CierreTributario.objects.filter(mes=mes).first() or CierreTributario(mes=mes)
@@ -274,18 +272,18 @@ def resumen_mes(mes):
         advertencias.append('Factura de compra DTE 46: validar cambio de sujeto y retenciones; estimación no definitiva')
     inicio = datetime.fromisoformat(mes + '-01').replace(tzinfo=ZONA)
     fin = datetime(inicio.year + (inicio.month == 12), inicio.month % 12 + 1, 1, tzinfo=ZONA)
-    pedidos = list(Pedido.objects.exclude(estado='Anulado').filter(
-        Q(fecha_entrega__year=int(mes[:4]), fecha_entrega__month=int(mes[5:])) |
-        Q(fecha_entrega__isnull=True, fecha__gte=inicio, fecha__lt=fin))
+    if periodo:
+        inicio = max(inicio, datetime.combine(periodo.fecha_inicio, datetime.min.time(), tzinfo=ZONA))
+        if periodo.fecha_fin:
+            fin = min(fin, datetime.combine(periodo.fecha_fin + timedelta(days=1), datetime.min.time(), tzinfo=ZONA))
+    pedidos = list(Pedido.objects.exclude(estado='Anulado').filter(fecha__gte=inicio, fecha__lt=fin)
         .select_related('cliente').prefetch_related('documentos'))
     sin_documento, fechas_pendientes, historicos = [], [], []
     for p in pedidos:
-        fecha = p.fecha_entrega or fecha_comercial(p)
+        fecha = fecha_comercial(p)
         if config.inicio_actividades and fecha < config.inicio_actividades:
             historicos.append(p.pk)
             continue
-        if p.fecha_entrega is None:
-            fechas_pendientes.append(p.pk)
         if not any(d.ambiente == 'produccion' and d.operacion == 'ventas' and d.tipo in (33, 34, 39, 41) for d in p.documentos.all()):
             sin_documento.append({'id': p.pk, 'cliente': p.cliente.nombre, 'total': p.total,
                                   'fecha_comercial': fecha_comercial(p), 'fecha_entrega': p.fecha_entrega,
@@ -297,10 +295,8 @@ def resumen_mes(mes):
                        and d.tipo in (33, 34, 39, 41) and d.fecha_emision.strftime('%Y-%m') > mes]
         if posteriores:
             tardios.append(p.pk)
-    if fechas_pendientes:
-        advertencias.append('Pedidos sin fecha real de entrega: confirmar logística antes del cierre')
     if tardios:
-        advertencias.append('Entregas documentadas en un mes posterior: revisar regularización')
+        advertencias.append('Ventas documentadas en un mes posterior: revisar regularización')
     parametros_pendientes = [c for c in ('tasa_ppm', 'base_ppm', 'remanente_anterior', 'remanente_anticipo_anterior') if getattr(cierre, c) is None]
     if parametros_pendientes:
         advertencias.append('Falta confirmar: ' + ', '.join(parametros_pendientes))

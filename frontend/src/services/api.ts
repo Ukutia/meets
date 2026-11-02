@@ -28,6 +28,12 @@ const api = axios.create({
   },
 });
 
+export interface Bodega { id: number; nombre: string }
+export const getBodegas = () => api.get<Bodega[]>('/inventario/bodegas/');
+export const crearBodega = (nombre: string) => api.post<Bodega>('/inventario/bodegas/', { nombre });
+export const guardarStockBodega = (id: number, data: { producto: number; unidades: number; kilos: number }) =>
+  api.put(`/inventario/bodegas/${id}/stock/`, data);
+
 // --- INTERCEPTOR DE SEGURIDAD ---
 // Este código se ejecuta antes de CADA petición a la API
 api.interceptors.request.use((config) => {
@@ -349,7 +355,7 @@ export const emitirBoleta = (pedidoId: number) =>
   api.post(`/cierre/pedidos/${pedidoId}/emitir-boleta/`, undefined, { timeout: 120_000 });
 export const actualizarEstadoDocumento = (id: number) => api.post(`/cierre/documentos/${id}/estado/`);
 export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
-export const getConciliacionMes = (mes: string) => api.get('/cierre/conciliacion/', { params: { mes } });
+export const getConciliacionMes = (mes: string, periodo?: number) => api.get('/cierre/conciliacion/', { params: { mes, periodo } });
 export const guardarConciliacionMes = (data: Record<string, unknown>) => api.put('/cierre/conciliacion/', data);
 export const getConciliacionDocumento = (id: number) => api.get(`/cierre/conciliacion/${id}/`);
 export const vincularDocumentoSII = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/conciliacion/${id}/`, data);

@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 
 from .conciliacion import candidatos, pesos, resumen_mes
 from .models import (CierreTributario, Cliente, ConfiguracionContable, DocumentoTributario,
-                     Factura, Gasto, HistorialConciliacion, ImportacionSII, Pedido, Proveedor)
+                     Factura, Gasto, HistorialConciliacion, ImportacionSII, Pedido, Proveedor, Periodo)
 from .sii import _monto, leer_rcv, validar_rut
 from .test_cierre import COMPRAS_ENC, VENTAS_ENC, csv
 
@@ -153,6 +153,27 @@ class ConciliacionTests(TestCase):
         r = resumen_mes('2026-10')
         self.assertEqual(r['ventas_sin_documento'][0]['id'], p.pk)
         self.assertFalse(r['cumplimiento_completo'])
+
+    def test_fecha_del_pedido_define_mes_aunque_entrega_sea_distinta(self):
+        p = self.pedido(fecha='2026-10-25', fecha_entrega=date(2026, 11, 2))
+        octubre = resumen_mes('2026-10')
+        noviembre = resumen_mes('2026-11')
+        self.assertIn(p.pk, [v['id'] for v in octubre['ventas_sin_documento']])
+        self.assertNotIn(p.pk, [v['id'] for v in noviembre['ventas_sin_documento']])
+        self.assertEqual(octubre['pedidos_fecha_entrega_pendiente'], [])
+
+    def test_periodo_limita_pendientes_sin_alterar_totales_documentales_del_mes(self):
+        anterior = self.pedido(fecha='2026-10-20')
+        actual = self.pedido(fecha='2026-10-27')
+        self.documento()
+        periodo = Periodo.objects.create(nombre='Actual', fecha_inicio=date(2026, 10, 26))
+        r = self.client.get(reverse('conciliacion_mes'), {'mes': '2026-10', 'periodo': periodo.pk})
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = [v['id'] for v in r.data['ventas_sin_documento']]
+        self.assertIn(actual.pk, ids)
+        self.assertNotIn(anterior.pk, ids)
+        self.assertEqual(r.data['ventas']['iva_debito'], 190)
+        self.assertEqual(r.data['pedidos_fecha_entrega_pendiente'], [])
 
     def test_entrega_y_emision_distinto_mes_se_conservan_y_auditan(self):
         p = self.pedido(fecha='2026-11-01', fecha_entrega=date(2026, 11, 1))

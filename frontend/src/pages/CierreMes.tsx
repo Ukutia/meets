@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
 import { AlertTriangle, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
@@ -13,6 +13,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { DetallePedidoCierre, Etiqueta } from '@/components/cierre/DetallePedidoCierre';
 import { DocumentosSII } from '@/components/cierre/DocumentosSII';
+import { ComprasMes } from '@/components/cierre/ComprasMes';
 import { ConciliacionTributaria } from '@/components/cierre/ConciliacionTributaria';
 import { getVendedores, getVentasMes } from '@/services/api';
 import { usePeriodo } from '@/contexts/PeriodoContext';
@@ -27,6 +28,11 @@ type Filtro = 'todos' | 'por_cobrar' | 'sin_documento' | 'alertas';
 export default function CierreMes() {
   const { seleccionado: periodo } = usePeriodo();
   const [mes, setMes] = useState(mesActual());
+  const minMes = periodo?.fecha_inicio.slice(0, 7);
+  const maxMes = periodo?.fecha_fin?.slice(0, 7) ?? mesActual();
+  useEffect(() => {
+    setMes(actual => minMes && actual < minMes ? minMes : actual > maxMes ? maxMes : actual);
+  }, [minMes, maxMes]);
   const [vendedor, setVendedor] = useState('todos');
   const [filtro, setFiltro] = useState<Filtro>('todos');
   const [busqueda, setBusqueda] = useState('');
@@ -93,31 +99,35 @@ export default function CierreMes() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Cierre de mes</h1>
-          <p className="text-muted-foreground">Ventas, cobros y documentos tributarios de {nombreMes(mes)}.</p>
+          <p className="text-muted-foreground">Ventas, compras y documentos de {nombreMes(mes)}.</p>
           {periodo && <p className="text-sm text-muted-foreground">
             Período: {periodo.nombre} · desde {formatFecha(periodo.fecha_inicio)}
             {periodo.fecha_fin && ` hasta ${formatFecha(periodo.fecha_fin)}`}.
           </p>}
+          {!periodo && <p className="text-sm text-muted-foreground">Todo el historial · mostrando el mes seleccionado.</p>}
         </div>
         <div className="flex flex-wrap gap-2">
-          <Input type="month" value={mes} max={mesActual()} onChange={(e) => e.target.value && setMes(e.target.value)} className="w-[160px]" />
-          <Select value={vendedor} onValueChange={setVendedor}>
-            <SelectTrigger className="w-[170px]"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos los vendedores</SelectItem>
-              {vendedores.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.nombre}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Button variant="outline" onClick={exportar} disabled={!data}><Download className="h-4 w-4 mr-2" />Excel</Button>
+          <Input type="month" value={mes} min={minMes} max={maxMes} aria-label="Mes del cierre" onChange={(e) => e.target.value && setMes(e.target.value)} className="w-[160px]" />
+          <Button variant="outline" onClick={exportar} disabled={!data}><Download className="h-4 w-4 mr-2" />Exportar ventas</Button>
         </div>
       </div>
 
-      <ConciliacionTributaria mes={mes} />
       {isLoading ? <LoadingSpinner /> : error || !data ? <ErrorMessage message="No se pudo cargar el cierre" /> : (
         <>
           {!data.rango && <p className="text-sm text-muted-foreground">El mes elegido queda fuera del período seleccionado. Elige otro mes o período.</p>}
+          {data.rango && <p className="rounded-lg border bg-muted/30 px-4 py-2 text-sm">Fechas incluidas: {formatFecha(data.rango.desde)} al {formatFecha(data.rango.hasta)}. Ventas por fecha del pedido; compras por fecha de la factura.</p>}
+          <Tabs defaultValue="ventas" className="space-y-4">
+            <TabsList className="h-auto flex flex-wrap justify-start gap-1">
+              <TabsTrigger value="ventas">Ventas</TabsTrigger>
+              <TabsTrigger value="compras">Compras</TabsTrigger>
+              <TabsTrigger value="tributario">Revisión tributaria</TabsTrigger>
+              <TabsTrigger value="documentos">Importar / revisar SII</TabsTrigger>
+              <TabsTrigger value="vendedores">Por vendedor</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="ventas" className="space-y-3">
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-            <StatCard title="Ventas del mes" value={formatCLP(data.resumen.ventas_total)} icon={TrendingUp}
+            <StatCard title={`Ventas${vendedor !== 'todos' ? ' del vendedor' : ' del mes'}`} value={formatCLP(data.resumen.ventas_total)} icon={TrendingUp}
               description={`${data.resumen.cantidad} ventas · neto ${formatCLP(data.resumen.ventas_netas)}`} />
             <StatCard title="Por cobrar" value={formatCLP(data.resumen.saldo_pendiente)} icon={HandCoins}
               accent={Number(data.resumen.saldo_pendiente) > 0 ? 'text-orange-600' : 'text-green-600'}
@@ -162,15 +172,16 @@ export default function CierreMes() {
             </button>
           )}
 
-          <Tabs defaultValue="ventas" className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="ventas">Ventas</TabsTrigger>
-              <TabsTrigger value="documentos">Documentos SII{data.documentos_sin_pedido.length > 0 && ` (${data.documentos_sin_pedido.length})`}</TabsTrigger>
-              <TabsTrigger value="vendedores">Por vendedor</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="ventas" className="space-y-3">
+              <p className="text-sm text-muted-foreground">Ventas por fecha del pedido, dentro del mes y del período seleccionado.</p>
               <div className="flex flex-wrap items-center gap-2">
+          <Select value={vendedor} onValueChange={setVendedor}>
+            <SelectTrigger className="w-[170px]" aria-label="Vendedor de las ventas"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todos">Todos los vendedores</SelectItem>
+              {vendedores.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.nombre}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
                 <div className="relative flex-1 min-w-[180px] max-w-sm">
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input placeholder="Cliente o N° de pedido" className="pl-8" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
@@ -201,6 +212,8 @@ export default function CierreMes() {
               </div>
             </TabsContent>
 
+            <TabsContent value="compras"><ComprasMes mes={mes} /></TabsContent>
+            <TabsContent value="tributario"><ConciliacionTributaria mes={mes} /></TabsContent>
             <TabsContent value="documentos">
               <DocumentosSII mes={data.mes} pedidos={data.pedidos} sinPedido={data.documentos_sin_pedido} />
             </TabsContent>

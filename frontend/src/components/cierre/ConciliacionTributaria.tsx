@@ -12,7 +12,8 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useToast } from '@/hooks/use-toast';
 import { formatCLP } from '@/lib/utils';
-import { getConciliacionMes, getConciliacionDocumento, guardarConciliacionMes, vincularDocumentoSII, guardarFechaEntrega } from '@/services/api';
+import { getConciliacionMes, getConciliacionDocumento, guardarConciliacionMes, vincularDocumentoSII } from '@/services/api';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 
 type Num = string | number;
 interface Documento {
@@ -56,30 +57,26 @@ const parametros: Record<string, string> = {
 const texto = (s: string) => s.replace(/_/g, ' ');
 
 export function ConciliacionTributaria({ mes }: { mes: string }) {
+  const { seleccionado: periodo } = usePeriodo();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [estado, setEstado] = useState('');
   const [tipo, setTipo] = useState('');
   const [operacion, setOperacion] = useState('');
   const [abierto, setAbierto] = useState<number | null>(null);
-  const { data, isLoading, error } = useQuery({ queryKey: ['conciliacion', mes], queryFn: async () => (await getConciliacionMes(mes)).data as Mes });
+  const { data, isLoading, error } = useQuery({ queryKey: ['conciliacion', mes, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin], queryFn: async () => (await getConciliacionMes(mes, periodo?.id)).data as Mes });
   const refrescar = () => {
     qc.invalidateQueries({ queryKey: ['conciliacion'] });
     qc.invalidateQueries({ queryKey: ['cierre-ventas'] });
     qc.invalidateQueries({ queryKey: ['contabilidad'] });
   };
-  const entrega = useMutation({
-    mutationFn: ({ id, fecha }: { id: number; fecha: string }) => guardarFechaEntrega(id, fecha || null),
-    onSuccess: refrescar,
-    onError: () => toast({ title: 'No se pudo guardar la entrega', variant: 'destructive' }),
-  });
   if (isLoading) return <LoadingSpinner />;
   if (error || !data) return <ErrorMessage message="No se pudo cargar la conciliación tributaria" />;
   const filas = data.documentos.filter(d => (!estado || d.estado_conciliacion === estado) && (!tipo || String(d.tipo) === tipo) && (!operacion || d.operacion === operacion));
   return <Card>
     <CardHeader>
       <CardTitle>Conciliación tributaria · {mes}</CardTitle>
-      <CardDescription>{data.config.rut_empresa} · {data.config.regimen} · Inicio {data.config.inicio_actividades}. El mes tributario abarca toda la empresa, independiente del vendedor y del período comercial seleccionado.</CardDescription>
+      <CardDescription>{data.config.rut_empresa} · {data.config.regimen}. Los montos tributarios corresponden al mes completo de la empresa. Las ventas pendientes respetan el período seleccionado. Las facturas ingresadas están en Compras.</CardDescription>
       <div className="flex flex-wrap gap-2">
         <Badge variant="outline" className={data.documentalmente_conciliado ? 'text-green-700 border-green-300' : 'text-amber-800 border-amber-300'}>Documentos: {data.documentalmente_conciliado ? 'conciliados' : 'por revisar'}</Badge>
         <Badge variant="outline" className={data.cumplimiento_completo ? 'text-green-700 border-green-300' : 'text-amber-800 border-amber-300'}>Cumplimiento: {data.cumplimiento_completo ? 'completo' : 'pendiente'}</Badge>
@@ -96,10 +93,10 @@ export function ConciliacionTributaria({ mes }: { mes: string }) {
       </div>}
       <div className="grid md:grid-cols-2 gap-4">
         <div className="rounded-lg border p-4 space-y-2">
-          <h3 className="font-semibold">Ventas y compras documentadas</h3>
+          <h3 className="font-semibold">Documentos del SII</h3>
           <p className="text-sm">Facturas: {data.ventas.facturas} · Boletas: {data.ventas.boletas} · Notas de crédito: {data.ventas.notas_credito}</p>
           <p className="text-sm">Ventas conciliadas: {data.ventas.conciliadas} · Compras sin vínculo interno: {data.compras.sin_vinculo}</p>
-          <p className="text-sm">Compras registradas: {data.compras.registradas} · Pendientes: {data.compras.pendientes} · Reclamadas: {data.compras.reclamadas} · Exentas: {data.compras.exentas}</p>
+          <p className="text-sm">Documentos de compra en SII: {data.compras.registradas} · Pendientes: {data.compras.pendientes} · Reclamadas: {data.compras.reclamadas} · Exentas: {data.compras.exentas}</p>
           <p className="text-sm">Venta neta documental: {formatCLP(data.ventas.neto)} · Total: {formatCLP(data.ventas.total)}</p>
           <p className="text-sm">PPM: base documental {formatCLP(data.ppm.base_estimada_documental)} · Base utilizada {formatCLP(data.ppm.base_utilizada)} · Tasa {data.ppm.tasa ?? 'sin confirmar'}%</p>
           <p className="text-sm">PPM SII: {data.ppm.informado_sii == null ? 'no informado' : formatCLP(data.ppm.informado_sii)} · Diferencia {data.ppm.diferencia == null ? '—' : formatCLP(data.ppm.diferencia)}</p>
@@ -134,15 +131,13 @@ export function ConciliacionTributaria({ mes }: { mes: string }) {
         </TableRow>)}
         {!filas.length && <TableRow><TableCell colSpan={8}>Sin documentos para estos filtros. Importa el RCV en la pestaña Documentos SII del cierre.</TableCell></TableRow>}
       </TableBody></Table></div>
-      <details><summary className="cursor-pointer font-medium">Ventas pendientes de documentación ({data.ventas_sin_documento.length})</summary>
-        <Table><TableHeader><TableRow><TableHead>Pedido</TableHead><TableHead>Fecha comercial</TableHead><TableHead>Total</TableHead><TableHead>Entrega real</TableHead></TableRow></TableHeader><TableBody>
-          {data.ventas_sin_documento.map(p => <TableRow key={p.id}><TableCell>#{p.id} · {p.cliente}</TableCell><TableCell>{p.fecha_comercial}</TableCell><TableCell>{formatCLP(p.total)}</TableCell><TableCell>
-            <Input aria-label={`Entrega pedido ${p.id}`} type="date" defaultValue={p.fecha_entrega ?? ''} disabled={entrega.isPending} onBlur={e => { if (e.target.value !== (p.fecha_entrega ?? '')) entrega.mutate({ id: p.id, fecha: e.target.value }); }} />
-          </TableCell></TableRow>)}
+      <details><summary className="cursor-pointer font-medium">Ventas sin documento del período ({data.ventas_sin_documento.length})</summary>
+        <Table><TableHeader><TableRow><TableHead>Pedido</TableHead><TableHead>Fecha</TableHead><TableHead>Total</TableHead></TableRow></TableHeader><TableBody>
+          {data.ventas_sin_documento.map(p => <TableRow key={p.id}><TableCell>#{p.id} · {p.cliente}</TableCell><TableCell>{p.fecha_comercial}</TableCell><TableCell>{formatCLP(p.total)}</TableCell></TableRow>)}
+          {!data.ventas_sin_documento.length && <TableRow><TableCell colSpan={3}>Sin ventas pendientes de documentación.</TableCell></TableRow>}
         </TableBody></Table>
       </details>
-      {!!data.pedidos_fecha_entrega_pendiente.length && <p className="text-xs text-muted-foreground">Confirmar fecha de entrega: {data.pedidos_fecha_entrega_pendiente.map(id => `#${id}`).join(', ')}. Los pedidos con documento pueden revisarse desde su detalle.</p>}
-      {!!data.entregas_documentadas_despues.length && <p className="text-sm">Entrega con emisión posterior: {data.entregas_documentadas_despues.map(id => `#${id}`).join(', ')}.</p>}
+      {!!data.entregas_documentadas_despues.length && <p className="text-sm">Ventas con documento emitido posteriormente: {data.entregas_documentadas_despues.map(id => `#${id}`).join(', ')}.</p>}
       {!!data.pedidos_historicos.length && <p className="text-xs text-muted-foreground">Operaciones anteriores al inicio conservadas: {data.pedidos_historicos.map(id => `#${id}`).join(', ')}.</p>}
       <p className="text-xs text-muted-foreground">La declaración se realiza manualmente en el SII. <Link className="underline" to="/tesoreria">Ver estimaciones comerciales en Tesorería</Link>.</p>
       <Dialog open={abierto !== null} onOpenChange={v => !v && setAbierto(null)}><DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>Revisar documento</DialogTitle></DialogHeader>
@@ -185,20 +180,18 @@ function DetalleDocumento({ id, onSaved }: { id: number; onSaved: () => void }) 
   const [registro, setRegistro] = useState('');
   const [registroTipo, setRegistroTipo] = useState('');
   const [motivo, setMotivo] = useState('');
-  const [fechaEntrega, setFechaEntrega] = useState('');
   const { data, isLoading, error } = useQuery({ queryKey: ['conciliacion-detalle', id], queryFn: async () => (await getConciliacionDocumento(id)).data as Detalle });
   const guardar = useMutation({
     mutationFn: (cambios: Record<string, unknown>) => vincularDocumentoSII(id, { ...cambios, justificacion: motivo }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['conciliacion-detalle', id] }); onSaved(); toast({ title: 'Revisión registrada' }); },
     onError: (e: { response?: { data?: { error?: string } } }) => toast({ title: 'No se pudo vincular', description: e.response?.data?.error, variant: 'destructive' }),
   });
-  const entrega = useMutation({ mutationFn: () => guardarFechaEntrega(Number(data?.documento.registro_id), fechaEntrega || null), onSuccess: () => { qc.invalidateQueries({ queryKey: ['conciliacion-detalle', id] }); onSaved(); }, onError: () => toast({ title: 'No se pudo guardar entrega', variant: 'destructive' }) });
   if (isLoading) return <LoadingSpinner />;
   if (error || !data) return <ErrorMessage message="No se pudo cargar el documento" />;
   const d = data.documento;
   return <div className="space-y-4 text-sm">
     <p>DTE {d.tipo} · Folio {d.folio} · {d.razon_social} · {formatCLP(d.total)}</p>
-    <p>Emisión: {d.fecha_emision} · Comercial: {d.fecha_comercial ?? 'sin vínculo'} · Entrega: {d.fecha_entrega ?? 'por confirmar'}</p>
+    <p>Fecha del documento: {d.fecha_emision}</p>
     <p>Neto {formatCLP(d.neto)} · IVA {formatCLP(d.iva)} · Anticipo {formatCLP(d.anticipo)} · Otros {formatCLP(d.otros_impuestos)} · IVA no recuperable {formatCLP(d.iva_no_recuperable)} · Uso común {formatCLP(d.iva_uso_comun)}</p>
     <p>Diferencias: {d.diferencias.motivos.join('; ') || 'sin diferencias detectadas'}. Días: {d.diferencias.dias ?? '—'}</p>
     {!!d.columnas_pendientes.length && <p className="text-amber-700">Columnas por validar: {d.columnas_pendientes.join(', ')}</p>}
@@ -222,7 +215,6 @@ function DetalleDocumento({ id, onSaved }: { id: number; onSaved: () => void }) 
       <Button variant="outline" disabled={!motivo.trim() || guardar.isPending} onClick={() => guardar.mutate({ credito_validado: !d.credito_validado })}>{d.credito_validado ? 'Excluir crédito fiscal' : 'Validar crédito fiscal'}</Button>
       <Button variant="outline" disabled={!motivo.trim() || guardar.isPending} onClick={() => guardar.mutate({ anticipo_validado: !d.anticipo_validado })}>{d.anticipo_validado ? 'Retirar validación de anticipo' : 'Validar procedencia del anticipo'}</Button>
     </div>}
-    {d.registro_tipo === 'pedido' && <div className="flex flex-wrap items-end gap-2"><label>Fecha real de entrega<Input type="date" value={fechaEntrega} onChange={e => setFechaEntrega(e.target.value)} /></label><Button variant="outline" disabled={!fechaEntrega || entrega.isPending} onClick={() => entrega.mutate()}>Guardar entrega</Button></div>}
     <details><summary className="cursor-pointer">Historial de revisiones e importaciones ({data.historial.length})</summary>{data.historial.map((h, i) => <div className="border-t py-2" key={i}><p>{h.accion} · {h.usuario} · {h.fecha}</p><pre className="text-xs whitespace-pre-wrap break-all">{JSON.stringify({ antes: h.antes, despues: h.despues }, null, 2)}</pre></div>)}</details>
   </div>;
 }

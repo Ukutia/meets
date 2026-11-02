@@ -24,17 +24,20 @@ import {
   useImagenFlyer,
 } from '@/lib/flyer';
 import type { StockItem } from '@/types';
+import { BodegasStock, useBodegas } from '@/components/shared/BodegasStock';
 
 const CLAVE_STOCK = ['stock', 'precios'];
 const congeladosDisponibles = (item: StockItem) =>
   Math.max(Number(item.congelado_unidades ?? 0) - Number(item.congelado_reservas ?? 0), 0);
-const totalDisponible = (item: StockItem) => Number(item.disponibles) + congeladosDisponibles(item);
+const totalDisponible = (item: StockItem) => Number(item.disponibles) + congeladosDisponibles(item)
+  + (item.bodegas ?? []).reduce((total, b) => total + b.unidades, 0);
 
 // Vista rápida para consultar qué hay y a cuánto: solo productos disponibles,
 // con stock, ordenados de mayor a menor existencia. El precio se edita ahí mismo
 // y el flyer (con la configuración de la pantalla Flyer) se comparte o descarga al toque.
 export default function Precios() {
   const { toast } = useToast();
+  const { data: bodegas = [] } = useBodegas();
   const queryClient = useQueryClient();
   const [busqueda, setBusqueda] = useState('');
   const [editando, setEditando] = useState<Record<number, string>>({});
@@ -150,6 +153,7 @@ export default function Precios() {
           <p className="text-sm text-muted-foreground">Productos disponibles y su precio actual. Toca un precio para cambiarlo.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <BodegasStock productos={data ?? []} />
           <Button className="bg-[#25D366] text-white hover:bg-[#1ebe5b]" onClick={() => compartir(true)} disabled={sinFilas}>
             {exportando ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <MessageCircle className="mr-2 h-4 w-4" />}
             WhatsApp
@@ -181,13 +185,14 @@ export default function Precios() {
               <TableHead className="w-[40%] text-xs uppercase">Producto</TableHead>
               <TableHead className="text-center text-xs uppercase">Stock</TableHead>
               <TableHead className="text-center text-xs uppercase text-sky-700">Congelados</TableHead>
+              {bodegas.map((b) => <TableHead key={b.id} className="text-center text-xs uppercase">{b.nombre}</TableHead>)}
               <TableHead className="text-right text-xs uppercase">Precio</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {productos.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={4 + bodegas.length} className="h-24 text-center text-muted-foreground">
                   {busqueda ? 'Ningún producto coincide con la búsqueda.' : 'No hay productos disponibles.'}
                 </TableCell>
               </TableRow>
@@ -209,6 +214,13 @@ export default function Precios() {
                     <span className="block text-[10px] text-muted-foreground">{p.congelado_reservas} reservadas</span>
                   )}
                 </TableCell>
+                {bodegas.map((b) => {
+                  const existencia = p.bodegas?.find((e) => e.bodega === b.id);
+                  return <TableCell key={b.id} className="text-center tabular-nums">
+                    <span className="text-sm font-bold">{existencia?.unidades ?? 0}</span>
+                    <span className="block text-[10px] text-muted-foreground">unid. · {formatKg(Number(existencia?.kilos ?? 0), 1)}</span>
+                  </TableCell>;
+                })}
                 <TableCell className="text-right">
                   <div className="relative ml-auto w-28">
                     <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>

@@ -3,12 +3,15 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import MyTokenObtainPairView, UpdateCliente,PagoVendedorView, PagoVendedorDetailView,ProductosView,PedidoDetailView, PedidoListView,ProveedorListView, ProveedorDetailView, CrearPedido, ActualizarKilosPedido, ClienteListView, CrearCliente, CrearFacturaEntrada, FacturaListView, UpdateFacturaEntrada, CrearPagoFactura, CancelarPedido, CancelarProductoPedido, AgregarProductoPedido, ObtenerPedido, StockProductos, VendedorListView, CrearProducto, UpdateProducto, DetallePedidosList, DetalleFacturasList, ReporteGananciasView, ReportePerdidasView, FluctuacionPreciosView, MargenActualProductoView, HistorialPrecioProductoView, AjusteInventarioListView, AjusteInventarioDetailView, CrearAjusteInventario, RentabilidadHistoricaView, CambiarPasswordView, PerfilView, NotaCreditoView, NotaCreditoDetailView, MovimientoCongeladoView, RegistroPreReservaView
 from . import views_tesoreria as tes
+from .views_bodegas import BodegasView, ExistenciasBodegaView
 from . import views_conteo as conteo
 from . import views_periodos as periodos
 from . import views_cierre as cierre
 from . import views_conciliacion as conciliacion
 
 urlpatterns = [
+    path('inventario/bodegas/', BodegasView.as_view(), name='bodegas'),
+    path('inventario/bodegas/<int:pk>/stock/', ExistenciasBodegaView.as_view(), name='stock_bodega'),
     path('productos/', ProductosView.as_view(), name='productos'),
     path('productos/crear/', CrearProducto.as_view(), name='crear_producto'),
     path('productos/<int:producto_id>/', UpdateProducto.as_view(), name='actualizar_producto'),
