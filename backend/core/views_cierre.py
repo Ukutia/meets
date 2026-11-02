@@ -10,7 +10,7 @@ Tres cosas distintas que nunca se dan por hechas una a partir de otra:
 """
 import base64
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
@@ -26,7 +26,7 @@ from rest_framework.views import APIView
 from . import openfactura, sii
 from .contabilidad import factor_iva
 from .models import (MEDIOS_PAGO, TIPOS_DTE, Cobro, ConfiguracionContable, DetallePedido,
-                     DocumentoTributario, ImportacionSII, Pedido, Vendedor)
+                     DocumentoTributario, ImportacionSII, Pedido, Periodo, Vendedor)
 from .views_tesoreria import _decimal, _error
 
 ZONA = ZoneInfo('America/Santiago')
@@ -110,7 +110,19 @@ class VentasMesView(APIView):
         mes = _mes_param(request)
         if not mes:
             return _error('Mes inválido, usa AAAA-MM')
-        inicio, fin = _rango_mes(*mes)
+        try:
+            inicio, fin = _rango_mes(*mes)
+        except ValueError:
+            return _error('Mes inválido, usa AAAA-MM')
+        periodo_id = request.query_params.get('periodo')
+        if periodo_id:
+            try:
+                periodo = Periodo.objects.get(pk=int(periodo_id))
+            except (ValueError, Periodo.DoesNotExist):
+                return _error('Período inválido')
+            inicio = max(inicio, datetime.combine(periodo.fecha_inicio, datetime.min.time(), tzinfo=ZONA))
+            if periodo.fecha_fin and periodo.fecha_fin < fin.date():
+                fin = datetime.combine(periodo.fecha_fin + timedelta(days=1), datetime.min.time(), tzinfo=ZONA)
         vendedor_id = request.query_params.get('vendedor')
         iva_rate = factor_iva()
 
@@ -201,7 +213,7 @@ class VentasMesView(APIView):
         # Lo emitido en el mes según los documentos (lo que va al F29), aparte
         # de la cifra teórica que sale de las ventas.
         docs_mes = DocumentoTributario.objects.filter(ambiente='produccion',
-                                                      **sii.filtro_mes('fecha_emision', f'{mes[0]}-{mes[1]:02d}'))
+                                                     fecha_emision__gte=inicio.date(), fecha_emision__lt=fin.date())
         iva_documentos = Decimal('0')
         sin_pedido = []
         for d in docs_mes.select_related('usuario'):
@@ -221,6 +233,7 @@ class VentasMesView(APIView):
         r['margen_pct'] = _redondo(r['margen'] / r['ventas_netas'] * 100) if r['ventas_netas'] else None
         return Response({
             'mes': f'{mes[0]}-{mes[1]:02d}',
+            'rango': {'desde': inicio.date(), 'hasta': fin.date() - timedelta(days=1)} if inicio < fin else None,
             'resumen': {**r, **conteo, 'iva_debito_documentos': iva_documentos,
                         'cobros_recibidos_mes': sum(recibido.values(), Decimal('0'))},
             'recibido_por': [{'nombre': k, 'monto': v} for k, v in sorted(recibido.items())],

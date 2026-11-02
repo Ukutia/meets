@@ -335,7 +335,7 @@ export const updateConfiguracionContable = (data: {
 }) => api.put<ConfiguracionContable>('/tesoreria/configuracion/', data);
 
 // --- Cierre de mes: ventas, cobros y documentos tributarios ---
-export const getVentasMes = (params: { mes: string; vendedor?: string }) => api.get('/cierre/ventas/', { params });
+export const getVentasMes = (params: { mes: string; vendedor?: string; periodo?: number }) => api.get('/cierre/ventas/', { params });
 export const crearCobro = (data: Record<string, unknown> | FormData) => api.post('/cierre/cobros/', data, opcionesPara(data));
 export const actualizarCobro = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/cobros/${id}/`, data);
 export const eliminarCobro = (id: number) => api.delete(`/cierre/cobros/${id}/`);

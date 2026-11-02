@@ -26,6 +26,9 @@ import {
 import type { StockItem } from '@/types';
 
 const CLAVE_STOCK = ['stock', 'precios'];
+const congeladosDisponibles = (item: StockItem) =>
+  Math.max(Number(item.congelado_unidades ?? 0) - Number(item.congelado_reservas ?? 0), 0);
+const totalDisponible = (item: StockItem) => Number(item.disponibles) + congeladosDisponibles(item);
 
 // Vista rápida para consultar qué hay y a cuánto: solo productos disponibles,
 // con stock, ordenados de mayor a menor existencia. El precio se edita ahí mismo
@@ -56,8 +59,8 @@ export default function Precios() {
   const productos = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
     return (data ?? [])
-      .filter((p) => p.estado === 'disponible' && Number(p.disponibles) > 0 && p.producto.toLowerCase().includes(q))
-      .sort((a, b) => b.disponibles - a.disponibles || a.producto.localeCompare(b.producto));
+      .filter((p) => p.estado === 'disponible' && totalDisponible(p) > 0 && p.producto.toLowerCase().includes(q))
+      .sort((a, b) => totalDisponible(b) - totalDisponible(a) || a.producto.localeCompare(b.producto));
   }, [data, busqueda]);
 
   const telefono = perfil?.telefono || '';
@@ -175,15 +178,16 @@ export default function Precios() {
         <Table>
           <TableHeader className="bg-muted/50">
             <TableRow>
-              <TableHead className="w-[50%] text-xs uppercase">Producto</TableHead>
+              <TableHead className="w-[40%] text-xs uppercase">Producto</TableHead>
               <TableHead className="text-center text-xs uppercase">Stock</TableHead>
+              <TableHead className="text-center text-xs uppercase text-sky-700">Congelados</TableHead>
               <TableHead className="text-right text-xs uppercase">Precio</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {productos.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
                   {busqueda ? 'Ningún producto coincide con la búsqueda.' : 'No hay productos disponibles.'}
                 </TableCell>
               </TableRow>
@@ -197,6 +201,13 @@ export default function Precios() {
                 <TableCell className="text-center">
                   <span className="text-sm font-bold tabular-nums">{p.disponibles}</span>
                   <span className="block text-[10px] uppercase text-muted-foreground">unid.</span>
+                </TableCell>
+                <TableCell className="text-center">
+                  <span className="text-sm font-bold tabular-nums text-sky-700">{congeladosDisponibles(p)}</span>
+                  <span className="block text-[10px] uppercase text-muted-foreground">unid. disp.</span>
+                  {Number(p.congelado_reservas ?? 0) > 0 && (
+                    <span className="block text-[10px] text-muted-foreground">{p.congelado_reservas} reservadas</span>
+                  )}
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="relative ml-auto w-28">

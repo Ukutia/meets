@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -7,7 +7,7 @@ from django.urls import reverse
 
 from .contabilidad import resumen_mensual
 from .models import (AsignacionMovimiento, Cobro, ConfiguracionContable, DocumentoTributario, Factura,
-                     MovimientoBancario, Pedido)
+                     MovimientoBancario, Pedido, Periodo)
 from .test_finanzas import BaseFinanzas
 
 
@@ -36,6 +36,53 @@ class CierreBase(BaseFinanzas):
 
 
 class VentasMesTests(CierreBase):
+    def test_periodo_recorta_ventas_resumen_documentos_y_cobros(self):
+        self.mes = '2026-10'
+        periodo = Periodo.objects.create(nombre='Corte', fecha_inicio=date(2026, 10, 15),
+                                         fecha_fin=date(2026, 10, 20))
+        for dia in [14, 15, 20, 21]:
+            Cobro.objects.create(pedido=self.pedido, fecha=date(2026, 10, dia), monto=100,
+                                 receptor='vendedor', vendedor=self.vendedor)
+            DocumentoTributario.objects.create(tipo=39, folio=dia, fecha_emision=date(2026, 10, dia),
+                                               neto=100, iva=19, total=119, ambiente='produccion')
+        # Los extremos son inclusivos, según la fecha local de Santiago.
+        for dia, hora, cantidad in [(14, 23, 0), (15, 0, 1), (20, 23, 1), (21, 0, 0)]:
+            Pedido.objects.filter(pk=self.pedido.pk).update(
+                fecha=datetime(2026, 10, dia, hora, 59, tzinfo=ZoneInfo('America/Santiago')))
+            datos = self.ventas(periodo=periodo.pk)
+            self.assertEqual(len(datos['pedidos']), cantidad)
+            self.assertEqual(datos['resumen']['cantidad'], cantidad)
+            self.assertEqual(Decimal(datos['resumen']['ventas_total']), Decimal(24000 * cantidad))
+            self.assertEqual(Decimal(datos['resumen']['cobros_recibidos_mes']), Decimal(200))
+            self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal(38))
+            self.assertCountEqual([d['folio'] for d in datos['documentos_sin_pedido']], [15, 20])
+            self.assertEqual(datos['rango'], {'desde': '2026-10-15', 'hasta': '2026-10-20'})
+
+    def test_mes_fuera_del_periodo_queda_vacio(self):
+        self.mes = '2026-10'
+        for inicio, fin in [(date(2026, 11, 1), None), (date(2026, 8, 1), date(2026, 9, 30))]:
+            periodo = Periodo.objects.create(nombre='Fuera', fecha_inicio=inicio, fecha_fin=fin)
+            datos = self.ventas(periodo=periodo.pk)
+            self.assertIsNone(datos['rango'])
+            self.assertEqual(datos['pedidos'], [])
+            self.assertEqual(datos['documentos_sin_pedido'], [])
+            self.assertEqual(datos['recibido_por'], [])
+            self.assertEqual(datos['resumen']['cantidad'], 0)
+
+    def test_periodo_abierto_y_todo_historial(self):
+        self.mes = '2026-10'
+        periodo = Periodo.objects.create(nombre='Vigente', fecha_inicio=date(2026, 10, 15))
+        self.assertEqual(self.ventas(periodo=periodo.pk)['rango'],
+                         {'desde': '2026-10-15', 'hasta': '2026-10-31'})
+        self.assertEqual(self.ventas()['rango'], {'desde': '2026-10-01', 'hasta': '2026-10-31'})
+        self.assertEqual(self.ventas(mes='2026-11', periodo=periodo.pk)['rango'],
+                         {'desde': '2026-11-01', 'hasta': '2026-11-30'})
+
+    def test_rechaza_periodo_invalido(self):
+        for periodo in ['incorrecto', '999999']:
+            self.assertEqual(self.client.get(reverse('cierre_ventas'),
+                                             {'mes': self.mes, 'periodo': periodo}).status_code, 400)
+
     def test_venta_sin_cobro_ni_documento(self):
         datos = self.ventas()
         p = datos["pedidos"][0]

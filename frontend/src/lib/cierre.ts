@@ -36,6 +36,7 @@ export interface PedidoCierre {
 
 export interface VentasMes {
   mes: string;
+  rango: { desde: string; hasta: string } | null;
   resumen: {
     ventas_total: Num; ventas_netas: Num; iva_debito_teorico: Num; iva_debito_documentos: Num;
     cobrado: Num; saldo_pendiente: Num; costo: Num; margen: Num; margen_pct: Num | null;

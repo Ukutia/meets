@@ -14,6 +14,7 @@ import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { DetallePedidoCierre, Etiqueta } from '@/components/cierre/DetallePedidoCierre';
 import { DocumentosSII } from '@/components/cierre/DocumentosSII';
 import { getVendedores, getVentasMes } from '@/services/api';
+import { usePeriodo } from '@/contexts/PeriodoContext';
 import { cn, formatCLP, formatFecha } from '@/lib/utils';
 import {
   ETIQUETA_COBRO, ETIQUETA_TRIBUTARIO, MEDIOS_PAGO, mesActual, nombreMes,
@@ -23,6 +24,7 @@ import {
 type Filtro = 'todos' | 'por_cobrar' | 'sin_documento' | 'alertas';
 
 export default function CierreMes() {
+  const { seleccionado: periodo } = usePeriodo();
   const [mes, setMes] = useState(mesActual());
   const [vendedor, setVendedor] = useState('todos');
   const [filtro, setFiltro] = useState<Filtro>('todos');
@@ -31,8 +33,8 @@ export default function CierreMes() {
 
   const { data: vendedores = [] } = useQuery({ queryKey: ['vendedores'], queryFn: async () => (await getVendedores()).data });
   const { data, isLoading, error } = useQuery({
-    queryKey: ['cierre-ventas', mes, vendedor],
-    queryFn: async () => (await getVentasMes({ mes, vendedor: vendedor === 'todos' ? undefined : vendedor })).data as VentasMes,
+    queryKey: ['cierre-ventas', mes, vendedor, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin],
+    queryFn: async () => (await getVentasMes({ mes, vendedor: vendedor === 'todos' ? undefined : vendedor, periodo: periodo?.id })).data as VentasMes,
   });
 
   const pedidos = useMemo(() => {
@@ -70,6 +72,8 @@ export default function CierreMes() {
     })));
     const r = data.resumen;
     const resumen = [
+      ['Período', periodo?.nombre ?? 'Todo el historial'],
+      ['Desde', data.rango?.desde ?? 'Sin intersección con el mes'], ['Hasta', data.rango?.hasta ?? ''],
       ['Mes', nombreMes(data.mes)], ['Ventas con IVA', Number(r.ventas_total)], ['Ventas netas', Number(r.ventas_netas)],
       ['IVA débito según ventas', Number(r.iva_debito_teorico)], ['IVA débito según documentos emitidos', Number(r.iva_debito_documentos)],
       ['Cobrado de las ventas del mes', Number(r.cobrado)], ['Por cobrar', Number(r.saldo_pendiente)],
@@ -89,6 +93,10 @@ export default function CierreMes() {
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Cierre de mes</h1>
           <p className="text-muted-foreground">Ventas, cobros y documentos tributarios de {nombreMes(mes)}.</p>
+          {periodo && <p className="text-sm text-muted-foreground">
+            Período: {periodo.nombre} · desde {formatFecha(periodo.fecha_inicio)}
+            {periodo.fecha_fin && ` hasta ${formatFecha(periodo.fecha_fin)}`}.
+          </p>}
         </div>
         <div className="flex flex-wrap gap-2">
           <Input type="month" value={mes} max={mesActual()} onChange={(e) => e.target.value && setMes(e.target.value)} className="w-[160px]" />
@@ -105,6 +113,7 @@ export default function CierreMes() {
 
       {isLoading ? <LoadingSpinner /> : error || !data ? <ErrorMessage message="No se pudo cargar el cierre" /> : (
         <>
+          {!data.rango && <p className="text-sm text-muted-foreground">El mes elegido queda fuera del período seleccionado. Elige otro mes o período.</p>}
           <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
             <StatCard title="Ventas del mes" value={formatCLP(data.resumen.ventas_total)} icon={TrendingUp}
               description={`${data.resumen.cantidad} ventas · neto ${formatCLP(data.resumen.ventas_netas)}`} />
