@@ -93,7 +93,7 @@ class ConciliacionTests(TestCase):
         self.assertEqual(r['ventas']['iva_debito'], 190)
         self.assertEqual(r['compras']['iva_credito'], 19000)
         venta = self.client.get(reverse('cierre_ventas'), {'mes': '2026-10'})
-        self.assertEqual(D(venta.data['resumen']['iva_debito_documentos']), 190)
+        self.assertEqual(D(venta.data['resumen']['iva_debito_documentos']), 0)  # Sin pedido asociado.
 
     def test_iva_19_y_anticipo_5_separados_con_tope_imputacion(self):
         self.importar([self.compra_fila()], compras=True)

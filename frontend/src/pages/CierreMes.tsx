@@ -144,14 +144,18 @@ export default function CierreMes() {
             <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Receipt className="h-4 w-4" />IVA de ventas</CardTitle></CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-3 text-sm">
               <div><p className="text-muted-foreground">Según las ventas</p><p className="text-lg font-bold tabular-nums">{formatCLP(data.resumen.iva_debito_teorico)}</p></div>
-              <div><p className="text-muted-foreground">Según documentos emitidos</p><p className="text-lg font-bold tabular-nums">{formatCLP(data.resumen.iva_debito_documentos)}</p></div>
+              <div>
+                <p className="text-muted-foreground">Según documentos emitidos</p>
+                <p className="text-lg font-bold tabular-nums">{formatCLP(data.resumen.iva_debito_documentos)}</p>
+                <p className="text-xs text-muted-foreground">Suma del IVA de los pedidos con boleta o factura emitida, aunque se haya solicitado otro tipo de documento. Cada pedido cuenta una vez.</p>
+              </div>
               <div>
                 <p className="text-muted-foreground">Diferencia</p>
                 <p className={cn('text-lg font-bold tabular-nums',
                   Math.abs(Number(data.resumen.iva_debito_teorico) - Number(data.resumen.iva_debito_documentos)) > 2 && 'text-amber-600')}>
                   {formatCLP(Number(data.resumen.iva_debito_teorico) - Number(data.resumen.iva_debito_documentos))}
                 </p>
-                <p className="text-xs text-muted-foreground">El F29 se declara con lo emitido. Una diferencia indica ventas sin documento.</p>
+                <p className="text-xs text-muted-foreground">IVA de los pedidos que aún no tienen boleta o factura emitida.</p>
               </div>
             </CardContent>
           </Card>

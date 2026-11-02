@@ -54,7 +54,7 @@ class VentasMesTests(CierreBase):
             self.assertEqual(datos['resumen']['cantidad'], cantidad)
             self.assertEqual(Decimal(datos['resumen']['ventas_total']), Decimal(24000 * cantidad))
             self.assertEqual(Decimal(datos['resumen']['cobros_recibidos_mes']), Decimal(200))
-            self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal(38))
+            self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal(0))
             self.assertCountEqual([d['folio'] for d in datos['documentos_sin_pedido']], [15, 20])
             self.assertEqual(datos['rango'], {'desde': '2026-10-15', 'hasta': '2026-10-20'})
 
@@ -140,8 +140,63 @@ class VentasMesTests(CierreBase):
     def test_factura_si_se_pidio_boleta_queda_por_revisar(self):
         self.client.post(reverse("cierre_documentos"), {
             "tipo": 33, "folio": 9, "fecha_emision": str(self.fecha), "total": 24000, "pedido": self.pedido.id})
-        p = self.ventas()["pedidos"][0]
+        datos = self.ventas()
+        p = datos["pedidos"][0]
         self.assertEqual(p["estado_tributario"], "por_revisar")
+        self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal(p['iva']))
+
+    def test_iva_suma_pedidos_documentados_sin_importar_tipo_solicitado(self):
+        for solicitado, tipo in [('Boleta', 39), ('Boleta', 33), ('Factura', 39), ('Factura', 33)]:
+            with self.subTest(solicitado=solicitado, tipo=tipo):
+                Pedido.objects.filter(pk=self.pedido.pk).update(tipo_recibo=solicitado)
+                DocumentoTributario.objects.all().delete()
+                DocumentoTributario.objects.create(pedido=self.pedido, tipo=tipo, folio=1,
+                                                   fecha_emision=self.fecha, neto=100, iva=19, total=119)
+                datos = self.ventas()
+                # Se usa el IVA del pedido aun si el documento tiene otro monto.
+                self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal('3832'))
+
+    def test_iva_cuenta_cada_pedido_una_vez_con_varios_documentos(self):
+        for tipo in [39, 33, 61]:
+            DocumentoTributario.objects.create(pedido=self.pedido, tipo=tipo, folio=1,
+                                               fecha_emision=self.fecha, neto=20168, iva=3832, total=24000)
+        otro = Pedido.objects.create(cliente=self.cliente, vendedor=self.vendedor, total=1190,
+                                     fecha=self.pedido.fecha)
+        DocumentoTributario.objects.create(pedido=otro, tipo=33, folio=2,
+                                           fecha_emision=self.fecha, neto=1000, iva=190, total=1190)
+        datos = self.ventas()
+        self.assertEqual(Decimal(datos['resumen']['iva_debito_documentos']), Decimal('4022'))
+
+    def test_iva_sigue_fecha_del_pedido_y_filtros_de_periodo_y_vendedor(self):
+        self.mes = '2026-10'
+        Pedido.objects.filter(pk=self.pedido.pk).update(
+            fecha=datetime(2026, 10, 16, 12, tzinfo=ZoneInfo('America/Santiago')))
+        DocumentoTributario.objects.create(pedido=self.pedido, tipo=33, folio=1,
+                                           fecha_emision=date(2026, 11, 1), neto=20168, iva=3832, total=24000)
+        periodo = Periodo.objects.create(nombre='Corte', fecha_inicio=date(2026, 10, 15),
+                                         fecha_fin=date(2026, 10, 20))
+        self.assertEqual(Decimal(self.ventas(periodo=periodo.pk)['resumen']['iva_debito_documentos']), 3832)
+        self.assertEqual(Decimal(self.ventas(vendedor=self.vendedor.pk + 99)['resumen']['iva_debito_documentos']), 0)
+        periodo.fecha_inicio = date(2026, 10, 17)
+        periodo.save()
+        self.assertEqual(Decimal(self.ventas(periodo=periodo.pk)['resumen']['iva_debito_documentos']), 0)
+        self.assertEqual(Decimal(self.ventas(mes='2026-11')['resumen']['iva_debito_documentos']), 0)
+
+    def test_iva_excluye_pedidos_sin_documento_real_de_venta(self):
+        for tipo, ambiente, operacion in [(39, 'pruebas', 'ventas'), (33, 'produccion', 'compras'),
+                                          (61, 'produccion', 'ventas')]:
+            with self.subTest(tipo=tipo, ambiente=ambiente, operacion=operacion):
+                DocumentoTributario.objects.all().delete()
+                DocumentoTributario.objects.create(pedido=self.pedido, tipo=tipo, folio=1,
+                                                   fecha_emision=self.fecha, neto=20168, iva=3832, total=24000,
+                                                   ambiente=ambiente, operacion=operacion)
+                self.assertEqual(Decimal(self.ventas()['resumen']['iva_debito_documentos']), 0)
+
+    def test_iva_excluye_pedidos_anulados(self):
+        DocumentoTributario.objects.create(pedido=self.pedido, tipo=39, folio=1,
+                                           fecha_emision=self.fecha, neto=20168, iva=3832, total=24000)
+        Pedido.objects.filter(pk=self.pedido.pk).update(estado='Anulado')
+        self.assertEqual(Decimal(self.ventas()['resumen']['iva_debito_documentos']), 0)
 
     def test_filtro_vendedor(self):
         self.assertEqual(len(self.ventas(vendedor=self.vendedor.id + 99)["pedidos"]), 0)

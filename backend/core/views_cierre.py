@@ -138,7 +138,7 @@ class VentasMesView(APIView):
             pedidos = pedidos.filter(vendedor_id=vendedor_id)
 
         filas = []
-        r = {k: Decimal('0') for k in ('ventas_total', 'ventas_netas', 'iva_debito_teorico', 'cobrado',
+        r = {k: Decimal('0') for k in ('ventas_total', 'ventas_netas', 'iva_debito_teorico', 'iva_debito_documentos', 'cobrado',
                                        'saldo_pendiente', 'costo', 'margen')}
         conteo = {'cantidad': 0, 'con_documento': 0, 'sin_documento': 0, 'por_revisar': 0,
                   'pagados': 0, 'parciales': 0, 'pendientes_cobro': 0, 'pagado_sin_cobro': 0,
@@ -172,6 +172,11 @@ class VentasMesView(APIView):
             r['ventas_total'] += total
             r['ventas_netas'] += neto
             r['iva_debito_teorico'] += total - neto
+            # IVA del pedido una sola vez si tiene boleta o factura real,
+            # aunque el tipo o monto del documento quede por revisar.
+            if any(d.ambiente == 'produccion' and d.operacion == 'ventas' and d.tipo in TIPOS_VENTA
+                   for d in documentos):
+                r['iva_debito_documentos'] += total - neto
             r['cobrado'] += min(cobrado, total)
             r['saldo_pendiente'] += max(total - cobrado, Decimal('0'))
             r['costo'] += costo
@@ -210,14 +215,12 @@ class VentasMesView(APIView):
                 'documentos': [_documento_json(d) for d in documentos],
             })
 
-        # Lo emitido en el mes según los documentos (lo que va al F29), aparte
-        # de la cifra teórica que sale de las ventas.
+        # Documentos emitidos en el rango que todavía no están ligados a un
+        # pedido. No forman parte del IVA de los pedidos mostrados.
         docs_mes = DocumentoTributario.objects.filter(operacion='ventas', ambiente='produccion',
                                                      fecha_emision__gte=inicio.date(), fecha_emision__lt=fin.date())
-        iva_documentos = Decimal('0')
         sin_pedido = []
         for d in docs_mes.select_related('usuario'):
-            iva_documentos += -d.iva if d.tipo == 61 else d.iva
             if not d.pedido_id:
                 sin_pedido.append(_documento_json(d))
 
@@ -234,7 +237,7 @@ class VentasMesView(APIView):
         return Response({
             'mes': f'{mes[0]}-{mes[1]:02d}',
             'rango': {'desde': inicio.date(), 'hasta': fin.date() - timedelta(days=1)} if inicio < fin else None,
-            'resumen': {**r, **conteo, 'iva_debito_documentos': iva_documentos,
+            'resumen': {**r, **conteo,
                         'cobros_recibidos_mes': sum(recibido.values(), Decimal('0'))},
             'recibido_por': [{'nombre': k, 'monto': v} for k, v in sorted(recibido.items())],
             'por_vendedor': sorted(por_vendedor.values(), key=lambda v: v['nombre']),
