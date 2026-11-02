@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { AlertTriangle, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -23,7 +24,7 @@ import {
   type PedidoCierre, type VentasMes,
 } from '@/lib/cierre';
 
-type Filtro = 'todos' | 'por_cobrar' | 'sin_documento' | 'alertas';
+type Filtro = 'todos' | 'por_cobrar' | 'con_documento' | 'sin_documento' | 'alertas';
 
 export default function CierreMes() {
   const { seleccionado: periodo } = usePeriodo();
@@ -37,6 +38,11 @@ export default function CierreMes() {
   const [filtro, setFiltro] = useState<Filtro>('todos');
   const [busqueda, setBusqueda] = useState('');
   const [seleccionado, setSeleccionado] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [mes, vendedor, filtro, busqueda, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin]);
 
   const { data: vendedores = [] } = useQuery({ queryKey: ['vendedores'], queryFn: async () => (await getVendedores()).data });
   const { data, isLoading, error } = useQuery({
@@ -48,11 +54,23 @@ export default function CierreMes() {
     const q = busqueda.trim().toLowerCase();
     return (data?.pedidos ?? []).filter((p) => {
       if (filtro === 'por_cobrar' && p.estado_cobro === 'pagado') return false;
+      // Los documentos con diferencias de monto o tipo también cuentan como emitidos.
+      if (filtro === 'con_documento' && p.estado_tributario === 'pendiente') return false;
       if (filtro === 'sin_documento' && p.estado_tributario === 'emitido') return false;
       if (filtro === 'alertas' && p.alertas.length === 0) return false;
       return !q || p.cliente.nombre.toLowerCase().includes(q) || String(p.id) === q;
     });
   }, [data, filtro, busqueda]);
+
+  const pedidosSeleccionados = useMemo(
+    () => pedidos.filter((p) => selectedIds.includes(p.id)),
+    [pedidos, selectedIds],
+  );
+  const ivaSeleccionado = pedidosSeleccionados.reduce((suma, p) => suma + Number(p.iva), 0);
+  const todosSeleccionados = pedidos.length > 0 && pedidosSeleccionados.length === pedidos.length;
+  const toggleSeleccion = (id: number) => {
+    setSelectedIds((ids) => ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id]);
+  };
 
   // Se busca por id en los datos frescos para que el panel se actualice al registrar algo.
   const pedidoAbierto = data?.pedidos.find((p) => p.id === seleccionado) ?? null;
@@ -95,7 +113,7 @@ export default function CierreMes() {
   };
 
   return (
-    <div className="space-y-6 pb-20 md:pb-0">
+    <div className={cn('space-y-6 pb-20 md:pb-0', pedidosSeleccionados.length > 0 && 'pb-44 md:pb-24')}>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Cierre de mes</h1>
@@ -190,14 +208,23 @@ export default function CierreMes() {
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input placeholder="Cliente o N° de pedido" className="pl-8" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
                 </div>
-                {([['todos', 'Todas'], ['por_cobrar', 'Por cobrar'], ['sin_documento', 'Sin documento'], ['alertas', 'Con alertas']] as [Filtro, string][]).map(([v, t]) => (
+                {([['todos', 'Todas'], ['por_cobrar', 'Por cobrar'], ['con_documento', 'Con documento'], ['sin_documento', 'Sin documento'], ['alertas', 'Con alertas']] as [Filtro, string][]).map(([v, t]) => (
                   <Button key={v} size="sm" variant={filtro === v ? 'default' : 'outline'} onClick={() => setFiltro(v)}>{t}</Button>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground">Selecciona pedidos para sumar su IVA.</p>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-12">
+                        <Checkbox
+                          aria-label="Seleccionar todos los pedidos visibles"
+                          checked={todosSeleccionados ? true : pedidosSeleccionados.length > 0 ? 'indeterminate' : false}
+                          disabled={pedidos.length === 0}
+                          onCheckedChange={(checked) => setSelectedIds(checked === true ? pedidos.map((p) => p.id) : [])}
+                        />
+                      </TableHead>
                       <TableHead>Pedido</TableHead>
                       <TableHead>Cliente</TableHead>
                       <TableHead className="hidden md:table-cell">Vendedor</TableHead>
@@ -209,11 +236,26 @@ export default function CierreMes() {
                   </TableHeader>
                   <TableBody>
                     {pedidos.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="h-20 text-center text-muted-foreground">No hay ventas con este filtro</TableCell></TableRow>
-                    ) : pedidos.map((p) => <FilaPedido key={p.id} p={p} onClick={() => setSeleccionado(p.id)} />)}
+                      <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground">No hay ventas con este filtro</TableCell></TableRow>
+                    ) : pedidos.map((p) => <FilaPedido key={p.id} p={p} seleccionado={selectedIds.includes(p.id)}
+                      onSeleccionar={() => toggleSeleccion(p.id)} onClick={() => setSeleccionado(p.id)} />)}
                   </TableBody>
                 </Table>
               </div>
+              {pedidosSeleccionados.length > 0 && (
+                <div className="fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-4 z-30 mx-auto flex max-w-xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl">
+                  <div className="min-w-0 flex-1" role="status" aria-live="polite" aria-atomic="true">
+                    <p className="text-xs text-slate-300">
+                      {pedidosSeleccionados.length} pedido{pedidosSeleccionados.length === 1 ? '' : 's'} seleccionado{pedidosSeleccionados.length === 1 ? '' : 's'}
+                    </p>
+                    <p className="text-xs text-slate-300">IVA seleccionado</p>
+                    <p className="text-lg font-bold tabular-nums text-blue-300">{formatCLP(ivaSeleccionado)}</p>
+                  </div>
+                  <Button variant="ghost" size="sm" className="text-slate-300 hover:text-white hover:bg-slate-800" onClick={() => setSelectedIds([])}>
+                    Limpiar selección
+                  </Button>
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="compras"><ComprasMes mes={mes} /></TabsContent>
@@ -264,9 +306,14 @@ export default function CierreMes() {
   );
 }
 
-function FilaPedido({ p, onClick }: { p: PedidoCierre; onClick: () => void }) {
+function FilaPedido({ p, seleccionado, onSeleccionar, onClick }: {
+  p: PedidoCierre; seleccionado: boolean; onSeleccionar: () => void; onClick: () => void;
+}) {
   return (
-    <TableRow className="cursor-pointer" onClick={onClick}>
+    <TableRow className="cursor-pointer" data-state={seleccionado ? 'selected' : undefined} onClick={onClick}>
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        <Checkbox aria-label={`Seleccionar pedido #${p.id}`} checked={seleccionado} onCheckedChange={onSeleccionar} />
+      </TableCell>
       <TableCell>
         <p className="font-medium">#{p.id}</p>
         <p className="text-xs text-muted-foreground">{formatFecha(p.fecha)}</p>
