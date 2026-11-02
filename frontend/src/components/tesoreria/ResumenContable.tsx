@@ -22,6 +22,7 @@ interface Mes {
   ventas_netas: Num; costo_ventas: Num; ganancia_bruta: Num; gastos_netos: Num; mermas: Num; utilidad: Num;
   iva_debito: Num; iva_credito_compras: Num; iva_credito_anticipo: Num; iva_credito_gastos: Num; iva_credito: Num;
   remanente_anterior: Num; iva_a_pagar: Num; remanente: Num; ppm: Num;
+  iva_debito_sii: Num; remanente_anterior_sii: Num; iva_a_pagar_sii: Num; remanente_sii: Num;
 }
 interface Anio { anio: string; utilidad: Num; ppm: Num; impuesto_estimado: Num; saldo_abril: Num }
 interface Contabilidad {
@@ -58,7 +59,7 @@ export function ResumenContable({ rango }: { rango: RangoFecha }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatCard
           title="Saldo en banco"
           value={estado.saldo_banco != null ? formatCLP(estado.saldo_banco) : '—'}
@@ -66,11 +67,18 @@ export function ResumenContable({ rango }: { rango: RangoFecha }) {
           description={estado.saldo_banco != null ? 'Según la última cartola' : 'Sube una cartola para verlo'}
         />
         <StatCard
-          title={n(filaMes?.iva_a_pagar) > 0 ? 'IVA a pagar este mes' : 'IVA este mes'}
+          title="IVA esperado este mes"
           value={formatCLP(filaMes?.iva_a_pagar ?? 0)}
           icon={Receipt}
           accent={n(filaMes?.iva_a_pagar) > 0 ? 'text-amber-600' : undefined}
           description={n(filaMes?.remanente) > 0 ? `${formatCLP(filaMes?.remanente)} de remanente a favor` : 'Débito − crédito − remanente'}
+        />
+        <StatCard
+          title="IVA emitido SII este mes"
+          value={formatCLP(filaMes?.iva_a_pagar_sii ?? 0)}
+          icon={Receipt}
+          accent={n(filaMes?.iva_a_pagar_sii) > 0 ? 'text-amber-600' : undefined}
+          description={n(filaMes?.remanente_sii) > 0 ? `${formatCLP(filaMes?.remanente_sii)} de remanente a favor` : 'Documentos reales registrados, menos créditos y remanente'}
         />
         <StatCard
           title="Utilidad del período"
@@ -122,18 +130,20 @@ export function ResumenContable({ rango }: { rango: RangoFecha }) {
       <div className="grid gap-6 xl:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base"><Receipt className="h-4 w-4" /> IVA mensual (F29)</CardTitle>
-            <CardDescription>Débito de las ventas; crédito de las compras del mes (menos notas de crédito) y gastos con factura.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-base"><Receipt className="h-4 w-4" /> IVA mensual: esperado y emitido SII</CardTitle>
+            <CardDescription>Esperado: todas las ventas. Emitido SII: documentos de producción registrados por fecha de emisión, menos notas de crédito, incluidos los que no tienen pedido. Ambos descuentan compras, anticipo de carne y gastos con factura, con remanentes separados. Importa el registro SII completo para comparar.</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto p-0 sm:p-6 sm:pt-0">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Mes</TableHead>
-                  <TableHead className="text-right">Débito</TableHead>
+                  <TableHead className="text-right">Débito esperado</TableHead>
+                  <TableHead className="text-right">Débito emitido SII</TableHead>
                   <TableHead className="text-right">Crédito</TableHead>
-                  <TableHead className="text-right">Remanente ant.</TableHead>
-                  <TableHead className="text-right">A pagar</TableHead>
+                  <TableHead className="text-right">Remanente ant. esperado / SII</TableHead>
+                  <TableHead className="text-right">A pagar esperado</TableHead>
+                  <TableHead className="text-right">A pagar emitido SII</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -141,12 +151,16 @@ export function ResumenContable({ rango }: { rango: RangoFecha }) {
                   <TableRow key={m.mes}>
                     <TableCell className="capitalize">{nombreMes(m.mes)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatCLP(m.iva_debito)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatCLP(m.iva_debito_sii)}</TableCell>
                     <TableCell className="text-right tabular-nums" title={`Compras ${formatCLP(m.iva_credito_compras)} · anticipo carne ${formatCLP(m.iva_credito_anticipo)} · gastos ${formatCLP(m.iva_credito_gastos)}`}>
                       {formatCLP(m.iva_credito)}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">{n(m.remanente_anterior) ? formatCLP(m.remanente_anterior) : '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums text-muted-foreground">{formatCLP(m.remanente_anterior)} / {formatCLP(m.remanente_anterior_sii)}</TableCell>
                     <TableCell className={cn('text-right font-semibold tabular-nums', n(m.iva_a_pagar) > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
                       {n(m.iva_a_pagar) > 0 ? formatCLP(m.iva_a_pagar) : `queda ${formatCLP(m.remanente)}`}
+                    </TableCell>
+                    <TableCell className={cn('text-right font-semibold tabular-nums', n(m.iva_a_pagar_sii) > 0 ? 'text-amber-700' : 'text-muted-foreground')}>
+                      {n(m.iva_a_pagar_sii) > 0 ? formatCLP(m.iva_a_pagar_sii) : `queda ${formatCLP(m.remanente_sii)}`}
                     </TableCell>
                   </TableRow>
                 ))}

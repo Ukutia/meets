@@ -100,8 +100,37 @@ class PrecioPedidoTests(BaseFinanzas):
 
 
 class ContabilidadTests(BaseFinanzas):
+    def test_iva_sii_separa_documentos_y_arrastra_su_propio_remanente(self):
+        from .contabilidad import resumen_mensual
+        from .models import DocumentoTributario
+
+        # Venta registrada en octubre, sin documento asociado.
+        self.crear_pedido()
+        DetallePedido.objects.all().update(fecha='2026-10-10')
+        for tipo, folio, fecha, iva, ambiente in [
+            (33, 1, '2026-10-15', 10000, 'produccion'),
+            (61, 2, '2026-10-16', 1000, 'produccion'),
+            (39, 3, '2026-10-17', 90000, 'pruebas'),
+            (39, 4, '2026-11-15', 30000, 'produccion'),
+        ]:
+            DocumentoTributario.objects.create(tipo=tipo, folio=folio, fecha_emision=fecha,
+                                               iva=iva, total=iva, ambiente=ambiente)
+        filas, _ = resumen_mensual('2026-10-01', '2026-11-30')
+        octubre, noviembre = filas
+        self.assertAlmostEqual(float(octubre['iva_debito']), 24000 - 24000 / 1.19)
+        self.assertEqual(octubre['iva_debito_sii'], 9000)
+        self.assertEqual(octubre['remanente_sii'], 21400)
+        self.assertEqual(noviembre['remanente_anterior_sii'], 21400)
+        self.assertEqual(noviembre['iva_a_pagar_sii'], 8600)
+        self.assertEqual(noviembre['iva_a_pagar'], 0)
+        self.assertNotEqual(noviembre['remanente_anterior'], noviembre['remanente_anterior_sii'])
+        # Filtrar el rango no pierde el remanente generado antes.
+        filtradas, _ = resumen_mensual('2026-11-01', '2026-11-30')
+        self.assertEqual(filtradas, [noviembre])
+
     def test_iva_credito_sale_de_compras_y_notas_de_credito(self):
         self.crear_pedido()  # venta 24.000 con IVA
+        DetallePedido.objects.all().update(fecha='2026-10-10')
         r = self.client.post(reverse("notas_credito", args=["100"]),
                              {"numero": "NC1", "fecha": "2026-10-05", "neto": 10000}, format="json")
         self.assertEqual(r.status_code, 201, r.content)

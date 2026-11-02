@@ -38,7 +38,7 @@ const TONO: Record<Tono, string> = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { enPeriodo } = usePeriodo();
+  const { enPeriodo, rango } = usePeriodo();
   const [lista, setLista] = useState<'pesar' | 'cobrar'>('pesar');
 
   // Mismas claves y formas que las páginas de detalle para compartir caché.
@@ -90,8 +90,8 @@ export default function Dashboard() {
     .sort((a, b) => a.disponibles - b.disponibles);
 
   const saldos = useMemo(
-    () => calcularSaldosVendedores(vendedoresQ.data ?? [], pedidos, (pagosQ.data ?? []).filter((p) => enPeriodo(p.fecha))),
-    [vendedoresQ.data, pedidos, pagosQ.data, enPeriodo]
+    () => calcularSaldosVendedores(vendedoresQ.data ?? [], (pedidosQ.data ?? []).filter((p) => p.estado !== 'Anulado'), pagosQ.data ?? [], rango),
+    [vendedoresQ.data, pedidosQ.data, pagosQ.data, rango]
   );
   const saldoTotal = saldos.reduce((s, v) => s + v.saldo, 0);
 
