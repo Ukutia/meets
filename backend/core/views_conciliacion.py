@@ -8,9 +8,23 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import conciliacion as c
-from .models import CierreTributario, DocumentoTributario, Pedido, Periodo
+from .models import CierreTributario, DocumentoTributario, Factura, Pedido, Periodo
 from .sii import json_seguro, validar_mes
 from .views_tesoreria import _error
+
+
+class FacturaF29View(APIView):
+    """PATCH {excluir: bool}: descarta (o vuelve a considerar) una factura de compra
+    en la propuesta F29. No modifica la factura ni su stock ni sus pagos."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        factura = Factura.objects.filter(pk=pk).first()
+        if not factura:
+            return _error('Factura no encontrada', 404)
+        factura.excluir_f29 = bool(request.data.get('excluir'))
+        factura.save(update_fields=['excluir_f29'])
+        return Response({'id': factura.pk, 'excluida': factura.excluir_f29})
 
 
 class ConciliacionMesView(APIView):

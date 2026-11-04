@@ -78,6 +78,7 @@ urlpatterns = [
     path('cierre/sii/', cierre.ImportacionSIIView.as_view(), name='cierre_sii'),
     path('cierre/conciliacion/', conciliacion.ConciliacionMesView.as_view(), name='conciliacion_mes'),
     path('cierre/conciliacion/<int:pk>/', conciliacion.ConciliacionDocumentoView.as_view(), name='conciliacion_documento'),
+    path('cierre/facturas/<path:pk>/f29/', conciliacion.FacturaF29View.as_view(), name='factura_f29'),
     path('cierre/pedidos/<int:pk>/entrega/', conciliacion.FechaEntregaView.as_view(), name='fecha_entrega'),
     path('cierre/pedidos/<int:pk>/emitir-boleta/', cierre.EmitirBoletaView.as_view(), name='emitir_boleta'),
     path('cierre/documentos/<int:pk>/estado/', cierre.EstadoDocumentoView.as_view(), name='estado_documento'),

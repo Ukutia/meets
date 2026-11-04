@@ -378,6 +378,7 @@ class Factura(models.Model):
     total = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Total con IVA")
     exento = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     otros_impuestos = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    excluir_f29 = models.BooleanField(default=False, verbose_name="No considerar en el F29")
     total_pagadero = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
                                         help_text='Pagadero según documento; vacío usa total menos notas de crédito')
     fecha_vencimiento = models.DateField(null=True, blank=True, verbose_name="Fecha de vencimiento")

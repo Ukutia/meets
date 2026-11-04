@@ -264,11 +264,20 @@ def compras_internas(mes):
     que sí lo tienen ya se cuentan por el RCV)."""
     anio, m = int(mes[:4]), int(mes[5:])
     mismo_mes = {'fecha__year': anio, 'fecha__month': m}
-    docs = []
-    for f in Factura.objects.filter(**mismo_mes).exclude(documentos_sii__operacion='compras'):
-        docs.append(SimpleNamespace(tipo=f.tipo_documento, iva=f.iva, neto=f.subtotal, exento=f.exento, anticipo=f.anticipo_iva,
-                                    credito_validado=True, anticipo_validado=True, interno=True))
-    for n in NotaCredito.objects.filter(**mismo_mes).exclude(documentos_sii__operacion='compras'):
+    docs, listado = [], []
+    en_rcv = set(DocumentoTributario.objects.filter(operacion='compras', factura__isnull=False)
+                 .values_list('factura_id', flat=True))
+    descartadas = set()
+    for f in Factura.objects.filter(**mismo_mes).select_related('proveedor').order_by('fecha', 'numero_factura'):
+        listado.append({'id': f.pk, 'numero': f.numero_factura, 'proveedor': f.proveedor.nombre, 'fecha': f.fecha,
+                        'iva': f.iva, 'anticipo': f.anticipo_iva, 'total': f.total, 'excluida': f.excluir_f29,
+                        'en_rcv': f.pk in en_rcv})
+        if f.excluir_f29:
+            descartadas.add(f.pk)
+        elif f.pk not in en_rcv:
+            docs.append(SimpleNamespace(tipo=f.tipo_documento, iva=f.iva, neto=f.subtotal, exento=f.exento, anticipo=f.anticipo_iva,
+                                        credito_validado=True, anticipo_validado=True, interno=True))
+    for n in NotaCredito.objects.filter(**mismo_mes).exclude(factura_id__in=descartadas).exclude(documentos_sii__operacion='compras'):
         docs.append(SimpleNamespace(tipo=61, iva=n.iva, neto=n.neto, exento=CERO, anticipo=CERO,
                                     credito_validado=True, anticipo_validado=True, interno=True))
     for g in Gasto.objects.filter(con_factura=True, **mismo_mes).exclude(documentos_sii__operacion='compras'):
@@ -276,7 +285,7 @@ def compras_internas(mes):
                                     credito_validado=True, anticipo_validado=True, interno=True))
     for d in docs:
         d.estado_sii = 'registrado'
-    return docs
+    return docs, listado, descartadas
 
 
 def propuesta_f29(mes, ventas_mes, compras, cierre, config):
@@ -291,8 +300,8 @@ def propuesta_f29(mes, ventas_mes, compras, cierre, config):
     ventas, sin_documento, declarados = ventas_declaradas(mes)
     # Documentos de venta del período que no son de un pedido declarado este mes.
     fuera = [d for d in ventas_mes if d.pedido_id not in declarados]
-    internas = compras_internas(mes)
-    registradas = [d for d in compras if d.estado_sii == 'registrado'] + internas
+    internas, facturas_mes, descartadas = compras_internas(mes)
+    registradas = [d for d in compras if d.estado_sii == 'registrado' and d.factura_id not in descartadas] + internas
     n_fact, d_fact = linea(ventas, (33, 34))
     n_bol, d_bol = linea(ventas, (39, 41))
     n_nd, d_nd = linea(ventas, (56,))
@@ -328,6 +337,7 @@ def propuesta_f29(mes, ventas_mes, compras, cierre, config):
         'creditos': {'con_derecho': c_fact + c_nd - c_nc, 'exentas': exentas, 'remanente_anterior': remanente,
                      'facturas': {'cantidad': n_rec, 'monto': c_fact}, 'notas_debito': {'cantidad': n_ndr, 'monto': c_nd},
                      'notas_credito': {'cantidad': n_ncr, 'monto': c_nc}, 'total': creditos},
+        'facturas_compra': facturas_mes,
         'iva_determinado': iva, 'remanente_siguiente': max(creditos - debitos, CERO),
         'ppm': {'base': pesos(base_ppm), 'tasa': tasa, 'tasa_confirmada': cierre.tasa_ppm is not None, 'monto': ppm},
         'anticipo': {'periodo': anticipo, 'sin_validar': anticipo_sin_validar,

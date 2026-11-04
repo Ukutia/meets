@@ -134,6 +134,20 @@ class ConciliacionTests(TestCase):
         f29 = resumen_mes('2026-10')['f29']
         self.assertEqual(f29['creditos']['facturas']['cantidad'], 0)  # Vinculada y sin validar crédito.
 
+    def test_factura_de_compra_descartada_no_suma_al_f29(self):
+        Factura.objects.create(proveedor=self.proveedor, fecha=date(2026, 10, 20), numero_factura='B/1',
+                               subtotal=100000, iva=19000, anticipo_iva=5000, total=124000)
+        Factura.objects.create(proveedor=self.proveedor, fecha=date(2026, 10, 21), numero_factura='B2',
+                               subtotal=50000, iva=9500, total=59500)
+        r = self.client.patch(reverse('factura_f29', args=['B/1']), {'excluir': True}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        f29 = resumen_mes('2026-10')['f29']
+        self.assertEqual(f29['creditos']['facturas'], {'cantidad': 1, 'monto': 9500})
+        self.assertEqual(f29['anticipo']['periodo'], 0)
+        self.assertEqual([(f['numero'], f['excluida']) for f in f29['facturas_compra']], [('B/1', True), ('B2', False)])
+        self.client.patch(reverse('factura_f29', args=['B/1']), {'excluir': False}, format='json')
+        self.assertEqual(resumen_mes('2026-10')['f29']['creditos']['facturas']['monto'], 28500)
+
     def test_propuesta_f29_usa_iva_teorico_de_declarado_sin_documento(self):
         p = self.pedido(total=1190, mes_declaracion=date(2026, 10, 1), declarado=True)
         self.pedido(total=2380)  # No declarado: no suma.

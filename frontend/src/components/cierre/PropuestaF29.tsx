@@ -1,13 +1,21 @@
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Button } from '@/components/ui/button';
+import { useToast } from '@/hooks/use-toast';
 import { formatCLP } from '@/lib/utils';
+import { excluirFacturaF29 } from '@/services/api';
 
 type Num = string | number;
 interface Linea { cantidad: number; monto: Num }
+interface FacturaCompra {
+  id: string; numero: string; proveedor: string; fecha: string; iva: Num; anticipo: Num; total: Num; excluida: boolean; en_rcv: boolean;
+}
 export interface F29 {
   debitos: {
     facturas: Linea; boletas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num;
     pedidos_declarados: number; pedidos_sin_documento: number[]; documentos_no_declarados: { cantidad: number; iva: Num };
   };
   creditos: { con_derecho: Num; exentas: Num; remanente_anterior: Num; facturas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num };
+  facturas_compra: FacturaCompra[];
   iva_determinado: Num; remanente_siguiente: Num;
   ppm: { base: Num; tasa: Num; tasa_confirmada: boolean; monto: Num };
   anticipo: { periodo: Num; sin_validar: Num; remanente_anterior: Num; total: Num; imputado: Num; remanente_siguiente: Num };
@@ -34,6 +42,14 @@ function Fila({ texto, codigo, monto, signo, total, nota }: { texto: string; cod
 /** Propuesta F29 con los mismos códigos que muestra el SII, para comparar línea a línea. */
 export function PropuestaF29({ f29 }: { f29: F29 }) {
   const { debitos: d, creditos: c, anticipo: a } = f29;
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const excluir = useMutation({
+    mutationFn: ({ id, excluir }: { id: string; excluir: boolean }) => excluirFacturaF29(id, excluir),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['conciliacion'] }); qc.invalidateQueries({ queryKey: ['contabilidad'] }); },
+    onError: () => toast({ title: 'No se pudo actualizar la factura', variant: 'destructive' }),
+  });
+  const descartadas = f29.facturas_compra.filter((f) => f.excluida).length;
   return <div className="rounded-lg border p-4 space-y-2">
     <h3 className="font-semibold">Propuesta F29 · para comparar con el SII</h3>
     <p className="text-xs text-muted-foreground">
@@ -83,6 +99,21 @@ export function PropuestaF29({ f29 }: { f29: F29 }) {
         </tbody>
       </table>
     </div>
+    <details className="rounded border p-3 text-sm" open={descartadas > 0}>
+      <summary className="cursor-pointer font-medium">Facturas de compra del mes ({f29.facturas_compra.length}{descartadas ? ` · ${descartadas} descartada(s)` : ''})</summary>
+      <p className="text-xs text-muted-foreground my-2">Descarta las que no corresponde considerar en este F29. La factura no se borra ni cambia: solo deja de sumar su crédito y su anticipo.</p>
+      <div className="space-y-1">
+        {f29.facturas_compra.map((f) => <div key={f.id} className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 ${f.excluida ? 'opacity-60' : ''}`}>
+          <span className={f.excluida ? 'line-through' : ''}>
+            N° {f.numero} · {f.proveedor} · {f.fecha}
+            <span className="block text-xs text-muted-foreground">IVA {formatCLP(f.iva)}{n(f.anticipo) ? ` · Anticipo ${formatCLP(f.anticipo)}` : ''}{f.en_rcv ? ' · en RCV' : ''}</span>
+          </span>
+          <Button size="sm" variant={f.excluida ? 'default' : 'outline'} disabled={excluir.isPending}
+            onClick={() => excluir.mutate({ id: f.id, excluir: !f.excluida })}>{f.excluida ? 'Volver a considerar' : 'Descartar'}</Button>
+        </div>)}
+        {!f29.facturas_compra.length && <p className="text-xs text-muted-foreground">No hay facturas de compra ingresadas en este mes.</p>}
+      </div>
+    </details>
     <div className="flex justify-between items-center rounded border-2 border-sky-300 bg-sky-50 dark:bg-sky-950/50 px-3 py-2 font-bold">
       <span>Total a pagar en plazo legal <span className="text-muted-foreground font-normal ml-2">91</span></span>
       <span className="tabular-nums text-lg">{formatCLP(f29.total_a_pagar)}</span>
