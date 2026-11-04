@@ -3,7 +3,10 @@ import { formatCLP } from '@/lib/utils';
 type Num = string | number;
 interface Linea { cantidad: number; monto: Num }
 export interface F29 {
-  debitos: { facturas: Linea; boletas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num };
+  debitos: {
+    facturas: Linea; boletas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num;
+    pedidos_declarados: number; pedidos_sin_documento: number[]; documentos_no_declarados: { cantidad: number; iva: Num };
+  };
   creditos: { con_derecho: Num; exentas: Num; remanente_anterior: Num; facturas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num };
   iva_determinado: Num; remanente_siguiente: Num;
   ppm: { base: Num; tasa: Num; tasa_confirmada: boolean; monto: Num };
@@ -33,7 +36,14 @@ export function PropuestaF29({ f29 }: { f29: F29 }) {
   const { debitos: d, creditos: c, anticipo: a } = f29;
   return <div className="rounded-lg border p-4 space-y-2">
     <h3 className="font-semibold">Propuesta F29 · para comparar con el SII</h3>
-    <p className="text-xs text-muted-foreground">Calculada con los documentos registrados en el RCV del período, igual que la propuesta del SII.</p>
+    <p className="text-xs text-muted-foreground">
+      Débitos de los {d.pedidos_declarados} pedido(s) marcados como declarados en el cierre de ventas del mes.
+      Créditos y anticipo con las compras registradas en el RCV del período.
+    </p>
+    {(d.pedidos_sin_documento.length > 0 || d.documentos_no_declarados.cantidad > 0) && <ul className="rounded bg-amber-500/10 p-2 pl-6 text-xs list-disc">
+      {d.pedidos_sin_documento.length > 0 && <li>Declarados sin boleta ni factura (se usa su IVA teórico): {d.pedidos_sin_documento.map((id) => `#${id}`).join(', ')}</li>}
+      {d.documentos_no_declarados.cantidad > 0 && <li>{d.documentos_no_declarados.cantidad} documento(s) de venta del SII del período no son de un pedido declarado este mes (IVA {formatCLP(d.documentos_no_declarados.iva)}): no se suman aquí, pero el SII sí los considera.</li>}
+    </ul>}
     <div className="overflow-x-auto">
       <table className="w-full text-sm border-collapse min-w-[520px]">
         <tbody>

@@ -85,6 +85,7 @@ export default function CierreMes() {
     mutationFn: (ids: number[]) => declararMes({ mes, pedidos: ids, vendedor: vendedor === 'todos' ? undefined : vendedor, periodo: periodo?.id }),
     onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ['cierre-ventas'] });
+      queryClient.invalidateQueries({ queryKey: ['conciliacion'] });
       toast({ title: `${r.data.declarados} pedido(s) declarados en ${nombreMes(mes)}`,
         description: r.data.diferidos ? `${r.data.diferidos} pasan a ${nombreMes(r.data.mes_siguiente)}.` : undefined });
     },

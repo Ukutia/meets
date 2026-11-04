@@ -2,7 +2,8 @@
 
 Fuentes y límites tributarios documentados en docs/conciliacion-sii.md.
 """
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
@@ -234,14 +235,41 @@ def fila_documento(doc):
             'datos_actualizados_al': doc.importacion.datos_actualizados_al if doc.importacion else None}
 
 
-def propuesta_f29(ventas, compras, cierre, config, base_ppm):
-    """Propuesta F29 con los códigos del formulario, armada como la arma el SII:
-    con todo lo registrado en el RCV del período. Sirve para comparar línea a
-    línea con la propuesta del SII; la estimación validada es f29_estimado."""
+def ventas_declaradas(mes):
+    """Débitos de los pedidos marcados como declarados en el mes (cierre de
+    ventas). Cada pedido aporta sus documentos de venta de producción; si aún no
+    tiene, su IVA teórico según el documento pedido (factura o boleta)."""
+    from .contabilidad import factor_iva
+    iva_rate = factor_iva()
+    pedidos = (Pedido.objects.exclude(estado='Anulado')
+               .filter(mes_declaracion=date.fromisoformat(mes + '-01'), declarado=True)
+               .prefetch_related('documentos'))
+    lineas, sin_documento, ids = [], [], set()
+    for p in pedidos:
+        ids.add(p.pk)
+        docs = [d for d in p.documentos.all() if d.ambiente == 'produccion' and d.operacion == 'ventas'
+                and d.tipo in (33, 34, 39, 41, 56, 61)]
+        if docs:
+            lineas += [SimpleNamespace(tipo=d.tipo, iva=d.iva, neto=d.neto + d.exento) for d in docs]
+        else:
+            neto = pesos(p.total / iva_rate)
+            lineas.append(SimpleNamespace(tipo=33 if p.tipo_recibo == 'Factura' else 39, iva=p.total - neto, neto=neto))
+            sin_documento.append(p.pk)
+    return lineas, sin_documento, ids
+
+
+def propuesta_f29(mes, ventas_mes, compras, cierre, config):
+    """Propuesta F29 con los códigos del formulario. Los débitos salen solo de los
+    pedidos declarados en el cierre de ventas del mes; los créditos y el anticipo,
+    de las compras registradas en el RCV del período, como en la propuesta del SII.
+    La estimación validada es f29_estimado."""
     def linea(docs, tipos, campo='iva'):
         sel = [d for d in docs if d.tipo in tipos]
         return len(sel), pesos(sum((getattr(d, campo) for d in sel), CERO))
 
+    ventas, sin_documento, declarados = ventas_declaradas(mes)
+    # Documentos de venta del período que no son de un pedido declarado este mes.
+    fuera = [d for d in ventas_mes if d.pedido_id not in declarados]
     registradas = [d for d in compras if d.estado_sii == 'registrado']
     n_fact, d_fact = linea(ventas, (33, 34))
     n_bol, d_bol = linea(ventas, (39, 41))
@@ -259,6 +287,8 @@ def propuesta_f29(ventas, compras, cierre, config, base_ppm):
     exentas = pesos(sum((signo(d) * d.exento for d in registradas), CERO))
 
     iva = max(debitos - creditos, CERO)
+    signo_neto = sum((signo(d) * d.neto for d in ventas), CERO)
+    base_ppm = cierre.base_ppm if cierre.base_ppm is not None else signo_neto
     tasa = cierre.tasa_ppm if cierre.tasa_ppm is not None else config.tasa_ppm
     ppm = pesos(max(base_ppm, CERO) * Decimal(str(tasa)) / 100)
     anticipo = pesos(sum((signo(d) * d.anticipo for d in registradas), CERO))
@@ -270,7 +300,9 @@ def propuesta_f29(ventas, compras, cierre, config, base_ppm):
     return {
         'debitos': {'facturas': {'cantidad': n_fact, 'monto': d_fact}, 'boletas': {'cantidad': n_bol, 'monto': d_bol},
                     'notas_debito': {'cantidad': n_nd, 'monto': d_nd}, 'notas_credito': {'cantidad': n_nc, 'monto': d_nc},
-                    'total': debitos},
+                    'total': debitos, 'pedidos_declarados': len(declarados),
+                    'pedidos_sin_documento': sin_documento,
+                    'documentos_no_declarados': {'cantidad': len(fuera), 'iva': pesos(sum((signo(d) * d.iva for d in fuera), CERO))}},
         'creditos': {'con_derecho': c_fact + c_nd - c_nc, 'exentas': exentas, 'remanente_anterior': remanente,
                      'facturas': {'cantidad': n_rec, 'monto': c_fact}, 'notas_debito': {'cantidad': n_ndr, 'monto': c_nd},
                      'notas_credito': {'cantidad': n_ncr, 'monto': c_nc}, 'total': creditos},
@@ -406,7 +438,7 @@ def resumen_mes(mes, periodo=None):
                     'tasa': cierre.tasa_ppm, 'estimado': ppm, 'informado_sii': cierre.ppm_informado_sii,
                     'diferencia': ppm - cierre.ppm_informado_sii if cierre.ppm_informado_sii is not None and ppm is not None else None},
             'parametros': parametros, 'f29_estimado': f29, 'declarado': cierre.declarado,
-            'f29': propuesta_f29(ventas, compras, cierre, config, base),
+            'f29': propuesta_f29(mes, ventas, compras, cierre, config),
             'documentalmente_conciliado': documental, 'cumplimiento_completo': completo,
             'advertencias': advertencias,
             'config': {'rut_empresa': config.rut_empresa, 'inicio_actividades': config.inicio_actividades, 'regimen': config.regimen}}

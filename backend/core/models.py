@@ -74,6 +74,23 @@ class StockBodega(models.Model):
         constraints = [models.UniqueConstraint(fields=['bodega', 'producto'], name='stock_bodega_producto_unico')]
 
 
+class MovimientoBodega(models.Model):
+    """Traspaso de existencias. ``origen``/``destino`` nulos = "Sin asignar"
+    (stock del inventario que no está en ninguna bodega). Siempre sale de un
+    lado y entra al otro, así el total nunca cambia."""
+    producto = models.ForeignKey('Producto', on_delete=models.CASCADE, related_name='movimientos_bodega')
+    origen = models.ForeignKey(Bodega, on_delete=models.SET_NULL, null=True, blank=True, related_name='salidas')
+    destino = models.ForeignKey(Bodega, on_delete=models.SET_NULL, null=True, blank=True, related_name='entradas')
+    unidades = models.PositiveIntegerField(default=0)
+    kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    nota = models.CharField(max_length=200, blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+
 class Producto(models.Model):
     id = models.AutoField(primary_key=True)  # Campo ID automático
     nombre = models.CharField(max_length=100, verbose_name="Nombre del producto")

@@ -157,6 +157,7 @@ export interface Factura {
 export const totalAPagar = (f: Factura) => Number(f.total_a_pagar ?? f.total);
 
 export interface StockItem {
+  sin_asignar?: number;
   bodegas?: { bodega: number; nombre: string; unidades: number; kilos: number | string }[];
   id: number;
   producto: string;

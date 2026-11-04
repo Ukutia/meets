@@ -33,6 +33,14 @@ export const getBodegas = () => api.get<Bodega[]>('/inventario/bodegas/');
 export const crearBodega = (nombre: string) => api.post<Bodega>('/inventario/bodegas/', { nombre });
 export const guardarStockBodega = (id: number, data: { producto: number; unidades: number; kilos: number }) =>
   api.put(`/inventario/bodegas/${id}/stock/`, data);
+export interface TraspasoBodega {
+  id: number; fecha: string; producto: number; producto_nombre: string;
+  origen: number | null; origen_nombre: string; destino: number | null; destino_nombre: string;
+  unidades: number; kilos: number | string; nota: string; usuario: string | null;
+}
+export const getTraspasos = () => api.get<TraspasoBodega[]>('/inventario/bodegas/traspasos/');
+export const crearTraspaso = (data: { producto: number; origen: number | null; destino: number | null; unidades: number; kilos: number; nota?: string }) =>
+  api.post<TraspasoBodega>('/inventario/bodegas/traspasos/', data);
 
 // --- INTERCEPTOR DE SEGURIDAD ---
 // Este código se ejecuta antes de CADA petición a la API

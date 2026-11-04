@@ -1273,6 +1273,7 @@ class StockProductos(APIView):
                 'congelado_reservas': reservas_congelado,
                 'lotes_congelado': lotes_congelado,
                 'bodegas': bodegas_por_producto.get(producto.id, []),
+                'sin_asignar': max(disponibles - sum(b['unidades'] for b in bodegas_por_producto.get(producto.id, [])), 0),
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
