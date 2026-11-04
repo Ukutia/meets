@@ -120,6 +120,20 @@ class ConciliacionTests(TestCase):
         self.assertEqual(f29['anticipo']['sin_validar'], 174117)
         self.assertEqual(f29['total_a_pagar'], 415168)
 
+    def test_propuesta_f29_suma_credito_de_facturas_de_compra_ingresadas(self):
+        Factura.objects.create(proveedor=self.proveedor, fecha=date(2026, 10, 20), numero_factura='A1',
+                               subtotal=100000, iva=19000, anticipo_iva=5000, total=124000)
+        Factura.objects.create(proveedor=self.proveedor, fecha=date(2026, 9, 20), numero_factura='A2',
+                               subtotal=100000, iva=19000, total=119000)  # Otro mes.
+        f29 = resumen_mes('2026-10')['f29']
+        self.assertEqual(f29['creditos']['facturas'], {'cantidad': 1, 'monto': 19000})
+        self.assertEqual(f29['anticipo']['periodo'], 5000)
+        # Con su documento del RCV vinculado no se cuenta dos veces.
+        self.documento(operacion='compras', tipo=33, folio=77, rut_emisor=PROVEEDOR, rut_receptor=EMPRESA,
+                       neto=100000, iva=19000, total=124000, factura=Factura.objects.get(pk='A1'))
+        f29 = resumen_mes('2026-10')['f29']
+        self.assertEqual(f29['creditos']['facturas']['cantidad'], 0)  # Vinculada y sin validar crédito.
+
     def test_propuesta_f29_usa_iva_teorico_de_declarado_sin_documento(self):
         p = self.pedido(total=1190, mes_declaracion=date(2026, 10, 1), declarado=True)
         self.pedido(total=2380)  # No declarado: no suma.

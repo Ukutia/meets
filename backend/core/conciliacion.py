@@ -258,6 +258,27 @@ def ventas_declaradas(mes):
     return lineas, sin_documento, ids
 
 
+def compras_internas(mes):
+    """Facturas de compra, notas de crédito y gastos con factura ingresados en la
+    plataforma en el mes, que aún no tienen un documento del RCV vinculado (los
+    que sí lo tienen ya se cuentan por el RCV)."""
+    anio, m = int(mes[:4]), int(mes[5:])
+    mismo_mes = {'fecha__year': anio, 'fecha__month': m}
+    docs = []
+    for f in Factura.objects.filter(**mismo_mes).exclude(documentos_sii__operacion='compras'):
+        docs.append(SimpleNamespace(tipo=f.tipo_documento, iva=f.iva, neto=f.subtotal, exento=f.exento, anticipo=f.anticipo_iva,
+                                    credito_validado=True, anticipo_validado=True, interno=True))
+    for n in NotaCredito.objects.filter(**mismo_mes).exclude(documentos_sii__operacion='compras'):
+        docs.append(SimpleNamespace(tipo=61, iva=n.iva, neto=n.neto, exento=CERO, anticipo=CERO,
+                                    credito_validado=True, anticipo_validado=True, interno=True))
+    for g in Gasto.objects.filter(con_factura=True, **mismo_mes).exclude(documentos_sii__operacion='compras'):
+        docs.append(SimpleNamespace(tipo=33, iva=g.iva, neto=g.neto, exento=CERO, anticipo=CERO,
+                                    credito_validado=True, anticipo_validado=True, interno=True))
+    for d in docs:
+        d.estado_sii = 'registrado'
+    return docs
+
+
 def propuesta_f29(mes, ventas_mes, compras, cierre, config):
     """Propuesta F29 con los códigos del formulario. Los débitos salen solo de los
     pedidos declarados en el cierre de ventas del mes; los créditos y el anticipo,
@@ -270,7 +291,8 @@ def propuesta_f29(mes, ventas_mes, compras, cierre, config):
     ventas, sin_documento, declarados = ventas_declaradas(mes)
     # Documentos de venta del período que no son de un pedido declarado este mes.
     fuera = [d for d in ventas_mes if d.pedido_id not in declarados]
-    registradas = [d for d in compras if d.estado_sii == 'registrado']
+    internas = compras_internas(mes)
+    registradas = [d for d in compras if d.estado_sii == 'registrado'] + internas
     n_fact, d_fact = linea(ventas, (33, 34))
     n_bol, d_bol = linea(ventas, (39, 41))
     n_nd, d_nd = linea(ventas, (56,))
