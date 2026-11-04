@@ -95,6 +95,23 @@ class ConciliacionTests(TestCase):
         venta = self.client.get(reverse('cierre_ventas'), {'mes': '2026-10'})
         self.assertEqual(D(venta.data['resumen']['iva_debito_documentos']), 0)  # Sin pedido asociado.
 
+    def test_propuesta_f29_cuadra_con_la_del_sii(self):
+        self.documento(folio=1, neto=5832016, iva=1108083, total=6940099)
+        self.documento(tipo=39, folio=2, rut_receptor='66666666-6', neto=708811, iva=134674, total=843485)
+        compra = dict(operacion='compras', rut_emisor=PROVEEDOR, rut_receptor=EMPRESA, estado_sii='registrado', credito_validado=True)
+        self.documento(folio=3, neto=3482358, iva=661648, anticipo=174117, total=4318123, **compra)
+        self.documento(tipo=34, folio=4, neto=0, iva=0, exento=19980, total=19980, **compra)
+        CierreTributario.objects.create(mes='2026-10', tasa_ppm=D('.125'), base_ppm=6540800)
+        f29 = resumen_mes('2026-10')['f29']
+        self.assertEqual(f29['debitos']['total'], 1242757)
+        self.assertEqual(f29['creditos']['facturas']['monto'], 661648)
+        self.assertEqual(f29['creditos']['exentas'], 19980)
+        self.assertEqual(f29['iva_determinado'], 581109)
+        self.assertEqual(f29['ppm']['monto'], 8176)
+        self.assertEqual(f29['anticipo']['imputado'], 174117)
+        self.assertEqual(f29['anticipo']['sin_validar'], 174117)
+        self.assertEqual(f29['total_a_pagar'], 415168)
+
     def test_iva_19_y_anticipo_5_separados_con_tope_imputacion(self):
         self.importar([self.compra_fila()], compras=True)
         self.documento(neto=100000, iva=19000, total=119000)

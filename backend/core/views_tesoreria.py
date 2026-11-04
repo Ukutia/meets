@@ -311,7 +311,8 @@ def _gasto_json(g):
     return {
         'id': g.id, 'fecha': g.fecha.isoformat(), 'descripcion': g.descripcion,
         'categoria': g.categoria, 'neto': g.neto, 'iva': g.iva, 'total': g.total,
-        'con_factura': g.con_factura, 'movimiento': g.movimiento_id, 'comentario': g.comentario,
+        'con_factura': g.con_factura, 'proveedor': g.proveedor, 'numero_documento': g.numero_documento,
+        'movimiento': g.movimiento_id, 'comentario': g.comentario,
     }
 
 
@@ -338,6 +339,8 @@ def _datos_gasto(data, actual=None):
     return {
         'fecha': fecha, 'descripcion': descripcion[:255], 'categoria': categoria,
         'total': total, 'neto': neto, 'iva': total - neto, 'con_factura': con_factura,
+        'proveedor': str(campo('proveedor', '') or '').strip()[:150],
+        'numero_documento': str(campo('numero_documento', '') or '').strip()[:40],
         'comentario': str(campo('comentario', '') or ''),
         'movimiento_id': campo('movimiento', None) if 'movimiento' in data else (actual.movimiento_id if actual else None),
     }

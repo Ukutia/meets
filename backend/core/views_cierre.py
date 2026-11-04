@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from django.core.files.base import ContentFile
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError, transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -33,15 +33,6 @@ ZONA = ZoneInfo('America/Santiago')
 TOLERANCIA = Decimal('2')
 TIPOS_VENTA = {33, 34, 39, 41}
 NOMBRE_TIPO = dict(TIPOS_DTE)
-
-
-def _mes_param(request):
-    mes = request.query_params.get('mes') or date.today().strftime('%Y-%m')
-    try:
-        anio, m = map(int, mes.split('-'))
-        return anio, m
-    except ValueError:
-        return None
 
 
 def _rango_mes(anio, mes):
@@ -101,32 +92,74 @@ def estado_tributario(pedido, documentos):
     return 'emitido', None
 
 
+def _alcance(params):
+    """(mes como date día 1, inicio, fin, vendedor) desde ?mes, ?periodo y ?vendedor.
+    El período recorta el rango de fechas del mes."""
+    try:
+        anio, m = map(int, (params.get('mes') or date.today().strftime('%Y-%m')).split('-'))
+        inicio, fin = _rango_mes(anio, m)
+    except ValueError:
+        raise ValueError('Mes inválido, usa AAAA-MM')
+    periodo_id = params.get('periodo')
+    if periodo_id:
+        try:
+            periodo = Periodo.objects.get(pk=int(periodo_id))
+        except (ValueError, Periodo.DoesNotExist):
+            raise ValueError('Período inválido')
+        inicio = max(inicio, datetime.combine(periodo.fecha_inicio, datetime.min.time(), tzinfo=ZONA))
+        if periodo.fecha_fin and periodo.fecha_fin < fin.date():
+            fin = datetime.combine(periodo.fecha_fin + timedelta(days=1), datetime.min.time(), tzinfo=ZONA)
+    return date(anio, m, 1), inicio, fin, params.get('vendedor') or None
+
+
+def _mes_siguiente(mes):
+    return date(mes.year + (mes.month == 12), mes.month % 12 + 1, 1)
+
+
+def _pedidos_del_mes(mes, inicio, fin, vendedor_id):
+    """Pedidos que se consideran para declarar en el mes (los de su fecha, más los
+    que quedaron sin declarar de meses anteriores) y los que se difirieron desde él
+    a un mes posterior."""
+    pedidos = Pedido.objects.exclude(estado='Anulado')
+    if inicio >= fin:
+        return pedidos.none()
+    pedidos = pedidos.filter(Q(mes_declaracion=mes) | Q(mes_declaracion__isnull=True, fecha__gte=inicio, fecha__lt=fin)
+                             | Q(mes_declaracion__gt=mes, fecha__lt=fin))
+    if vendedor_id:
+        pedidos = pedidos.filter(vendedor_id=vendedor_id)
+    return pedidos
+
+
+def _declaracion(p, mes):
+    """Estado del pedido en la declaración del mes. Se puede (re)decidir si se
+    considera en el mes, o si se difirió al siguiente y allá aún no se declara."""
+    efectivo = p.mes_declaracion or p.fecha.astimezone(ZONA).date().replace(day=1)
+    if efectivo > mes:
+        estado = 'diferido'
+    else:
+        estado = 'declarado' if p.declarado else 'pendiente'
+    return {
+        'estado': estado, 'mes': efectivo.strftime('%Y-%m'),
+        'arrastrado': p.fecha.astimezone(ZONA).date() < mes,
+        'editable': estado != 'diferido' or (efectivo == _mes_siguiente(mes) and not p.declarado),
+    }
+
+
 class VentasMesView(APIView):
     """GET ?mes=YYYY-MM&vendedor=<id>: una fila por pedido con sus líneas, cobros,
-    documentos y estados, y el resumen del mes."""
+    documentos y estados, y el resumen del mes. Incluye los pedidos no declarados
+    de meses anteriores; los diferidos al mes siguiente se muestran sin sumar."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        mes = _mes_param(request)
-        if not mes:
-            return _error('Mes inválido, usa AAAA-MM')
         try:
-            inicio, fin = _rango_mes(*mes)
-        except ValueError:
-            return _error('Mes inválido, usa AAAA-MM')
-        periodo_id = request.query_params.get('periodo')
-        if periodo_id:
-            try:
-                periodo = Periodo.objects.get(pk=int(periodo_id))
-            except (ValueError, Periodo.DoesNotExist):
-                return _error('Período inválido')
-            inicio = max(inicio, datetime.combine(periodo.fecha_inicio, datetime.min.time(), tzinfo=ZONA))
-            if periodo.fecha_fin and periodo.fecha_fin < fin.date():
-                fin = datetime.combine(periodo.fecha_fin + timedelta(days=1), datetime.min.time(), tzinfo=ZONA)
-        vendedor_id = request.query_params.get('vendedor')
+            mes_dia, inicio, fin, vendedor_id = _alcance(request.query_params)
+        except ValueError as e:
+            return _error(str(e))
+        mes = (mes_dia.year, mes_dia.month)
         iva_rate = factor_iva()
 
-        pedidos = (Pedido.objects.exclude(estado='Anulado').filter(fecha__gte=inicio, fecha__lt=fin)
+        pedidos = (_pedidos_del_mes(mes_dia, inicio, fin, vendedor_id)
                    .select_related('cliente', 'vendedor')
                    .prefetch_related(
                        Prefetch('detalles', queryset=DetallePedido.objects.exclude(estado='Cancelado')
@@ -134,15 +167,13 @@ class VentasMesView(APIView):
                        Prefetch('cobros', queryset=Cobro.objects.select_related('vendedor', 'usuario')),
                        Prefetch('documentos', queryset=DocumentoTributario.objects.select_related('usuario')))
                    .order_by('fecha', 'id'))
-        if vendedor_id:
-            pedidos = pedidos.filter(vendedor_id=vendedor_id)
 
         filas = []
         r = {k: Decimal('0') for k in ('ventas_total', 'ventas_netas', 'iva_debito_teorico', 'iva_debito_documentos', 'cobrado',
-                                       'saldo_pendiente', 'costo', 'margen')}
+                                       'saldo_pendiente', 'costo', 'margen', 'iva_declarado')}
         conteo = {'cantidad': 0, 'con_documento': 0, 'sin_documento': 0, 'por_revisar': 0,
                   'pagados': 0, 'parciales': 0, 'pendientes_cobro': 0, 'pagado_sin_cobro': 0,
-                  'cobros_por_confirmar': 0}
+                  'cobros_por_confirmar': 0, 'declarados': 0, 'diferidos': 0, 'arrastrados': 0}
         por_vendedor = {}
 
         for p in pedidos:
@@ -169,6 +200,38 @@ class VentasMesView(APIView):
             if any(l.total_costo == 0 for l in lineas):
                 alertas.append('Hay productos sin costo')
 
+            declaracion = _declaracion(p, mes_dia)
+            fila = {
+                'id': p.id, 'fecha': p.fecha.astimezone(ZONA).date(), 'estado': p.estado,
+                'cliente': {'id': p.cliente_id, 'nombre': p.cliente.nombre, 'tipo': p.cliente.tipo_cliente,
+                            'rut': p.cliente.rut, 'razon_social': p.cliente.razon_social},
+                'vendedor': {'id': p.vendedor_id, 'nombre': p.vendedor.nombre, 'sigla': p.vendedor.sigla} if p.vendedor else None,
+                'documento_requerido': p.tipo_recibo,
+                'total': total, 'neto': neto, 'iva': total - neto, 'costo': costo, 'margen': margen,
+                'margen_pct': _redondo(margen / neto * 100) if neto else None,
+                'cobrado': cobrado, 'saldo': max(total - cobrado, Decimal('0')), 'estado_cobro': est_cobro,
+                'estado_tributario': est_trib, 'alertas': alertas, 'observaciones': p.observaciones,
+                'declaracion': declaracion,
+                'lineas': [{
+                    'id': l.id, 'producto': l.producto.nombre, 'kilos': l.cantidad_kilos,
+                    'unidades': l.cantidad_unidades, 'venta_por_unidad': l.producto.venta_por_unidad,
+                    'precio_venta': l.precio_venta, 'total': l.total_venta, 'costo': l.total_costo,
+                    'margen': _redondo(l.total_venta / iva_rate) - l.total_costo,
+                } for l in lineas],
+                'cobros': [_cobro_json(c) for c in cobros],
+                'documentos': [_documento_json(d) for d in documentos],
+            }
+            filas.append(fila)
+            # Lo diferido se declara en otro mes: se muestra, pero no suma aquí.
+            if declaracion['estado'] == 'diferido':
+                conteo['diferidos'] += 1
+                continue
+            if declaracion['estado'] == 'declarado':
+                conteo['declarados'] += 1
+                r['iva_declarado'] += total - neto
+            if declaracion['arrastrado']:
+                conteo['arrastrados'] += 1
+
             r['ventas_total'] += total
             r['ventas_netas'] += neto
             r['iva_debito_teorico'] += total - neto
@@ -194,26 +257,6 @@ class VentasMesView(APIView):
             v['saldo_pendiente'] += max(total - cobrado, Decimal('0'))
             v['margen'] += margen
             v['cantidad'] += 1
-
-            filas.append({
-                'id': p.id, 'fecha': p.fecha.astimezone(ZONA).date(), 'estado': p.estado,
-                'cliente': {'id': p.cliente_id, 'nombre': p.cliente.nombre, 'tipo': p.cliente.tipo_cliente,
-                            'rut': p.cliente.rut, 'razon_social': p.cliente.razon_social},
-                'vendedor': {'id': p.vendedor_id, 'nombre': p.vendedor.nombre, 'sigla': p.vendedor.sigla} if p.vendedor else None,
-                'documento_requerido': p.tipo_recibo,
-                'total': total, 'neto': neto, 'iva': total - neto, 'costo': costo, 'margen': margen,
-                'margen_pct': _redondo(margen / neto * 100) if neto else None,
-                'cobrado': cobrado, 'saldo': max(total - cobrado, Decimal('0')), 'estado_cobro': est_cobro,
-                'estado_tributario': est_trib, 'alertas': alertas, 'observaciones': p.observaciones,
-                'lineas': [{
-                    'id': l.id, 'producto': l.producto.nombre, 'kilos': l.cantidad_kilos,
-                    'unidades': l.cantidad_unidades, 'venta_por_unidad': l.producto.venta_por_unidad,
-                    'precio_venta': l.precio_venta, 'total': l.total_venta, 'costo': l.total_costo,
-                    'margen': _redondo(l.total_venta / iva_rate) - l.total_costo,
-                } for l in lineas],
-                'cobros': [_cobro_json(c) for c in cobros],
-                'documentos': [_documento_json(d) for d in documentos],
-            })
 
         # Documentos emitidos en el rango que todavía no están ligados a un
         # pedido. No forman parte del IVA de los pedidos mostrados.
@@ -246,6 +289,36 @@ class VentasMesView(APIView):
             'config': {'tasa_iva': config.tasa_iva, 'receptor_cobro': config.receptor_cobro,
                        'emision': {'habilitada': openfactura.habilitada(), 'ambiente': openfactura.ambiente()}},
         })
+
+
+class DeclaracionMesView(APIView):
+    """POST {mes, pedidos: [ids], vendedor?, periodo?}: cierra la declaración del
+    mes. Los pedidos indicados quedan declarados en el mes; los demás que se
+    consideraban en él pasan al mes siguiente. Se puede repetir para corregir."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            mes, inicio, fin, vendedor_id = _alcance(request.data)
+        except ValueError as e:
+            return _error(str(e))
+        try:
+            ids = {int(i) for i in request.data.get('pedidos') or []}
+        except (ValueError, TypeError):
+            return _error('Pedidos inválidos')
+        siguiente = _mes_siguiente(mes)
+        with transaction.atomic():
+            candidatos = [p for p in _pedidos_del_mes(mes, inicio, fin, vendedor_id).select_for_update()
+                          if _declaracion(p, mes)['editable']]
+            fuera = ids - {p.id for p in candidatos}
+            if fuera:
+                return _error(f'Estos pedidos no se pueden declarar en el mes: {", ".join(map(str, sorted(fuera)))}')
+            declarados = [p.id for p in candidatos if p.id in ids]
+            diferidos = [p.id for p in candidatos if p.id not in ids]
+            Pedido.objects.filter(id__in=declarados).update(mes_declaracion=mes, declarado=True)
+            Pedido.objects.filter(id__in=diferidos).update(mes_declaracion=siguiente, declarado=False)
+        return Response({'declarados': len(declarados), 'diferidos': len(diferidos),
+                         'mes_siguiente': siguiente.strftime('%Y-%m')})
 
 
 def _datos_cobro(data, actual=None):

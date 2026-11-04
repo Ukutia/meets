@@ -4,7 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido, RegistroPreReserva
+from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido, RegistroPreReserva, StockBodega
 
 
 def costo_por_kilo_ponderado(detalle):
@@ -298,6 +298,38 @@ def estado_consumo_detalle(detalle):
     }
 
 
+def descontar_de_bodega(detalle, bodega, unidades):
+    """Saca ``unidades`` de las existencias de ``bodega`` para esta línea.
+    Falla si la bodega no tiene suficientes de ese producto."""
+    unidades = int(unidades)
+    if not bodega or unidades <= 0:
+        return
+    existencia = StockBodega.objects.select_for_update().filter(
+        bodega=bodega, producto=detalle.producto).first()
+    disponibles = existencia.unidades if existencia else 0
+    if unidades > disponibles:
+        raise ValidationError(
+            f"La bodega '{bodega.nombre}' solo tiene {disponibles} unidad(es) de '{detalle.producto.nombre}'")
+    existencia.unidades = disponibles - unidades
+    existencia.save(update_fields=['unidades'])
+    detalle.bodega_unidades = unidades
+    detalle.save(update_fields=['bodega_unidades'])
+
+
+def devolver_a_bodega(detalle):
+    """Devuelve a la bodega del pedido lo que la línea le había descontado."""
+    unidades = detalle.bodega_unidades
+    bodega = detalle.pedido.bodega
+    if unidades <= 0 or bodega is None:
+        return
+    existencia, _ = StockBodega.objects.select_for_update().get_or_create(
+        bodega=bodega, producto=detalle.producto)
+    existencia.unidades += unidades
+    existencia.save(update_fields=['unidades'])
+    detalle.bodega_unidades = 0
+    detalle.save(update_fields=['bodega_unidades'])
+
+
 def revertir_stock_detalle(detalle):
     """Devuelve al ledger (``EntradaProducto``) el stock+costo que una línea de
     venta (``DetallePedido``) consumió, lote por lote, vía sus
@@ -310,6 +342,7 @@ def revertir_stock_detalle(detalle):
     No toca ``detalle`` ni ``pedido``: solo mueve stock. El llamador decide qué
     hacer con el estado de la línea/pedido y con el total.
     """
+    devolver_a_bodega(detalle)
     relaciones = FacturaDetallePedido.objects.filter(detallepedido=detalle)
 
     # TOPE DE DEVOLUCION: nunca devolver mas unidades de las que la linea de

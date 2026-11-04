@@ -1,0 +1,81 @@
+import { formatCLP } from '@/lib/utils';
+
+type Num = string | number;
+interface Linea { cantidad: number; monto: Num }
+export interface F29 {
+  debitos: { facturas: Linea; boletas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num };
+  creditos: { con_derecho: Num; exentas: Num; remanente_anterior: Num; facturas: Linea; notas_debito: Linea; notas_credito: Linea; total: Num };
+  iva_determinado: Num; remanente_siguiente: Num;
+  ppm: { base: Num; tasa: Num; tasa_confirmada: boolean; monto: Num };
+  anticipo: { periodo: Num; sin_validar: Num; remanente_anterior: Num; total: Num; imputado: Num; remanente_siguiente: Num };
+  otros_impuestos: Num; retenciones: Num; total_determinado: Num; total_a_pagar: Num;
+}
+
+const n = (v: Num) => Number(v) || 0;
+
+function Seccion({ children }: { children: React.ReactNode }) {
+  return <tr><th colSpan={4} className="bg-sky-100 dark:bg-sky-950 border px-3 py-1.5 text-center font-semibold">{children}</th></tr>;
+}
+function Sub({ children }: { children: React.ReactNode }) {
+  return <tr><th colSpan={4} className="bg-sky-50 dark:bg-sky-950/50 border px-3 py-1 text-left font-semibold">{children}</th></tr>;
+}
+function Fila({ texto, codigo, monto, signo, total, nota }: { texto: string; codigo: string; monto: Num; signo?: string; total?: boolean; nota?: string }) {
+  return <tr className={total ? 'bg-sky-50 dark:bg-sky-950/50 font-bold' : ''}>
+    <td className="border px-3 py-1">{texto}{nota && <span className="block text-xs font-normal text-amber-700">{nota}</span>}</td>
+    <td className="border px-3 py-1 text-center tabular-nums w-16">{codigo}</td>
+    <td className="border px-3 py-1 text-right tabular-nums w-36">{formatCLP(monto)}</td>
+    <td className="border px-2 py-1 text-center w-8">{signo}</td>
+  </tr>;
+}
+
+/** Propuesta F29 con los mismos códigos que muestra el SII, para comparar línea a línea. */
+export function PropuestaF29({ f29 }: { f29: F29 }) {
+  const { debitos: d, creditos: c, anticipo: a } = f29;
+  return <div className="rounded-lg border p-4 space-y-2">
+    <h3 className="font-semibold">Propuesta F29 · para comparar con el SII</h3>
+    <p className="text-xs text-muted-foreground">Calculada con los documentos registrados en el RCV del período, igual que la propuesta del SII.</p>
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm border-collapse min-w-[520px]">
+        <tbody>
+          <Seccion>Débitos y ventas</Seccion>
+          <Fila texto={`Facturas emitidas (${d.facturas.cantidad})`} codigo="502" monto={d.facturas.monto} signo="+" />
+          {n(d.notas_debito.monto) !== 0 && <Fila texto={`Notas de débito emitidas (${d.notas_debito.cantidad})`} codigo="513" monto={d.notas_debito.monto} signo="+" />}
+          {n(d.notas_credito.monto) !== 0 && <Fila texto={`Notas de crédito emitidas (${d.notas_credito.cantidad})`} codigo="510" monto={d.notas_credito.monto} signo="-" />}
+          <Fila texto={`Boletas (${d.boletas.cantidad})`} codigo="111" monto={d.boletas.monto} signo="+" />
+          <Fila texto="Total débitos" codigo="538" monto={d.total} signo="=" total />
+
+          <Seccion>Créditos y compras</Seccion>
+          <Fila texto="IVA documentos electrónicos recibidos con derecho a crédito" codigo="511" monto={c.con_derecho} />
+          <Fila texto="Compras internas exentas o no gravadas (neto)" codigo="562" monto={c.exentas} />
+          {n(c.remanente_anterior) !== 0 && <Fila texto="Remanente crédito fiscal mes anterior" codigo="504" monto={c.remanente_anterior} signo="+" />}
+          <Fila texto={`Facturas recibidas del giro y de compra emitidas (${c.facturas.cantidad})`} codigo="520" monto={c.facturas.monto} signo="+" />
+          {n(c.notas_debito.monto) !== 0 && <Fila texto={`Notas de débito recibidas (${c.notas_debito.cantidad})`} codigo="532" monto={c.notas_debito.monto} signo="+" />}
+          {n(c.notas_credito.monto) !== 0 && <Fila texto={`Notas de crédito recibidas (${c.notas_credito.cantidad})`} codigo="528" monto={c.notas_credito.monto} signo="-" />}
+          <Fila texto="Total créditos" codigo="537" monto={c.total} signo="=" total />
+          {n(f29.remanente_siguiente) !== 0 && <Fila texto="Remanente de crédito fiscal para el período siguiente" codigo="77" monto={f29.remanente_siguiente} />}
+          <Fila texto="IVA determinado" codigo="89" monto={f29.iva_determinado} signo="+" total />
+
+          <Seccion>Impuestos a la renta D.L. 824/74</Seccion>
+          <Fila texto={`PPM neto determinado · ${f29.ppm.tasa}% sobre ${formatCLP(f29.ppm.base)}`} codigo="62" monto={f29.ppm.monto} signo="+"
+            nota={f29.ppm.tasa_confirmada ? undefined : 'Tasa de la configuración general: confírmala en los parámetros del período'} />
+
+          <Seccion>Cambio de sujeto D.L. 825</Seccion>
+          <Sub>Anticipo cambio de sujeto (contribuyentes retenidos)</Sub>
+          <Fila texto="IVA anticipado del período" codigo="556" monto={a.periodo} signo="+"
+            nota={n(a.sin_validar) ? `${formatCLP(a.sin_validar)} aún sin validar en la plataforma` : undefined} />
+          {n(a.remanente_anterior) !== 0 && <Fila texto="Remanente anticipo mes anterior" codigo="—" monto={a.remanente_anterior} signo="+" />}
+          <Fila texto="Total de anticipo" codigo="543" monto={a.total} signo="=" total />
+          <Fila texto="Anticipo a imputar (tope IVA determinado)" codigo="598" monto={a.imputado} signo="-" total />
+          {n(a.remanente_siguiente) !== 0 && <Fila texto="Remanente anticipo para el período siguiente" codigo="—" monto={a.remanente_siguiente} />}
+          {n(f29.otros_impuestos) !== 0 && <Fila texto="Otros impuestos" codigo="—" monto={f29.otros_impuestos} signo="+" />}
+          {n(f29.retenciones) !== 0 && <Fila texto="Retenciones" codigo="—" monto={f29.retenciones} signo="-" />}
+          <Fila texto="Total determinado" codigo="547" monto={f29.total_determinado} signo="=" total />
+        </tbody>
+      </table>
+    </div>
+    <div className="flex justify-between items-center rounded border-2 border-sky-300 bg-sky-50 dark:bg-sky-950/50 px-3 py-2 font-bold">
+      <span>Total a pagar en plazo legal <span className="text-muted-foreground font-normal ml-2">91</span></span>
+      <span className="tabular-nums text-lg">{formatCLP(f29.total_a_pagar)}</span>
+    </div>
+  </div>;
+}

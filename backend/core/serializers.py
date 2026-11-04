@@ -207,10 +207,11 @@ class PedidoSerializer(serializers.ModelSerializer):
     cliente = ClienteSerializer()
     vendedor = VendedorSerializer()
     pagado_banco = serializers.SerializerMethodField()
+    bodega_nombre = serializers.CharField(source='bodega.nombre', read_only=True, default=None)
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'fecha_entrega', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'fecha_entrega', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco', 'bodega_nombre']
         read_only_fields = ['fecha']
 
     def get_pagado_banco(self, obj):

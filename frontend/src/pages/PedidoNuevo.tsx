@@ -21,6 +21,7 @@ import { createPedido, getClientes, getProductos, getStock } from '@/services/ap
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
+import { useBodegas } from '@/components/shared/BodegasStock';
 import type { Cliente, ModoPrecio, Producto, StockItem } from '@/types';
 import { useToast } from '@/hooks/use-toast';
 import { cn, formatCLP, parseDecimal } from '@/lib/utils';
@@ -74,6 +75,8 @@ export default function PedidoNuevo() {
   const [tipoRecibo, setTipoRecibo] = useState<'Boleta' | 'Factura'>('Boleta');
   const [detalles, setDetalles] = useState<DetalleProducto[]>([]);
   const [productoSeleccionado, setProductoSeleccionado] = useState('');
+  const [bodegaId, setBodegaId] = useState('ninguna');
+  const { data: bodegas = [] } = useBodegas();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -172,6 +175,7 @@ export default function PedidoNuevo() {
           precio_personalizado: d.modo === 'personalizado' ? parseDecimal(d.precioTexto) : undefined,
         })),
         observaciones: observaciones.trim(),
+        ...(bodegaId !== 'ninguna' ? { bodega: Number(bodegaId) } : {}),
         ...(lineasPendientes.length > 0 ? { permitir_pre_reserva: true } : {}),
       });
     },
@@ -312,6 +316,19 @@ export default function PedidoNuevo() {
             <CardTitle>Productos</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {bodegas.length > 0 && (
+              <div className="space-y-2">
+                <Label>Bodega de origen</Label>
+                <Select value={bodegaId} onValueChange={setBodegaId}>
+                  <SelectTrigger aria-label="Bodega de origen"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ninguna">Sin bodega (no descontar)</SelectItem>
+                    {bodegas.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.nombre}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Las unidades del pedido se descuentan de las existencias de esta bodega.</p>
+              </div>
+            )}
             <div className="flex gap-2">
               <div className="flex-1 min-w-0">
                 <Select value={productoSeleccionado} onValueChange={setProductoSeleccionado}>

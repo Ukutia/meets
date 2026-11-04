@@ -202,6 +202,42 @@ class VentasMesTests(CierreBase):
         self.assertEqual(len(self.ventas(vendedor=self.vendedor.id + 99)["pedidos"]), 0)
 
 
+class DeclaracionMesTests(CierreBase):
+    def declarar(self, mes, pedidos):
+        return self.client.post(reverse("cierre_declaracion"), {"mes": mes, "pedidos": pedidos}, format="json")
+
+    def test_no_declarados_pasan_al_mes_siguiente(self):
+        Pedido.objects.filter(pk=self.pedido.pk).update(fecha=datetime(2026, 10, 10, 12, tzinfo=ZoneInfo('America/Santiago')))
+        otro = Pedido.objects.get(id=self.crear_pedido().json()["id"])
+        Pedido.objects.filter(pk=otro.pk).update(fecha=datetime(2026, 10, 12, 12, tzinfo=ZoneInfo('America/Santiago')))
+        r = self.declarar('2026-10', [self.pedido.id])
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json(), {'declarados': 1, 'diferidos': 1, 'mes_siguiente': '2026-11'})
+
+        octubre = self.ventas(mes='2026-10')
+        estados = {p['id']: p['declaracion']['estado'] for p in octubre['pedidos']}
+        self.assertEqual(estados, {self.pedido.id: 'declarado', otro.id: 'diferido'})
+        self.assertEqual(octubre['resumen']['cantidad'], 1)
+        self.assertEqual(octubre['resumen']['diferidos'], 1)
+        self.assertEqual(Decimal(octubre['resumen']['ventas_total']), Decimal(24000))
+
+        noviembre = self.ventas(mes='2026-11')
+        self.assertEqual([p['id'] for p in noviembre['pedidos']], [otro.id])
+        self.assertTrue(noviembre['pedidos'][0]['declaracion']['arrastrado'])
+        self.assertEqual(noviembre['resumen']['arrastrados'], 1)
+
+        # Se puede corregir octubre mientras noviembre no lo declare.
+        self.assertEqual(self.declarar('2026-10', [self.pedido.id, otro.id]).json()['diferidos'], 0)
+        self.assertEqual(self.ventas(mes='2026-11')['pedidos'], [])
+        resumen = self.ventas(mes='2026-10')['resumen']
+        self.assertEqual(resumen['declarados'], 2)
+        self.assertEqual(resumen['iva_declarado'], resumen['iva_debito_teorico'])
+
+    def test_rechaza_pedidos_de_otro_mes(self):
+        Pedido.objects.filter(pk=self.pedido.pk).update(fecha=datetime(2026, 9, 10, 12, tzinfo=ZoneInfo('America/Santiago')))
+        self.assertEqual(self.declarar('2026-10', [self.pedido.id]).status_code, 400)
+
+
 class CobrosBancoTests(CierreBase):
     def test_asignar_cartola_crea_cobro_y_quitarla_lo_borra(self):
         m = MovimientoBancario.objects.create(fecha=date(2026, 10, 6), descripcion="Transf", monto=24000, huella="h1")

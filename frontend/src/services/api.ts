@@ -186,6 +186,7 @@ export const createPedido = (data: {
   } & PrecioLinea)[];
   observaciones?: string;
   tipo_recibo?: 'Boleta' | 'Factura';
+  bodega?: number;
 }) => api.post<Pedido>('/pedidos/crear/', data);
 export const cancelarPedido = (id: number) => api.post(`/pedidos/cancelar/`, { pedido_id: id });
 export const cancelarProductoPedido = (pedidoId: number, detalleId: number) =>
@@ -342,7 +343,8 @@ export const updateConfiguracionContable = (data: {
 
 // --- Cierre de mes: ventas, cobros y documentos tributarios ---
 export const getVentasMes = (params: { mes: string; vendedor?: string; periodo?: number }) => api.get('/cierre/ventas/', { params });
-export const crearCobro = (data: Record<string, unknown> | FormData) => api.post('/cierre/cobros/', data, opcionesPara(data));
+export const declararMes = (data: { mes: string; pedidos: number[]; vendedor?: string; periodo?: number }) => api.post('/cierre/declaracion/', data);
+export const crearCobro =(data: Record<string, unknown> | FormData) => api.post('/cierre/cobros/', data, opcionesPara(data));
 export const actualizarCobro = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/cobros/${id}/`, data);
 export const eliminarCobro = (id: number) => api.delete(`/cierre/cobros/${id}/`);
 export const getDocumentos = (params?: { mes?: string; sin_pedido?: string }) => api.get('/cierre/documentos/', { params });

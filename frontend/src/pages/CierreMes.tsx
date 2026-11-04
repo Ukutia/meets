@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { AlertTriangle, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
+import { AlertTriangle, CalendarCheck, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -16,11 +16,13 @@ import { DetallePedidoCierre, Etiqueta } from '@/components/cierre/DetallePedido
 import { DocumentosSII } from '@/components/cierre/DocumentosSII';
 import { ComprasMes } from '@/components/cierre/ComprasMes';
 import { ConciliacionTributaria } from '@/components/cierre/ConciliacionTributaria';
-import { getVendedores, getVentasMes } from '@/services/api';
+import { useConfirm } from '@/components/shared/ConfirmDialog';
+import { useToast } from '@/hooks/use-toast';
+import { declararMes, getVendedores, getVentasMes } from '@/services/api';
 import { usePeriodo } from '@/contexts/PeriodoContext';
 import { cn, formatCLP, formatFecha } from '@/lib/utils';
 import {
-  ETIQUETA_COBRO, ETIQUETA_TRIBUTARIO, MEDIOS_PAGO, mesActual, nombreMes,
+  ETIQUETA_COBRO, ETIQUETA_DECLARACION, ETIQUETA_TRIBUTARIO, MEDIOS_PAGO, mesActual, mesSiguiente, nombreMes,
   type PedidoCierre, type VentasMes,
 } from '@/lib/cierre';
 
@@ -39,15 +41,30 @@ export default function CierreMes() {
   const [busqueda, setBusqueda] = useState('');
   const [seleccionado, setSeleccionado] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-
-  useEffect(() => {
-    setSelectedIds([]);
-  }, [mes, vendedor, filtro, busqueda, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin]);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const { confirm, dialog } = useConfirm();
 
   const { data: vendedores = [] } = useQuery({ queryKey: ['vendedores'], queryFn: async () => (await getVendedores()).data });
   const { data, isLoading, error } = useQuery({
     queryKey: ['cierre-ventas', mes, vendedor, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin],
     queryFn: async () => (await getVentasMes({ mes, vendedor: vendedor === 'todos' ? undefined : vendedor, periodo: periodo?.id })).data as VentasMes,
+  });
+
+  // La selección parte con lo ya declarado en el mes y se mantiene al filtrar.
+  const declaradosKey = (data?.pedidos ?? []).filter((p) => p.declaracion.estado === 'declarado').map((p) => p.id).join(',');
+  useEffect(() => {
+    setSelectedIds(declaradosKey ? declaradosKey.split(',').map(Number) : []);
+  }, [declaradosKey, mes, vendedor, periodo?.id, periodo?.fecha_inicio, periodo?.fecha_fin]);
+
+  const declararMutation = useMutation({
+    mutationFn: (ids: number[]) => declararMes({ mes, pedidos: ids, vendedor: vendedor === 'todos' ? undefined : vendedor, periodo: periodo?.id }),
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ['cierre-ventas'] });
+      toast({ title: `${r.data.declarados} pedido(s) declarados en ${nombreMes(mes)}`,
+        description: r.data.diferidos ? `${r.data.diferidos} pasan a ${nombreMes(r.data.mes_siguiente)}.` : undefined });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast({ title: 'Error', description: e?.response?.data?.error || 'No se pudo guardar', variant: 'destructive' }),
   });
 
   const pedidos = useMemo(() => {
@@ -63,13 +80,31 @@ export default function CierreMes() {
   }, [data, filtro, busqueda]);
 
   const pedidosSeleccionados = useMemo(
-    () => pedidos.filter((p) => selectedIds.includes(p.id)),
-    [pedidos, selectedIds],
+    () => (data?.pedidos ?? []).filter((p) => p.declaracion.editable && selectedIds.includes(p.id)),
+    [data, selectedIds],
   );
   const ivaSeleccionado = pedidosSeleccionados.reduce((suma, p) => suma + Number(p.iva), 0);
-  const todosSeleccionados = pedidos.length > 0 && pedidosSeleccionados.length === pedidos.length;
+  const visiblesEditables = pedidos.filter((p) => p.declaracion.editable);
+  const visiblesSeleccionados = visiblesEditables.filter((p) => selectedIds.includes(p.id)).length;
   const toggleSeleccion = (id: number) => {
     setSelectedIds((ids) => ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id]);
+  };
+  const toggleVisibles = (marcar: boolean) => {
+    const visibles = visiblesEditables.map((p) => p.id);
+    setSelectedIds((ids) => marcar ? [...new Set([...ids, ...visibles])] : ids.filter((i) => !visibles.includes(i)));
+  };
+
+  const declarar = () => {
+    const editables = (data?.pedidos ?? []).filter((p) => p.declaracion.editable);
+    const quedan = editables.length - pedidosSeleccionados.length;
+    confirm({
+      title: `Cerrar declaración de ${nombreMes(mes)}`,
+      description: `Se declaran ${pedidosSeleccionados.length} pedido(s), IVA ${formatCLP(ivaSeleccionado)}. `
+        + (quedan ? `Los otros ${quedan} pasan a ${nombreMes(mesSiguiente(mes))}.` : 'No queda ninguno para el mes siguiente.')
+        + (vendedor !== 'todos' ? ' Solo afecta los pedidos del vendedor elegido.' : ''),
+      confirmLabel: 'Cerrar declaración',
+      onConfirm: () => declararMutation.mutate(pedidosSeleccionados.map((p) => p.id)),
+    });
   };
 
   // Se busca por id en los datos frescos para que el panel se actualice al registrar algo.
@@ -87,7 +122,9 @@ export default function CierreMes() {
       'Vendedor': p.vendedor?.nombre ?? '', 'Cobrado': i === 0 ? Number(p.cobrado) : null,
       'Estado cobro': ETIQUETA_COBRO[p.estado_cobro].texto, 'Documento requerido': p.documento_requerido,
       'Documento emitido': p.documentos.map((d) => `${d.tipo_nombre} ${d.folio} (${formatFecha(d.fecha_emision)})`).join(', '),
-      'Estado tributario': ETIQUETA_TRIBUTARIO[p.estado_tributario].texto, 'Alertas': p.alertas.join('; '),
+      'Estado tributario': ETIQUETA_TRIBUTARIO[p.estado_tributario].texto,
+      'Declaración': p.declaracion.estado === 'diferido' ? `Pasa a ${nombreMes(p.declaracion.mes)}` : ETIQUETA_DECLARACION[p.declaracion.estado].texto,
+      'Alertas': p.alertas.join('; '),
     })));
     const cobros = data.pedidos.flatMap((p) => p.cobros.map((c) => ({
       'Pedido': p.id, 'Cliente': p.cliente.nombre, 'Fecha cobro': formatFecha(c.fecha), 'Monto': Number(c.monto),
@@ -212,7 +249,20 @@ export default function CierreMes() {
                   <Button key={v} size="sm" variant={filtro === v ? 'default' : 'outline'} onClick={() => setFiltro(v)}>{t}</Button>
                 ))}
               </div>
-              <p className="text-xs text-muted-foreground">Selecciona pedidos para sumar su IVA.</p>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-4 py-2 text-sm">
+                <p>
+                  <span className="font-medium">Declaración:</span> {data.resumen.declarados} declarado(s)
+                  · IVA {formatCLP(data.resumen.iva_declarado)}
+                  {data.resumen.arrastrados > 0 && ` · ${data.resumen.arrastrados} vienen de meses anteriores`}
+                  {data.resumen.diferidos > 0 && ` · ${data.resumen.diferidos} pasaron a ${nombreMes(mesSiguiente(mes))} o después`}
+                </p>
+                <Button size="sm" onClick={declarar} disabled={declararMutation.isPending || !data.pedidos.some((p) => p.declaracion.editable)}>
+                  <CalendarCheck className="h-4 w-4 mr-2" />Cerrar declaración
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Marca los pedidos que declaraste en {nombreMes(mes)} y cierra la declaración: los no marcados pasan a {nombreMes(mesSiguiente(mes))}.
+              </p>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -220,9 +270,10 @@ export default function CierreMes() {
                       <TableHead className="w-12">
                         <Checkbox
                           aria-label="Seleccionar todos los pedidos visibles"
-                          checked={todosSeleccionados ? true : pedidosSeleccionados.length > 0 ? 'indeterminate' : false}
-                          disabled={pedidos.length === 0}
-                          onCheckedChange={(checked) => setSelectedIds(checked === true ? pedidos.map((p) => p.id) : [])}
+                          checked={visiblesEditables.length > 0 && visiblesSeleccionados === visiblesEditables.length ? true
+                            : visiblesSeleccionados > 0 ? 'indeterminate' : false}
+                          disabled={visiblesEditables.length === 0}
+                          onCheckedChange={(checked) => toggleVisibles(checked === true)}
                         />
                       </TableHead>
                       <TableHead>Pedido</TableHead>
@@ -252,7 +303,10 @@ export default function CierreMes() {
                     <p className="text-lg font-bold tabular-nums text-blue-300">{formatCLP(ivaSeleccionado)}</p>
                   </div>
                   <Button variant="ghost" size="sm" className="text-slate-300 hover:text-white hover:bg-slate-800" onClick={() => setSelectedIds([])}>
-                    Limpiar selección
+                    Limpiar
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={declarar} disabled={declararMutation.isPending}>
+                    Declarar
                   </Button>
                 </div>
               )}
@@ -300,6 +354,7 @@ export default function CierreMes() {
 
           <DetallePedidoCierre pedido={pedidoAbierto} receptorPorDefecto={data.config.receptor_cobro} emision={data.config.emision}
             onClose={() => setSeleccionado(null)} />
+          {dialog}
         </>
       )}
     </div>
@@ -310,13 +365,19 @@ function FilaPedido({ p, seleccionado, onSeleccionar, onClick }: {
   p: PedidoCierre; seleccionado: boolean; onSeleccionar: () => void; onClick: () => void;
 }) {
   return (
-    <TableRow className="cursor-pointer" data-state={seleccionado ? 'selected' : undefined} onClick={onClick}>
+    <TableRow className={cn('cursor-pointer', !p.declaracion.editable && 'opacity-60')}
+      data-state={seleccionado && p.declaracion.editable ? 'selected' : undefined} onClick={onClick}>
       <TableCell onClick={(e) => e.stopPropagation()}>
-        <Checkbox aria-label={`Seleccionar pedido #${p.id}`} checked={seleccionado} onCheckedChange={onSeleccionar} />
+        <Checkbox aria-label={`Declarar pedido #${p.id}`} checked={seleccionado && p.declaracion.editable}
+          disabled={!p.declaracion.editable} onCheckedChange={onSeleccionar} />
       </TableCell>
       <TableCell>
         <p className="font-medium">#{p.id}</p>
         <p className="text-xs text-muted-foreground">{formatFecha(p.fecha)}</p>
+        <Etiqueta {...ETIQUETA_DECLARACION[p.declaracion.estado]}
+          texto={p.declaracion.estado === 'diferido' ? `Pasa a ${nombreMes(p.declaracion.mes)}`
+            : p.declaracion.arrastrado ? `${ETIQUETA_DECLARACION[p.declaracion.estado].texto} · de ${nombreMes(p.fecha.slice(0, 7))}`
+            : ETIQUETA_DECLARACION[p.declaracion.estado].texto} />
       </TableCell>
       <TableCell>
         <p className="font-medium flex items-center gap-1">

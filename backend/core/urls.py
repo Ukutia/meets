@@ -69,6 +69,7 @@ urlpatterns = [
     path('periodos/', periodos.PeriodoListView.as_view(), name='periodos'),
     path('periodos/<int:pk>/', periodos.PeriodoDetailView.as_view(), name='periodo_detail'),
     path('cierre/ventas/', cierre.VentasMesView.as_view(), name='cierre_ventas'),
+    path('cierre/declaracion/', cierre.DeclaracionMesView.as_view(), name='cierre_declaracion'),
     path('cierre/cobros/', cierre.CobroListView.as_view(), name='cierre_cobros'),
     path('cierre/cobros/<int:pk>/', cierre.CobroDetailView.as_view(), name='cierre_cobro'),
     path('cierre/documentos/', cierre.DocumentoListView.as_view(), name='cierre_documentos'),

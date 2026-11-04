@@ -234,6 +234,56 @@ def fila_documento(doc):
             'datos_actualizados_al': doc.importacion.datos_actualizados_al if doc.importacion else None}
 
 
+def propuesta_f29(ventas, compras, cierre, config, base_ppm):
+    """Propuesta F29 con los códigos del formulario, armada como la arma el SII:
+    con todo lo registrado en el RCV del período. Sirve para comparar línea a
+    línea con la propuesta del SII; la estimación validada es f29_estimado."""
+    def linea(docs, tipos, campo='iva'):
+        sel = [d for d in docs if d.tipo in tipos]
+        return len(sel), pesos(sum((getattr(d, campo) for d in sel), CERO))
+
+    registradas = [d for d in compras if d.estado_sii == 'registrado']
+    n_fact, d_fact = linea(ventas, (33, 34))
+    n_bol, d_bol = linea(ventas, (39, 41))
+    n_nd, d_nd = linea(ventas, (56,))
+    n_nc, d_nc = linea(ventas, (61,))
+    debitos = d_fact + d_bol + d_nd - d_nc
+
+    con_credito = [d for d in registradas if d.credito_validado]
+    n_rec, c_fact = linea(con_credito, (33, 46))
+    n_ndr, c_nd = linea(con_credito, (56,))
+    n_ncr, c_nc = linea(con_credito, (61,))
+    remanente = pesos(cierre.remanente_anterior or CERO)
+    creditos = remanente + c_fact + c_nd - c_nc
+    signo = lambda d: -1 if d.tipo == 61 else 1
+    exentas = pesos(sum((signo(d) * d.exento for d in registradas), CERO))
+
+    iva = max(debitos - creditos, CERO)
+    tasa = cierre.tasa_ppm if cierre.tasa_ppm is not None else config.tasa_ppm
+    ppm = pesos(max(base_ppm, CERO) * Decimal(str(tasa)) / 100)
+    anticipo = pesos(sum((signo(d) * d.anticipo for d in registradas), CERO))
+    anticipo_sin_validar = pesos(sum((signo(d) * d.anticipo for d in registradas if not d.anticipo_validado), CERO))
+    total_anticipo = anticipo + pesos(cierre.remanente_anticipo_anterior or CERO)
+    imputado = min(max(total_anticipo, CERO), iva)
+    otros, retenciones = pesos(cierre.otros_impuestos), pesos(cierre.retenciones)
+    determinado = iva + ppm - imputado + otros - retenciones
+    return {
+        'debitos': {'facturas': {'cantidad': n_fact, 'monto': d_fact}, 'boletas': {'cantidad': n_bol, 'monto': d_bol},
+                    'notas_debito': {'cantidad': n_nd, 'monto': d_nd}, 'notas_credito': {'cantidad': n_nc, 'monto': d_nc},
+                    'total': debitos},
+        'creditos': {'con_derecho': c_fact + c_nd - c_nc, 'exentas': exentas, 'remanente_anterior': remanente,
+                     'facturas': {'cantidad': n_rec, 'monto': c_fact}, 'notas_debito': {'cantidad': n_ndr, 'monto': c_nd},
+                     'notas_credito': {'cantidad': n_ncr, 'monto': c_nc}, 'total': creditos},
+        'iva_determinado': iva, 'remanente_siguiente': max(creditos - debitos, CERO),
+        'ppm': {'base': pesos(base_ppm), 'tasa': tasa, 'tasa_confirmada': cierre.tasa_ppm is not None, 'monto': ppm},
+        'anticipo': {'periodo': anticipo, 'sin_validar': anticipo_sin_validar,
+                     'remanente_anterior': pesos(cierre.remanente_anticipo_anterior or CERO),
+                     'total': total_anticipo, 'imputado': imputado, 'remanente_siguiente': total_anticipo - imputado},
+        'otros_impuestos': otros, 'retenciones': retenciones,
+        'total_determinado': determinado, 'total_a_pagar': max(determinado, CERO),
+    }
+
+
 def resumen_mes(mes, periodo=None):
     validar_mes(mes)
     config = ConfiguracionContable.actual()
@@ -356,6 +406,7 @@ def resumen_mes(mes, periodo=None):
                     'tasa': cierre.tasa_ppm, 'estimado': ppm, 'informado_sii': cierre.ppm_informado_sii,
                     'diferencia': ppm - cierre.ppm_informado_sii if cierre.ppm_informado_sii is not None and ppm is not None else None},
             'parametros': parametros, 'f29_estimado': f29, 'declarado': cierre.declarado,
+            'f29': propuesta_f29(ventas, compras, cierre, config, base),
             'documentalmente_conciliado': documental, 'cumplimiento_completo': completo,
             'advertencias': advertencias,
             'config': {'rut_empresa': config.rut_empresa, 'inicio_actividades': config.inicio_actividades, 'regimen': config.regimen}}

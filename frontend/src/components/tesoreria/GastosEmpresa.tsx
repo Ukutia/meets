@@ -24,11 +24,13 @@ interface Gasto {
   iva: number | string;
   total: number | string;
   con_factura: boolean;
+  proveedor: string;
+  numero_documento: string;
   movimiento: number | null;
   comentario: string;
 }
 
-const VACIO = { fecha: hoyISO(), descripcion: '', categoria: 'otro', total: '', con_factura: false, comentario: '' };
+const VACIO = { fecha: hoyISO(), descripcion: '', categoria: 'otro', total: '', con_factura: false, proveedor: '', numero_documento: '', comentario: '' };
 
 export function GastosEmpresa({ rango }: { rango: RangoFecha }) {
   const queryClient = useQueryClient();
@@ -56,7 +58,8 @@ export function GastosEmpresa({ rango }: { rango: RangoFecha }) {
     setEditando(g);
     setForm(g === 'nuevo' ? { ...VACIO, fecha: hoyISO() } : {
       fecha: g.fecha, descripcion: g.descripcion, categoria: g.categoria,
-      total: decimalATexto(g.total), con_factura: g.con_factura, comentario: g.comentario,
+      total: decimalATexto(g.total), con_factura: g.con_factura, proveedor: g.proveedor ?? '',
+      numero_documento: g.numero_documento ?? '', comentario: g.comentario,
     });
   };
 
@@ -112,7 +115,8 @@ export function GastosEmpresa({ rango }: { rango: RangoFecha }) {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">{g.descripcion}</p>
               <p className="text-xs text-muted-foreground">
-                {formatFecha(g.fecha)} · {nombreCategoria(g.categoria)}{g.con_factura ? ' · con factura' : ''}{g.movimiento ? ' · desde cartola' : ''}
+                {formatFecha(g.fecha)} · {nombreCategoria(g.categoria)}{g.proveedor ? ` · ${g.proveedor}` : ''}
+                {g.con_factura ? ` · factura${g.numero_documento ? ` N° ${g.numero_documento}` : ''}` : ''}{g.movimiento ? ' · desde cartola' : ''}
               </p>
             </div>
             <div className="text-right">
@@ -164,6 +168,16 @@ export function GastosEmpresa({ rango }: { rango: RangoFecha }) {
             <div className="space-y-1.5">
               <Label>Descripción</Label>
               <Input value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} placeholder="Ej: bencina reparto" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Proveedor</Label>
+                <Input value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Ej: Enel, Copec" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>N° factura</Label>
+                <Input value={form.numero_documento} onChange={(e) => setForm({ ...form, numero_documento: e.target.value })} />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label>Categoría</Label>

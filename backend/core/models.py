@@ -247,6 +247,17 @@ class Pedido(models.Model):
     # Notas de entrega que se escriben al crear el pedido (horario, portón, etc.).
     observaciones = models.TextField(blank=True, default='', verbose_name="Observaciones")
 
+    # Bodega de la que se descuentan las existencias (StockBodega) de este pedido.
+    bodega = models.ForeignKey(
+        'Bodega', on_delete=models.SET_NULL, null=True, blank=True, related_name='pedidos',
+        verbose_name="Bodega de origen"
+    )
+
+    # Cierre de mes: mes (día 1) en que el pedido se considera para declarar. Vacío
+    # = el mes de su fecha. Al cerrar un mes, lo no declarado pasa al mes siguiente.
+    mes_declaracion = models.DateField(null=True, blank=True, verbose_name="Mes de declaración")
+    declarado = models.BooleanField(default=False, verbose_name="Declarado en el SII")
+
     def __str__(self):
         return f"Pedido #{self.id} - Cliente: {self.cliente.nombre}"
     
@@ -297,6 +308,8 @@ class DetallePedido(models.Model):
     unidades_pendientes = models.IntegerField(default=0, verbose_name="Unidades en pre-reserva (sin stock)")
     # La línea se abastece del stock congelado del producto en vez del inventario normal.
     congelado = models.BooleanField(default=False, verbose_name="Sale del stock congelado")
+    # Unidades descontadas de StockBodega (pedido.bodega) al crear la línea; se devuelven al anularla.
+    bodega_unidades = models.PositiveIntegerField(default=0)
 
 
     def save(self, *args, **kwargs):
@@ -637,6 +650,7 @@ CATEGORIAS_GASTO = [
     ("insumos", "Insumos y envases"),
     ("sueldos", "Sueldos y honorarios"),
     ("marketing", "Publicidad"),
+    ("software", "Dominio, hosting y software"),
     ("comisiones", "Comisiones bancarias"),
     ("contador", "Contador / trámites"),
     ("otro", "Otro"),
@@ -653,6 +667,8 @@ class Gasto(models.Model):
     iva = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=12, decimal_places=2)
     con_factura = models.BooleanField(default=False)
+    proveedor = models.CharField(max_length=150, blank=True, default='')
+    numero_documento = models.CharField(max_length=40, blank=True, default='')
     movimiento = models.ForeignKey(MovimientoBancario, on_delete=models.SET_NULL, null=True, blank=True, related_name='gastos')
     comentario = models.TextField(blank=True, default='')
     creado = models.DateTimeField(auto_now_add=True)

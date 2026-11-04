@@ -21,6 +21,7 @@ import GestionPagosVendedor from "./pages/GestioPagosVendedor";
 import CambiarPassword from "./pages/CambiarPassword";
 import Flyer from "./pages/Flyer";
 import Tesoreria from "./pages/Tesoreria";
+import Gastos from "./pages/Gastos";
 import CierreMes from "./pages/CierreMes";
 import PreReservas from "./pages/PreReservas";
 import Precios from "./pages/Precios";
@@ -234,6 +235,16 @@ const App = () => (
                 <ProtectedRoute>
                   <Layout>
                     <Tesoreria />
+                  </Layout>
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/gastos"
+              element={
+                <ProtectedRoute>
+                  <Layout>
+                    <Gastos />
                   </Layout>
                 </ProtectedRoute>
               }

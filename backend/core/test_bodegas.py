@@ -38,3 +38,42 @@ class BodegasTests(TestCase):
         self.assertFalse(StockBodega.objects.exists())
         self.client.force_authenticate(user=None)
         self.assertIn(self.client.get(reverse('bodegas')).status_code, [401, 403])
+
+
+class PedidoBodegaTests(TestCase):
+    def setUp(self):
+        from datetime import date
+        from .models import Bodega, Cliente, Factura, Proveedor, Vendedor
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_user(username='pedidos'))
+        self.producto = Producto.objects.create(nombre='Lomo', precio_por_kilo=10000)
+        vendedor = Vendedor.objects.create(nombre='V', sigla='V')
+        self.cliente = Cliente.objects.create(nombre='C', direccion='x', vendedor=vendedor)
+        factura = Factura.objects.create(
+            proveedor=Proveedor.objects.create(nombre='P'), fecha=date.today(), numero_factura='F1',
+            subtotal=0, iva=0, total=0)
+        EntradaProducto.objects.create(
+            factura=factura, producto=self.producto, cantidad_kilos=100, cantidad_unidades=20, costo_por_kilo=5000)
+        self.bodega = Bodega.objects.create(nombre='Norte')
+        StockBodega.objects.create(bodega=self.bodega, producto=self.producto, unidades=5, kilos=10)
+
+    def crear(self, unidades):
+        return self.client.post(reverse('crear_pedido'), {
+            'cliente': self.cliente.id, 'bodega': self.bodega.id,
+            'detalles': [{'producto': self.producto.id, 'cantidad_unidades': unidades, 'cantidad_kilos': 0}],
+        }, format='json')
+
+    def test_descuenta_y_devuelve_al_anular(self):
+        r = self.crear(3)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['bodega_nombre'], 'Norte')
+        self.assertEqual(StockBodega.objects.get().unidades, 2)
+        self.client.post(reverse('cancelar_pedido'), {'pedido_id': r.data['id']}, format='json')
+        self.assertEqual(StockBodega.objects.get().unidades, 5)
+
+    def test_bodega_sin_stock_suficiente_no_crea_pedido(self):
+        from .models import Pedido
+        r = self.crear(6)
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertFalse(Pedido.objects.exists())
+        self.assertEqual(StockBodega.objects.get().unidades, 5)

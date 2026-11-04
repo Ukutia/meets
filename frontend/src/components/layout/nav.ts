@@ -18,6 +18,7 @@ import {
   Ellipsis,
   ClipboardCheck,
   CalendarCheck,
+  Receipt,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -43,6 +44,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { title: 'Facturas de Compra', url: '/facturas', icon: FileText },
       { title: 'Proveedores', url: '/proveedores', icon: Truck },
+      { title: 'Gastos de la Empresa', url: '/gastos', icon: Receipt },
     ],
   },
   {

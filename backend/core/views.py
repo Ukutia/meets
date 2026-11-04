@@ -1,11 +1,11 @@
 from rest_framework.views import APIView, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado, RegistroPreReserva
+from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado, RegistroPreReserva, Bodega
 from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
 from .models import ConfiguracionContable
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -153,6 +153,7 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
         modo_precio=cfg['modo'],
     )
     vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
+    descontar_de_bodega(detalle, pedido.bodega, unidades - pendientes)
     registrar_pre_reserva(detalle, 'creada', origen, pendientes,
                           referencia=f"Pedido #{pedido.id}", usuario=usuario)
 
@@ -258,9 +259,17 @@ class CrearPedido(APIView):
         if tipo_recibo not in ('Boleta', 'Factura'):
             tipo_recibo = 'Boleta'
 
+        bodega = None
+        bodega_id = data.get('bodega')
+        if bodega_id:
+            bodega = Bodega.objects.filter(id=bodega_id).first()
+            if bodega is None:
+                return Response({'error': 'Bodega no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
         try:
             with transaction.atomic():
                 pedido = Pedido.objects.create(
+                    bodega=bodega,
                     cliente_id=cliente_id,
                     observaciones=(data.get('observaciones') or '').strip(),
                     tipo_recibo=tipo_recibo,

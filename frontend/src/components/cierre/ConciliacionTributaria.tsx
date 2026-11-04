@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import { formatCLP } from '@/lib/utils';
 import { getConciliacionMes, getConciliacionDocumento, guardarConciliacionMes, vincularDocumentoSII } from '@/services/api';
 import { usePeriodo } from '@/contexts/PeriodoContext';
+import { PropuestaF29, type F29 } from './PropuestaF29';
 
 type Num = string | number;
 interface Documento {
@@ -29,7 +30,7 @@ interface Documento {
 interface Mes {
   documentos: Documento[]; indicadores: Record<string, number>; advertencias: string[];
   documentalmente_conciliado: boolean; cumplimiento_completo: boolean;
-  f29_estimado: Record<string, Num | null>; parametros: Record<string, Num | null>;
+  f29_estimado: Record<string, Num | null>; f29: F29; parametros: Record<string, Num | null>;
   declarado: { folio_f29?: string; total_pagado?: Num; fecha?: string };
   config: { rut_empresa: string; inicio_actividades: string; regimen: string };
   ventas: Record<string, Num>; compras: Record<string, Num>;
@@ -103,12 +104,14 @@ export function ConciliacionTributaria({ mes }: { mes: string }) {
           <p className="text-xs text-muted-foreground">Las salidas de stock y las compras internas siguen disponibles en los reportes comerciales.</p>
         </div>
         <div className="rounded-lg border p-4 space-y-1">
-          <h3 className="font-semibold">Preparación F29 · estimado</h3>
+          <h3 className="font-semibold">Preparación F29 · estimado validado</h3>
+          <p className="text-xs text-muted-foreground">Solo con créditos y anticipos validados en la plataforma.</p>
           {Object.entries(data.f29_estimado).map(([k, v]) => <div key={k} className={`flex justify-between gap-3 text-sm ${k === 'total_estimado' ? 'font-bold border-t pt-2' : ''}`}>
             <span>{titulos[k] ?? texto(k)}</span><span className="tabular-nums">{v == null ? 'por confirmar' : formatCLP(v)}</span>
           </div>)}
         </div>
       </div>
+      <PropuestaF29 f29={data.f29} />
       <details className="rounded-lg border p-3"><summary className="cursor-pointer font-medium">Parámetros del período y declaración manual</summary>
         <ParametrosMes key={mes + JSON.stringify(data.parametros)} mes={mes} data={data} onSaved={refrescar} />
       </details>
