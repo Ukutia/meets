@@ -258,21 +258,38 @@ def ventas_declaradas(mes):
     return lineas, sin_documento, ids
 
 
-def compras_internas(mes):
+def mes_siguiente(mes):
+    anio, m = int(mes[:4]), int(mes[5:])
+    return f'{anio + (m == 12)}-{m % 12 + 1:02d}'
+
+
+def estado_f29(factura, mes):
+    """considerada / postergada (se declara en un mes posterior) / excluida (no es
+    de la empresa) para la factura en el F29 del mes."""
+    if factura.excluir_f29:
+        return 'excluida'
+    return 'postergada' if (factura.mes_f29 or factura.fecha.strftime('%Y-%m')) != mes else 'considerada'
+
+
+def compras_internas(mes, compras_rcv=()):
     """Facturas de compra, notas de crédito y gastos con factura ingresados en la
-    plataforma en el mes, que aún no tienen un documento del RCV vinculado (los
-    que sí lo tienen ya se cuentan por el RCV)."""
+    plataforma que se declaran en el mes (por su fecha, o postergadas a él), que
+    no tienen su documento del RCV entre las compras del mes (esas ya se cuentan
+    por el RCV). Devuelve también las facturas que no cuentan este mes."""
     anio, m = int(mes[:4]), int(mes[5:])
     mismo_mes = {'fecha__year': anio, 'fecha__month': m}
     docs, listado = [], []
-    en_rcv = set(DocumentoTributario.objects.filter(operacion='compras', factura__isnull=False)
-                 .values_list('factura_id', flat=True))
+    en_rcv = {d.factura_id for d in compras_rcv if d.factura_id}
     descartadas = set()
-    for f in Factura.objects.filter(**mismo_mes).select_related('proveedor').order_by('fecha', 'numero_factura'):
+    facturas = (Factura.objects.filter(Q(mes_f29=mes) | Q(**mismo_mes))
+                .select_related('proveedor').order_by('fecha', 'numero_factura'))
+    for f in facturas:
+        estado = estado_f29(f, mes)
         listado.append({'id': f.pk, 'numero': f.numero_factura, 'proveedor': f.proveedor.nombre, 'fecha': f.fecha,
-                        'iva': f.iva, 'anticipo': f.anticipo_iva, 'total': f.total, 'excluida': f.excluir_f29,
-                        'en_rcv': f.pk in en_rcv})
-        if f.excluir_f29:
+                        'iva': f.iva, 'anticipo': f.anticipo_iva, 'total': f.total, 'estado': estado,
+                        'mes_f29': f.mes_f29 or f.fecha.strftime('%Y-%m'),
+                        'de_otro_mes': f.fecha.strftime('%Y-%m') != mes, 'en_rcv': f.pk in en_rcv})
+        if estado != 'considerada':
             descartadas.add(f.pk)
         elif f.pk not in en_rcv:
             docs.append(SimpleNamespace(tipo=f.tipo_documento, iva=f.iva, neto=f.subtotal, exento=f.exento, anticipo=f.anticipo_iva,
@@ -300,7 +317,7 @@ def propuesta_f29(mes, ventas_mes, compras, cierre, config):
     ventas, sin_documento, declarados = ventas_declaradas(mes)
     # Documentos de venta del período que no son de un pedido declarado este mes.
     fuera = [d for d in ventas_mes if d.pedido_id not in declarados]
-    internas, facturas_mes, descartadas = compras_internas(mes)
+    internas, facturas_mes, descartadas = compras_internas(mes, compras)
     registradas = [d for d in compras if d.estado_sii == 'registrado' and d.factura_id not in descartadas] + internas
     n_fact, d_fact = linea(ventas, (33, 34))
     n_bol, d_bol = linea(ventas, (39, 41))

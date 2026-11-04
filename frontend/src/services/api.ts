@@ -367,7 +367,9 @@ export const actualizarEstadoDocumento = (id: number) => api.post(`/cierre/docum
 export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
 export const getConciliacionMes = (mes: string, periodo?: number) => api.get('/cierre/conciliacion/', { params: { mes, periodo } });
 export const guardarConciliacionMes = (data: Record<string, unknown>) => api.put('/cierre/conciliacion/', data);
-export const excluirFacturaF29 = (id: string, excluir: boolean) => api.patch(`/cierre/facturas/${encodeURIComponent(id)}/f29/`, { excluir });
+export type AccionFacturaF29 = 'considerar' | 'postergar' | 'excluir';
+export const accionFacturaF29 = (id: string, accion: AccionFacturaF29, mes: string) =>
+  api.patch(`/cierre/facturas/${encodeURIComponent(id)}/f29/`, { accion, mes });
 export const getConciliacionDocumento = (id: number) => api.get(`/cierre/conciliacion/${id}/`);
 export const vincularDocumentoSII = (id: number, data: Record<string, unknown>) => api.patch(`/cierre/conciliacion/${id}/`, data);
 export const guardarFechaEntrega = (id: number, fecha_entrega: string | null) => api.patch(`/cierre/pedidos/${id}/entrega/`, { fecha_entrega });

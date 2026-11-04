@@ -379,6 +379,8 @@ class Factura(models.Model):
     exento = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     otros_impuestos = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     excluir_f29 = models.BooleanField(default=False, verbose_name="No considerar en el F29")
+    # Mes (AAAA-MM) en que se declara en el F29; vacío = el mes de su fecha.
+    mes_f29 = models.CharField(max_length=7, blank=True, default='', verbose_name="Mes de declaración F29")
     total_pagadero = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
                                         help_text='Pagadero según documento; vacío usa total menos notas de crédito')
     fecha_vencimiento = models.DateField(null=True, blank=True, verbose_name="Fecha de vencimiento")

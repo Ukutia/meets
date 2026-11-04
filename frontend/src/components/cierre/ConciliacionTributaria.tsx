@@ -111,7 +111,7 @@ export function ConciliacionTributaria({ mes }: { mes: string }) {
           </div>)}
         </div>
       </div>
-      <PropuestaF29 f29={data.f29} />
+      <PropuestaF29 f29={data.f29} mes={mes} />
       <details className="rounded-lg border p-3"><summary className="cursor-pointer font-medium">Parámetros del período y declaración manual</summary>
         <ParametrosMes key={mes + JSON.stringify(data.parametros)} mes={mes} data={data} onSaved={refrescar} />
       </details>

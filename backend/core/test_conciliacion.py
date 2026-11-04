@@ -139,14 +139,25 @@ class ConciliacionTests(TestCase):
                                subtotal=100000, iva=19000, anticipo_iva=5000, total=124000)
         Factura.objects.create(proveedor=self.proveedor, fecha=date(2026, 10, 21), numero_factura='B2',
                                subtotal=50000, iva=9500, total=59500)
-        r = self.client.patch(reverse('factura_f29', args=['B/1']), {'excluir': True}, format='json')
-        self.assertEqual(r.status_code, 200, r.content)
+        accion = lambda numero, a, mes='2026-10': self.client.patch(
+            reverse('factura_f29', args=[numero]), {'accion': a, 'mes': mes}, format='json')
+        self.assertEqual(accion('B/1', 'postergar').status_code, 200)
+        self.assertEqual(accion('B2', 'excluir').status_code, 200)
         f29 = resumen_mes('2026-10')['f29']
-        self.assertEqual(f29['creditos']['facturas'], {'cantidad': 1, 'monto': 9500})
+        self.assertEqual(f29['creditos']['facturas'], {'cantidad': 0, 'monto': 0})
         self.assertEqual(f29['anticipo']['periodo'], 0)
-        self.assertEqual([(f['numero'], f['excluida']) for f in f29['facturas_compra']], [('B/1', True), ('B2', False)])
-        self.client.patch(reverse('factura_f29', args=['B/1']), {'excluir': False}, format='json')
-        self.assertEqual(resumen_mes('2026-10')['f29']['creditos']['facturas']['monto'], 28500)
+        self.assertEqual([(f['numero'], f['estado']) for f in f29['facturas_compra']],
+                         [('B/1', 'postergada'), ('B2', 'excluida')])
+        # La postergada se declara en noviembre con su anticipo; la excluida en ningún mes.
+        f29 = resumen_mes('2026-11')['f29']
+        self.assertEqual(f29['creditos']['facturas'], {'cantidad': 1, 'monto': 19000})
+        self.assertEqual(f29['anticipo']['periodo'], 5000)
+        self.assertEqual([(f['numero'], f['estado'], f['de_otro_mes']) for f in f29['facturas_compra']], [('B/1', 'considerada', True)])
+        # Volver a considerarla en octubre la saca de noviembre.
+        accion('B/1', 'considerar')
+        self.assertEqual(resumen_mes('2026-10')['f29']['creditos']['facturas']['monto'], 19000)
+        self.assertEqual(resumen_mes('2026-11')['f29']['facturas_compra'], [])
+        self.assertEqual(accion('B2', 'considerar', '2026-09').status_code, 400)  # Antes de su fecha.
 
     def test_propuesta_f29_usa_iva_teorico_de_declarado_sin_documento(self):
         p = self.pedido(total=1190, mes_declaracion=date(2026, 10, 1), declarado=True)

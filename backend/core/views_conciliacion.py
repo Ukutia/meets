@@ -14,17 +14,34 @@ from .views_tesoreria import _error
 
 
 class FacturaF29View(APIView):
-    """PATCH {excluir: bool}: descarta (o vuelve a considerar) una factura de compra
-    en la propuesta F29. No modifica la factura ni su stock ni sus pagos."""
+    """PATCH {accion, mes}: decide cómo entra una factura de compra en el F29 del
+    mes. 'considerar' la declara en el mes, 'postergar' la pasa al mes siguiente
+    y 'excluir' la deja fuera por no ser de la empresa. No modifica la factura ni
+    su stock ni sus pagos."""
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
         factura = Factura.objects.filter(pk=pk).first()
         if not factura:
             return _error('Factura no encontrada', 404)
-        factura.excluir_f29 = bool(request.data.get('excluir'))
-        factura.save(update_fields=['excluir_f29'])
-        return Response({'id': factura.pk, 'excluida': factura.excluir_f29})
+        accion, mes = request.data.get('accion'), request.data.get('mes')
+        try:
+            validar_mes(mes)
+        except (ValueError, TypeError):
+            return _error('Mes inválido, usa AAAA-MM')
+        if accion not in ('considerar', 'postergar', 'excluir'):
+            return _error('Acción inválida')
+        if accion == 'excluir':
+            factura.excluir_f29 = True
+        else:
+            factura.excluir_f29 = False
+            destino = mes if accion == 'considerar' else c.mes_siguiente(mes)
+            if destino < factura.fecha.strftime('%Y-%m'):
+                return _error('No se puede declarar antes del mes de la factura')
+            factura.mes_f29 = '' if destino == factura.fecha.strftime('%Y-%m') else destino
+        factura.save(update_fields=['excluir_f29', 'mes_f29'])
+        return Response({'id': factura.pk, 'estado': c.estado_f29(factura, mes),
+                         'mes_f29': factura.mes_f29 or factura.fecha.strftime('%Y-%m')})
 
 
 class ConciliacionMesView(APIView):

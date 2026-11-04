@@ -2,12 +2,13 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { formatCLP } from '@/lib/utils';
-import { excluirFacturaF29 } from '@/services/api';
+import { accionFacturaF29, type AccionFacturaF29 } from '@/services/api';
 
 type Num = string | number;
 interface Linea { cantidad: number; monto: Num }
 interface FacturaCompra {
-  id: string; numero: string; proveedor: string; fecha: string; iva: Num; anticipo: Num; total: Num; excluida: boolean; en_rcv: boolean;
+  id: string; numero: string; proveedor: string; fecha: string; iva: Num; anticipo: Num; total: Num;
+  estado: 'considerada' | 'postergada' | 'excluida'; mes_f29: string; de_otro_mes: boolean; en_rcv: boolean;
 }
 export interface F29 {
   debitos: {
@@ -40,16 +41,19 @@ function Fila({ texto, codigo, monto, signo, total, nota }: { texto: string; cod
 }
 
 /** Propuesta F29 con los mismos códigos que muestra el SII, para comparar línea a línea. */
-export function PropuestaF29({ f29 }: { f29: F29 }) {
+export function PropuestaF29({ f29, mes }: { f29: F29; mes: string }) {
   const { debitos: d, creditos: c, anticipo: a } = f29;
   const qc = useQueryClient();
   const { toast } = useToast();
-  const excluir = useMutation({
-    mutationFn: ({ id, excluir }: { id: string; excluir: boolean }) => excluirFacturaF29(id, excluir),
+  const cambiar = useMutation({
+    mutationFn: ({ id, accion }: { id: string; accion: AccionFacturaF29 }) => accionFacturaF29(id, accion, mes),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['conciliacion'] }); qc.invalidateQueries({ queryKey: ['contabilidad'] }); },
-    onError: () => toast({ title: 'No se pudo actualizar la factura', variant: 'destructive' }),
+    onError: (e: { response?: { data?: { error?: string } } }) =>
+      toast({ title: 'No se pudo actualizar la factura', description: e.response?.data?.error, variant: 'destructive' }),
   });
-  const descartadas = f29.facturas_compra.filter((f) => f.excluida).length;
+  const postergadas = f29.facturas_compra.filter((f) => f.estado === 'postergada').length;
+  const excluidas = f29.facturas_compra.filter((f) => f.estado === 'excluida').length;
+  const fuera = postergadas + excluidas;
   return <div className="rounded-lg border p-4 space-y-2">
     <h3 className="font-semibold">Propuesta F29 · para comparar con el SII</h3>
     <p className="text-xs text-muted-foreground">
@@ -99,19 +103,34 @@ export function PropuestaF29({ f29 }: { f29: F29 }) {
         </tbody>
       </table>
     </div>
-    <details className="rounded border p-3 text-sm" open={descartadas > 0}>
-      <summary className="cursor-pointer font-medium">Facturas de compra del mes ({f29.facturas_compra.length}{descartadas ? ` · ${descartadas} descartada(s)` : ''})</summary>
-      <p className="text-xs text-muted-foreground my-2">Descarta las que no corresponde considerar en este F29. La factura no se borra ni cambia: solo deja de sumar su crédito y su anticipo.</p>
+    <details className="rounded border p-3 text-sm" open={fuera > 0}>
+      <summary className="cursor-pointer font-medium">
+        Facturas de compra del mes ({f29.facturas_compra.length - fuera} consideradas
+        {postergadas ? ` · ${postergadas} al mes siguiente` : ''}{excluidas ? ` · ${excluidas} no son de la empresa` : ''})
+      </summary>
+      <p className="text-xs text-muted-foreground my-2">
+        Pasa al mes siguiente las que declararás después, y marca las que no son tuyas para que no se consideren.
+        La factura no se borra ni cambia: solo se mueve su crédito y su anticipo en el F29.
+      </p>
       <div className="space-y-1">
-        {f29.facturas_compra.map((f) => <div key={f.id} className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 ${f.excluida ? 'opacity-60' : ''}`}>
-          <span className={f.excluida ? 'line-through' : ''}>
-            N° {f.numero} · {f.proveedor} · {f.fecha}
-            <span className="block text-xs text-muted-foreground">IVA {formatCLP(f.iva)}{n(f.anticipo) ? ` · Anticipo ${formatCLP(f.anticipo)}` : ''}{f.en_rcv ? ' · en RCV' : ''}</span>
+        {f29.facturas_compra.map((f) => <div key={f.id} className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-1 ${f.estado !== 'considerada' ? 'opacity-70' : ''}`}>
+          <span>
+            <span className={f.estado === 'excluida' ? 'line-through' : ''}>N° {f.numero} · {f.proveedor} · {f.fecha}</span>
+            <span className="block text-xs text-muted-foreground">
+              IVA {formatCLP(f.iva)}{n(f.anticipo) ? ` · Anticipo ${formatCLP(f.anticipo)}` : ''}{f.en_rcv ? ' · en RCV' : ''}
+              {f.de_otro_mes && f.estado === 'considerada' && ' · viene de un mes anterior'}
+            </span>
+            {f.estado === 'postergada' && <span className="block text-xs text-amber-700">Se declara en {f.mes_f29}</span>}
+            {f.estado === 'excluida' && <span className="block text-xs text-amber-700">No es de la empresa: no se considera</span>}
           </span>
-          <Button size="sm" variant={f.excluida ? 'default' : 'outline'} disabled={excluir.isPending}
-            onClick={() => excluir.mutate({ id: f.id, excluir: !f.excluida })}>{f.excluida ? 'Volver a considerar' : 'Descartar'}</Button>
+          <span className="flex gap-1">
+            {f.estado === 'considerada' ? <>
+              <Button size="sm" variant="outline" disabled={cambiar.isPending} onClick={() => cambiar.mutate({ id: f.id, accion: 'postergar' })}>Pasar al mes siguiente</Button>
+              <Button size="sm" variant="outline" disabled={cambiar.isPending} onClick={() => cambiar.mutate({ id: f.id, accion: 'excluir' })}>No es mía</Button>
+            </> : <Button size="sm" disabled={cambiar.isPending} onClick={() => cambiar.mutate({ id: f.id, accion: 'considerar' })}>Considerar este mes</Button>}
+          </span>
         </div>)}
-        {!f29.facturas_compra.length && <p className="text-xs text-muted-foreground">No hay facturas de compra ingresadas en este mes.</p>}
+        {!f29.facturas_compra.length && <p className="text-xs text-muted-foreground">No hay facturas de compra en este mes.</p>}
       </div>
     </details>
     <div className="flex justify-between items-center rounded border-2 border-sky-300 bg-sky-50 dark:bg-sky-950/50 px-3 py-2 font-bold">
