@@ -28,7 +28,7 @@ import { BodegasStock, useBodegas } from '@/components/shared/BodegasStock';
 
 const CLAVE_STOCK = ['stock', 'precios'];
 const congeladosDisponibles = (item: StockItem) =>
-  Math.max(Number(item.congelado_unidades ?? 0) - Number(item.congelado_reservas ?? 0), 0);
+  Math.max(Number(item.congelado_unidades ?? 0), 0);
 const totalDisponible = (item: StockItem) => Number(item.disponibles) + congeladosDisponibles(item)
   + (item.bodegas ?? []).reduce((total, b) => total + b.unidades, 0);
 

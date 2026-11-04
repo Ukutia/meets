@@ -122,7 +122,8 @@ export default function PedidoNuevo() {
     if (!producto) return;
     const item = stockDe(producto);
     const disponibles = item?.disponibles ?? 0;
-    const congelados = Math.max((item?.congelado_unidades ?? 0) - (item?.congelado_reservas ?? 0), 0);
+    // El ledger ya descuenta las reservas: congelado_unidades es lo realmente disponible.
+    const congelados = Math.max(item?.congelado_unidades ?? 0, 0);
     setDetalles((prev) => [
       ...prev,
       {

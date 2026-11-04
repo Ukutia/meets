@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as XLSX from 'xlsx';
-import { AlertTriangle, CalendarCheck, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, CalendarCheck, Download, FileWarning, HandCoins, Receipt, Search, TrendingUp, Wallet } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -27,6 +27,27 @@ import {
 } from '@/lib/cierre';
 
 type Filtro = 'todos' | 'por_cobrar' | 'con_documento' | 'sin_documento' | 'alertas';
+type CampoOrden = 'fecha' | 'pedido' | 'cliente' | 'vendedor' | 'total' | 'margen' | 'saldo' | 'tipo' | 'folio' | 'declaracion';
+
+// Boleta o factura según lo emitido; si aún no hay documento, según lo pedido.
+const tipoDocumento = (p: PedidoCierre): 'boleta' | 'factura' => {
+  const ventas = p.documentos.filter((d) => d.ambiente === 'produccion' && [33, 34, 39, 41].includes(d.tipo));
+  if (ventas.length) return ventas.some((d) => d.tipo === 33 || d.tipo === 34) ? 'factura' : 'boleta';
+  return p.documento_requerido === 'Factura' ? 'factura' : 'boleta';
+};
+
+const CLAVES_ORDEN: Record<CampoOrden, (p: PedidoCierre) => string | number | null> = {
+  fecha: (p) => p.fecha,
+  pedido: (p) => p.id,
+  cliente: (p) => p.cliente.nombre.toLowerCase(),
+  vendedor: (p) => p.vendedor?.nombre.toLowerCase() ?? null,
+  total: (p) => Number(p.total),
+  margen: (p) => Number(p.margen),
+  saldo: (p) => Number(p.saldo),
+  tipo: (p) => tipoDocumento(p),
+  folio: (p) => (p.documentos.length ? Math.min(...p.documentos.map((d) => d.folio)) : null),
+  declaracion: (p) => p.declaracion.estado,
+};
 
 export default function CierreMes() {
   const { seleccionado: periodo } = usePeriodo();
@@ -41,6 +62,9 @@ export default function CierreMes() {
   const [busqueda, setBusqueda] = useState('');
   const [seleccionado, setSeleccionado] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [orden, setOrden] = useState<{ campo: CampoOrden; dir: 'asc' | 'desc' }>({ campo: 'fecha', dir: 'asc' });
+  const ordenarPor = (campo: CampoOrden) =>
+    setOrden((o) => o.campo === campo ? { campo, dir: o.dir === 'asc' ? 'desc' : 'asc' } : { campo, dir: 'asc' });
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { confirm, dialog } = useConfirm();
@@ -69,21 +93,40 @@ export default function CierreMes() {
 
   const pedidos = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
-    return (data?.pedidos ?? []).filter((p) => {
+    const filtrados = (data?.pedidos ?? []).filter((p) => {
       if (filtro === 'por_cobrar' && p.estado_cobro === 'pagado') return false;
       // Los documentos con diferencias de monto o tipo también cuentan como emitidos.
       if (filtro === 'con_documento' && p.estado_tributario === 'pendiente') return false;
       if (filtro === 'sin_documento' && p.estado_tributario === 'emitido') return false;
       if (filtro === 'alertas' && p.alertas.length === 0) return false;
-      return !q || p.cliente.nombre.toLowerCase().includes(q) || String(p.id) === q;
+      if (!q) return true;
+      return p.cliente.nombre.toLowerCase().includes(q) || String(p.id) === q
+        || p.documentos.some((d) => String(d.folio) === q);
     });
-  }, [data, filtro, busqueda]);
+    const valor = CLAVES_ORDEN[orden.campo];
+    const dir = orden.dir === 'asc' ? 1 : -1;
+    return [...filtrados].sort((a, b) => {
+      const va = valor(a), vb = valor(b);
+      // Lo que no tiene valor (ej. sin folio) va siempre al final.
+      if (va === null || vb === null) return va === vb ? a.id - b.id : va === null ? 1 : -1;
+      const c = typeof va === 'string' ? va.localeCompare(vb as string, 'es') : va - (vb as number);
+      return c ? c * dir : a.id - b.id;
+    });
+  }, [data, filtro, busqueda, orden]);
 
   const pedidosSeleccionados = useMemo(
     () => (data?.pedidos ?? []).filter((p) => p.declaracion.editable && selectedIds.includes(p.id)),
     [data, selectedIds],
   );
   const ivaSeleccionado = pedidosSeleccionados.reduce((suma, p) => suma + Number(p.iva), 0);
+  const porTipo = useMemo(() => {
+    const g = { boleta: { cantidad: 0, iva: 0, total: 0 }, factura: { cantidad: 0, iva: 0, total: 0 } };
+    for (const p of pedidosSeleccionados) {
+      const x = g[tipoDocumento(p)];
+      x.cantidad += 1; x.iva += Number(p.iva); x.total += Number(p.total);
+    }
+    return g;
+  }, [pedidosSeleccionados]);
   const visiblesEditables = pedidos.filter((p) => p.declaracion.editable);
   const visiblesSeleccionados = visiblesEditables.filter((p) => selectedIds.includes(p.id)).length;
   const toggleSeleccion = (id: number) => {
@@ -243,7 +286,7 @@ export default function CierreMes() {
 
                 <div className="relative flex-1 min-w-[180px] max-w-sm">
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input placeholder="Cliente o N° de pedido" className="pl-8" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
+                  <Input placeholder="Cliente, N° de pedido o folio" className="pl-8" value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
                 </div>
                 {([['todos', 'Todas'], ['por_cobrar', 'Por cobrar'], ['con_documento', 'Con documento'], ['sin_documento', 'Sin documento'], ['alertas', 'Con alertas']] as [Filtro, string][]).map(([v, t]) => (
                   <Button key={v} size="sm" variant={filtro === v ? 'default' : 'outline'} onClick={() => setFiltro(v)}>{t}</Button>
@@ -276,13 +319,13 @@ export default function CierreMes() {
                           onCheckedChange={(checked) => toggleVisibles(checked === true)}
                         />
                       </TableHead>
-                      <TableHead>Pedido</TableHead>
-                      <TableHead>Cliente</TableHead>
-                      <TableHead className="hidden md:table-cell">Vendedor</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      <TableHead className="text-right hidden lg:table-cell">Margen</TableHead>
-                      <TableHead>Cobro</TableHead>
-                      <TableHead>Documento</TableHead>
+                      <CabeceraOrden campo="fecha" orden={orden} onOrdenar={ordenarPor}>Pedido</CabeceraOrden>
+                      <CabeceraOrden campo="cliente" orden={orden} onOrdenar={ordenarPor}>Cliente</CabeceraOrden>
+                      <CabeceraOrden campo="vendedor" orden={orden} onOrdenar={ordenarPor} className="hidden md:table-cell">Vendedor</CabeceraOrden>
+                      <CabeceraOrden campo="total" orden={orden} onOrdenar={ordenarPor} className="text-right justify-end">Total</CabeceraOrden>
+                      <CabeceraOrden campo="margen" orden={orden} onOrdenar={ordenarPor} className="text-right justify-end hidden lg:table-cell">Margen</CabeceraOrden>
+                      <CabeceraOrden campo="saldo" orden={orden} onOrdenar={ordenarPor}>Cobro</CabeceraOrden>
+                      <CabeceraOrden campo="folio" orden={orden} onOrdenar={ordenarPor}>Documento / folio</CabeceraOrden>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -294,13 +337,21 @@ export default function CierreMes() {
                 </Table>
               </div>
               {pedidosSeleccionados.length > 0 && (
-                <div className="fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-4 z-30 mx-auto flex max-w-xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl">
+                <div className="fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-4 z-30 mx-auto flex max-w-2xl items-center gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white shadow-2xl">
                   <div className="min-w-0 flex-1" role="status" aria-live="polite" aria-atomic="true">
                     <p className="text-xs text-slate-300">
                       {pedidosSeleccionados.length} pedido{pedidosSeleccionados.length === 1 ? '' : 's'} seleccionado{pedidosSeleccionados.length === 1 ? '' : 's'}
+                      {' · '}IVA total <span className="font-semibold text-white tabular-nums">{formatCLP(ivaSeleccionado)}</span>
                     </p>
-                    <p className="text-xs text-slate-300">IVA seleccionado</p>
-                    <p className="text-lg font-bold tabular-nums text-blue-300">{formatCLP(ivaSeleccionado)}</p>
+                    <div className="mt-1 grid grid-cols-2 gap-3">
+                      {([['Boletas', porTipo.boleta], ['Facturas', porTipo.factura]] as const).map(([titulo, g]) => (
+                        <div key={titulo}>
+                          <p className="text-xs text-slate-300">{titulo} ({g.cantidad})</p>
+                          <p className="text-lg font-bold tabular-nums text-blue-300">{formatCLP(g.iva)}</p>
+                          <p className="text-xs text-slate-400 tabular-nums">total {formatCLP(g.total)}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                   <Button variant="ghost" size="sm" className="text-slate-300 hover:text-white hover:bg-slate-800" onClick={() => setSelectedIds([])}>
                     Limpiar
@@ -358,6 +409,22 @@ export default function CierreMes() {
         </>
       )}
     </div>
+  );
+}
+
+function CabeceraOrden({ campo, orden, onOrdenar, className, children }: {
+  campo: CampoOrden; orden: { campo: CampoOrden; dir: 'asc' | 'desc' }; onOrdenar: (c: CampoOrden) => void;
+  className?: string; children: React.ReactNode;
+}) {
+  const activo = orden.campo === campo;
+  const Icono = !activo ? ArrowUpDown : orden.dir === 'asc' ? ArrowUp : ArrowDown;
+  return (
+    <TableHead className={className} aria-sort={activo ? (orden.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" onClick={() => onOrdenar(campo)}
+        className={cn('inline-flex items-center gap-1 hover:text-foreground', activo && 'text-foreground', className?.includes('justify-end') && 'justify-end')}>
+        {children}<Icono className={cn('h-3 w-3', !activo && 'opacity-40')} />
+      </button>
+    </TableHead>
   );
 }
 

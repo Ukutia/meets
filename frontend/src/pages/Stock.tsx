@@ -150,7 +150,7 @@ export default function Stock() {
   });
 
   const disponibleOrigen = moverItem
-    ? direccion === 'congelar' ? moverItem.disponibles : Math.max((moverItem.congelado_unidades ?? 0) - (moverItem.congelado_reservas ?? 0), 0)
+    ? direccion === 'congelar' ? moverItem.disponibles : Math.max(moverItem.congelado_unidades ?? 0, 0)
     : 0;
   const unidadesMover = Math.trunc(parseDecimal(unidadesTxt));
 
