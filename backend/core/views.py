@@ -5,7 +5,7 @@ from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePed
 from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
 from .models import ConfiguracionContable
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega, devolver_a_bodega, unidades_vendibles, validar_sin_asignar
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -127,12 +127,20 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
 
     El precio se fija DESPUÉS de vincular los lotes, porque el modo 'costo'
     necesita el costo/kg ponderado de esos lotes."""
-    stock_producto = unidades_en_stock(producto, congelado)
+    # Lo vendible depende de dónde sale: congelado, la bodega del pedido o, sin
+    # bodega, solo lo sin asignar (lo que está en bodegas no se puede vender así).
+    stock_producto = unidades_vendibles(producto, pedido.bodega, congelado)
     pendientes = 0
     if unidades > stock_producto:
         if not permitir_pre_reserva or congelado:
-            donde = " congelado" if congelado else ""
-            raise ValidationError(f"No hay suficiente stock{donde} disponible de '{producto.nombre}'")
+            if congelado:
+                donde = " congelado"
+            elif pedido.bodega:
+                donde = f" en la bodega '{pedido.bodega.nombre}'"
+            else:
+                donde = " sin asignar a bodega"
+            raise ValidationError(
+                f"No hay suficiente stock{donde} de '{producto.nombre}' (hay {int(stock_producto)})")
         if kilos > 0:
             raise ValidationError(
                 f"'{producto.nombre}' no tiene stock suficiente: una pre-reserva no se puede pesar")
@@ -153,7 +161,8 @@ def crear_linea_pedido(pedido, producto, unidades, kilos, cfg, congelado=False, 
         modo_precio=cfg['modo'],
     )
     vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
-    descontar_de_bodega(detalle, pedido.bodega, unidades - pendientes)
+    if not congelado:
+        descontar_de_bodega(detalle, pedido.bodega, unidades - pendientes)
     registrar_pre_reserva(detalle, 'creada', origen, pendientes,
                           referencia=f"Pedido #{pedido.id}", usuario=usuario)
 
@@ -394,18 +403,25 @@ class PedidoDetailView(APIView):
                         # Si no alcanza y la línea ya es pre-reserva (o se pide
                         # explícitamente), lo que falta queda pendiente.
                         a_consumir = delta_unidades
+                        hay = int(unidades_vendibles(detalle_obj.producto, pedido.bodega, congelado))
                         if detalle_obj.unidades_pendientes > 0 or _es_verdadero(data.get('permitir_pre_reserva')):
                             if not congelado:
-                                hay = int(unidades_en_stock(detalle_obj.producto))
                                 a_consumir = min(delta_unidades, hay)
                                 detalle_obj.unidades_pendientes += delta_unidades - a_consumir
                                 registrar_pre_reserva(
                                     detalle_obj, 'aumentada', 'edicion_pedido', delta_unidades - a_consumir,
                                     referencia=f"Pedido #{pedido.id} editado", usuario=request.user)
+                        if a_consumir > hay:
+                            donde = f"en la bodega '{pedido.bodega.nombre}'" if pedido.bodega and not congelado else (
+                                "congelado" if congelado else "sin asignar a bodega")
+                            raise ValidationError(
+                                f"No hay suficiente stock {donde} de '{detalle_obj.producto.nombre}' (hay {hay})")
                         _c, _k, facturas_usadas_delta, facturas_cantidades_delta = consumir_fifo(
                             detalle_obj.producto, a_consumir, congelado=congelado
                         )
                         vincular_lotes(detalle_obj, facturas_usadas_delta, facturas_cantidades_delta)
+                        if not congelado:
+                            descontar_de_bodega(detalle_obj, pedido.bodega, a_consumir)
 
                         # Recalcular el costo/kg de la linea como el promedio
                         # ponderado de los lotes vinculados (incluye los nuevos).
@@ -431,6 +447,7 @@ class PedidoDetailView(APIView):
                             restituir_unidades_fifo(
                                 detalle_obj.producto, quitar - de_pendientes, congelado=congelado)
                             if not congelado:
+                                devolver_a_bodega(detalle_obj, quitar - de_pendientes)
                                 productos_liberados[detalle_obj.producto_id] = detalle_obj.producto
 
                     if detalle_obj.unidades_pendientes > 0 and detalle_obj.cantidad_kilos > 0:
@@ -1212,6 +1229,14 @@ class StockProductos(APIView):
             .values('producto', 'congelado')
             .annotate(u=Sum('cantidad_unidades'), p=Sum('unidades_pendientes'))
         }
+        # Reservas sin pesar que salieron de una bodega: físicamente están en
+        # esa bodega, no en la principal.
+        reservas_bodega_por_producto = {
+            r['producto']: r['u'] or 0
+            for r in DetallePedido.objects.filter(cantidad_kilos=0, congelado=False, bodega_unidades__gt=0)
+            .exclude(pedido__estado="Anulado").exclude(estado="Cancelado")
+            .values('producto').annotate(u=Sum('bodega_unidades'))
+        }
         lotes_por_producto = {}
         for e in EntradaProducto.objects.filter(cantidad_unidades__gt=0).order_by('fecha_entrada'):
             lotes_por_producto.setdefault((e.producto_id, e.congelado), []).append(
@@ -1230,8 +1255,13 @@ class StockProductos(APIView):
             # Usar la misma fuente que el chequeo real hace que ambos numeros
             # NUNCA puedan divergir.
             reales = reales_por_producto.get((producto.id, False), {})
-            disponibles = reales.get('u') or 0
-            kilos_actuales = reales.get('k') or 0
+            # El ledger es el inventario de TODAS las ubicaciones. Lo que se
+            # muestra como stock es la bodega principal: inventario - bodegas.
+            inventario_u = reales.get('u') or 0
+            inventario_k = reales.get('k') or 0
+            en_bodegas = bodegas_por_producto.get(producto.id, [])
+            disponibles = inventario_u - sum(b['unidades'] for b in en_bodegas)
+            kilos_actuales = inventario_k - sum(b['kilos'] for b in en_bodegas)
             congelado = reales_por_producto.get((producto.id, True), {})
 
             # Reservas: pedidos no anulados sin kilos (ya descontaron unidades
@@ -1246,7 +1276,8 @@ class StockProductos(APIView):
             reservas_congelado = res_congelado.get('u') or 0
 
             # Stock físico = disponibles + lo reservado (que sigue en la repisa).
-            stock_fisico = disponibles + unidades_reservadas - reservas_congelado
+            stock_fisico = (disponibles + unidades_reservadas - reservas_congelado
+                            - reservas_bodega_por_producto.get(producto.id, 0))
 
             # Lotes vivos en orden FIFO: con esto Nuevo Pedido estima el costo/kg
             # exacto que tendrá la línea (mismo ponderado por unidades que
@@ -1272,8 +1303,10 @@ class StockProductos(APIView):
                 'congelado_kilos': round(congelado.get('k') or 0, 2),
                 'congelado_reservas': reservas_congelado,
                 'lotes_congelado': lotes_congelado,
-                'bodegas': bodegas_por_producto.get(producto.id, []),
-                'sin_asignar': max(disponibles - sum(b['unidades'] for b in bodegas_por_producto.get(producto.id, [])), 0),
+                'bodegas': en_bodegas,
+                'sin_asignar': max(disponibles, 0),
+                'inventario_unidades': inventario_u,
+                'inventario_kilos': round(inventario_k, 2),
             })
 
         return Response(stock_data, status=status.HTTP_200_OK)
@@ -1534,6 +1567,7 @@ def _aplicar_ajuste_en_ledger(producto, cantidad, cantidad_unidades):
     (ver docstring de ``CrearAjusteInventario``).
     """
     if cantidad_unidades < 0:
+        validar_sin_asignar(producto, abs(cantidad_unidades))
         consumir_fifo(producto, abs(cantidad_unidades))
     if cantidad < 0:
         descontar_kilos_fifo(producto, abs(cantidad))
@@ -1565,6 +1599,7 @@ def _revertir_ajuste_en_ledger(ajuste):
     if cantidad < 0:
         restituir_kilos_fifo(producto, abs(cantidad))
     if cantidad_unidades > 0:
+        validar_sin_asignar(producto, cantidad_unidades)
         consumir_fifo(producto, cantidad_unidades)
     if cantidad > 0:
         descontar_kilos_fifo(producto, cantidad)

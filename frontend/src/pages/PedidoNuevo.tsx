@@ -116,12 +116,26 @@ export default function PedidoNuevo() {
   );
 
   const stockDe = (producto: Producto) => stock.find((item) => item.id === producto.id);
+  // Unidades que puede tomar el pedido según de dónde sale: la bodega elegida o la principal.
+  const disponiblesEn = (item?: StockItem) => {
+    if (!item) return 0;
+    if (bodegaId === 'ninguna') return Math.max(item.disponibles, 0);
+    return item.bodegas?.find((b) => b.bodega === Number(bodegaId))?.unidades ?? 0;
+  };
+
+  // Cambiar la bodega de origen cambia lo disponible de las líneas ya agregadas.
+  useEffect(() => {
+    setDetalles((prev) => prev.map((d) => ({
+      ...d, stock_normal: disponiblesEn(stock.find((item) => item.id === d.producto_id)),
+    })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodegaId, stockData]);
 
   const agregarProducto = () => {
     const producto = productos.find((p) => p.id.toString() === productoSeleccionado);
     if (!producto) return;
     const item = stockDe(producto);
-    const disponibles = item?.disponibles ?? 0;
+    const disponibles = disponiblesEn(item);
     // El ledger ya descuenta las reservas: congelado_unidades es lo realmente disponible.
     const congelados = Math.max(item?.congelado_unidades ?? 0, 0);
     setDetalles((prev) => [
@@ -323,11 +337,11 @@ export default function PedidoNuevo() {
                 <Select value={bodegaId} onValueChange={setBodegaId}>
                   <SelectTrigger aria-label="Bodega de origen"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="ninguna">Sin bodega (no descontar)</SelectItem>
+                    <SelectItem value="ninguna">Bodega principal</SelectItem>
                     {bodegas.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.nombre}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">Las unidades del pedido se descuentan de las existencias de esta bodega.</p>
+                <p className="text-xs text-muted-foreground">Las unidades del pedido se descuentan de esta bodega.</p>
               </div>
             )}
             <div className="flex gap-2">
@@ -339,7 +353,7 @@ export default function PedidoNuevo() {
                   <SelectContent>
                     {productosDisponibles.map((p) => (
                       <SelectItem key={p.id} value={p.id.toString()}>
-                        {p.nombre} · {formatCLP(p.precio_por_kilo)}/kg · {stockDe(p)?.disponibles ?? 0} disp.{(stockDe(p)?.congelado_unidades ?? 0) > 0 ? ` · ${stockDe(p)?.congelado_unidades} cong.` : ''}
+                        {p.nombre} · {formatCLP(p.precio_por_kilo)}/kg · {disponiblesEn(stockDe(p))} disp.{(stockDe(p)?.congelado_unidades ?? 0) > 0 ? ` · ${stockDe(p)?.congelado_unidades} cong.` : ''}
                       </SelectItem>
                     ))}
                   </SelectContent>

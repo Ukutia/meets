@@ -85,6 +85,9 @@ class MovimientoBodega(models.Model):
     kilos = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     nota = models.CharField(max_length=200, blank=True, default='')
     usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    # Venta (sale de la bodega) o devolución (vuelve) de esta línea de pedido.
+    detalle = models.ForeignKey('DetallePedido', on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='movimientos_bodega')
     fecha = models.DateTimeField(auto_now_add=True)
 
     class Meta:

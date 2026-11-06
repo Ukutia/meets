@@ -232,7 +232,7 @@ export default function Stock() {
           <TableHeader>
             <TableRow className="bg-muted/50">
               <TableHead>Producto</TableHead>
-              <TableHead className="text-center">Disponibles</TableHead>
+              <TableHead className="text-center">{bodegas.length ? 'Principal' : 'Disponibles'}</TableHead>
               <TableHead className="text-center">Reservas</TableHead>
               <TableHead className="text-center">Pre-reservas</TableHead>
               <TableHead className="text-center">Congelado</TableHead>

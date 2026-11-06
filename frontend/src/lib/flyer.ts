@@ -63,7 +63,9 @@ export const pesoCalculado = (item: StockItem) =>
 
 export const pesoFlyer = (item: StockItem) => item.peso_flyer?.trim() || pesoCalculado(item);
 
-export const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible' && Number(item.disponibles) > 0;
+// Cuenta todas las ubicaciones: un corte que solo está en otra bodega igual se vende.
+export const disponibleParaVenta = (item: StockItem) => item.estado === 'disponible'
+  && Number(item.inventario_unidades ?? item.disponibles) > 0;
 
 // Productos del flyer en el orden elegido (según categoría y orden de la config).
 export const productosDelFlyer = (stock: StockItem[], config: ConfigFlyer) => {

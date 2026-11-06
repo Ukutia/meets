@@ -4,7 +4,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido, RegistroPreReserva, StockBodega
+from .models import EntradaProducto, FacturaDetallePedido, DetalleFactura, DetallePedido, MovimientoBodega, RegistroPreReserva, StockBodega
 
 
 def costo_por_kilo_ponderado(detalle):
@@ -298,9 +298,42 @@ def estado_consumo_detalle(detalle):
     }
 
 
+def sin_asignar(producto):
+    """(unidades, kilos) del inventario normal que no está en ninguna bodega.
+    Las bodegas son un desglose del ledger: inventario = bodegas + sin asignar."""
+    ledger = EntradaProducto.objects.filter(producto=producto, congelado=False).aggregate(
+        u=Sum('cantidad_unidades'), k=Sum('cantidad_kilos'))
+    en_bodegas = StockBodega.objects.filter(producto=producto).aggregate(u=Sum('unidades'), k=Sum('kilos'))
+    return (int(ledger['u'] or 0) - int(en_bodegas['u'] or 0),
+            Decimal(ledger['k'] or 0) - Decimal(en_bodegas['k'] or 0))
+
+
+def unidades_vendibles(producto, bodega=None, congelado=False):
+    """Unidades que puede tomar una venta. El congelado es su propio pool; el
+    inventario normal sale de la bodega del pedido o, sin bodega, solo de lo
+    sin asignar: así nunca se vende stock que figura en una bodega."""
+    total = int(unidades_en_stock(producto, congelado))
+    if congelado:
+        return total
+    if bodega is not None:
+        existencia = StockBodega.objects.filter(bodega=bodega, producto=producto).first()
+        return min(total, existencia.unidades if existencia else 0)
+    return max(min(total, sin_asignar(producto)[0]), 0)
+
+
+def validar_sin_asignar(producto, unidades):
+    """Para lo que saca unidades del inventario normal sin pasar por una bodega
+    (ventas sin bodega, mermas, congelar): no puede tocar lo que está en bodegas."""
+    libres = sin_asignar(producto)[0]
+    if unidades > 0 and unidades > libres:
+        raise ValidationError(
+            f"La bodega principal solo tiene {max(libres, 0)} unidad(es) de '{producto.nombre}'; el resto "
+            "está en otras bodegas. Elige la bodega o traspasa el stock a la principal primero.")
+
+
 def descontar_de_bodega(detalle, bodega, unidades):
-    """Saca ``unidades`` de las existencias de ``bodega`` para esta línea.
-    Falla si la bodega no tiene suficientes de ese producto."""
+    """Saca ``unidades`` (y sus kilos, en proporción) de ``bodega`` para esta
+    línea y lo deja en el historial de movimientos. Falla si no alcanza."""
     unidades = int(unidades)
     if not bodega or unidades <= 0:
         return
@@ -310,24 +343,41 @@ def descontar_de_bodega(detalle, bodega, unidades):
     if unidades > disponibles:
         raise ValidationError(
             f"La bodega '{bodega.nombre}' solo tiene {disponibles} unidad(es) de '{detalle.producto.nombre}'")
+    kilos = existencia.kilos if unidades == disponibles else (
+        existencia.kilos * unidades / disponibles).quantize(Decimal('0.01'))
     existencia.unidades = disponibles - unidades
-    existencia.save(update_fields=['unidades'])
-    detalle.bodega_unidades = unidades
+    existencia.kilos -= kilos
+    existencia.save(update_fields=['unidades', 'kilos'])
+    detalle.bodega_unidades += unidades
     detalle.save(update_fields=['bodega_unidades'])
+    MovimientoBodega.objects.create(
+        producto=detalle.producto, origen=bodega, destino=None, detalle=detalle,
+        unidades=unidades, kilos=kilos, nota=f"Venta pedido #{detalle.pedido_id}")
 
 
-def devolver_a_bodega(detalle):
-    """Devuelve a la bodega del pedido lo que la línea le había descontado."""
-    unidades = detalle.bodega_unidades
+def devolver_a_bodega(detalle, unidades=None):
+    """Devuelve a la bodega del pedido ``unidades`` (por defecto todo) de lo
+    que la línea le había descontado, con su parte de los kilos."""
+    tomadas = detalle.bodega_unidades
+    unidades = tomadas if unidades is None else min(int(unidades), tomadas)
     bodega = detalle.pedido.bodega
     if unidades <= 0 or bodega is None:
         return
+    movs = MovimientoBodega.objects.filter(detalle=detalle)
+    neto_k = (Decimal(movs.filter(origen=bodega).aggregate(k=Sum('kilos'))['k'] or 0)
+              - Decimal(movs.filter(destino=bodega).aggregate(k=Sum('kilos'))['k'] or 0))
+    kilos = max(neto_k if unidades == tomadas else (neto_k * unidades / tomadas).quantize(Decimal('0.01')),
+                Decimal('0'))
     existencia, _ = StockBodega.objects.select_for_update().get_or_create(
         bodega=bodega, producto=detalle.producto)
     existencia.unidades += unidades
-    existencia.save(update_fields=['unidades'])
-    detalle.bodega_unidades = 0
+    existencia.kilos += kilos
+    existencia.save(update_fields=['unidades', 'kilos'])
+    detalle.bodega_unidades = tomadas - unidades
     detalle.save(update_fields=['bodega_unidades'])
+    MovimientoBodega.objects.create(
+        producto=detalle.producto, origen=None, destino=bodega, detalle=detalle,
+        unidades=unidades, kilos=kilos, nota=f"Devolución pedido #{detalle.pedido_id}")
 
 
 def revertir_stock_detalle(detalle):
@@ -499,10 +549,18 @@ def asignar_pre_reservas(producto, origen='factura', referencia='', usuario=None
         disponibles = unidades_en_stock(producto)
         if disponibles <= 0:
             break
-        unidades = min(detalle.unidades_pendientes, int(disponibles))
+        # Un pedido de bodega toma primero de su bodega y después de lo sin
+        # asignar; uno sin bodega solo de lo sin asignar.
+        bodega = detalle.pedido.bodega
+        de_bodega_max = unidades_vendibles(producto, bodega) if bodega else 0
+        libres = max(sin_asignar(producto)[0], 0)
+        unidades = min(detalle.unidades_pendientes, int(disponibles), de_bodega_max + libres)
+        if unidades <= 0:
+            continue
 
         _c, _k, facturas_usadas, facturas_cantidades = consumir_fifo(producto, unidades)
         vincular_lotes(detalle, facturas_usadas, facturas_cantidades)
+        descontar_de_bodega(detalle, bodega, min(unidades, de_bodega_max))
 
         cpk = costo_por_kilo_ponderado(detalle)
         if cpk is not None:
@@ -573,6 +631,8 @@ def mover_stock_congelado(producto, unidades, kilos=None, a_congelado=True):
             f"No hay suficiente stock en {donde} de '{producto.nombre}': hay "
             f"{disponibles} unidades y se intentan mover {unidades}"
         )
+    if a_congelado:
+        validar_sin_asignar(producto, unidades)
 
     # Plan: cuántas unidades y kilos estimados salen de cada lote.
     plan = []

@@ -158,7 +158,10 @@ export const totalAPagar = (f: Factura) => Number(f.total_a_pagar ?? f.total);
 
 export interface StockItem {
   sin_asignar?: number;
-  bodegas?: { bodega: number; nombre: string; unidades: number; kilos: number | string }[];
+  // Inventario de todas las ubicaciones (principal + bodegas); `disponibles` es solo la principal.
+  inventario_unidades?: number;
+  inventario_kilos?: number | string;
+  bodegas?:{ bodega: number; nombre: string; unidades: number; kilos: number | string }[];
   id: number;
   producto: string;
   categoria?: string | null;

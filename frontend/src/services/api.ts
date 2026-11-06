@@ -31,12 +31,12 @@ const api = axios.create({
 export interface Bodega { id: number; nombre: string }
 export const getBodegas = () => api.get<Bodega[]>('/inventario/bodegas/');
 export const crearBodega = (nombre: string) => api.post<Bodega>('/inventario/bodegas/', { nombre });
-export const guardarStockBodega = (id: number, data: { producto: number; unidades: number; kilos: number }) =>
+export const guardarStockBodega = (id: number, data: { producto: number; unidades: number; kilos: number; nota?: string }) =>
   api.put(`/inventario/bodegas/${id}/stock/`, data);
 export interface TraspasoBodega {
   id: number; fecha: string; producto: number; producto_nombre: string;
   origen: number | null; origen_nombre: string; destino: number | null; destino_nombre: string;
-  unidades: number; kilos: number | string; nota: string; usuario: string | null;
+  unidades: number; kilos: number | string; nota: string; usuario: string | null; pedido?: number | null;
 }
 export const getTraspasos = () => api.get<TraspasoBodega[]>('/inventario/bodegas/traspasos/');
 export const crearTraspaso = (data: { producto: number; origen: number | null; destino: number | null; unidades: number; kilos: number; nota?: string }) =>

@@ -1,6 +1,7 @@
-"""Existencias por ubicación. El total de un producto es su inventario real
-(EntradaProducto); cada bodega es un desglose de ese total y lo que no está en
-ninguna bodega es "Sin asignar". Las existencias solo cambian con traspasos."""
+"""Existencias por ubicación. El inventario real (EntradaProducto) es el total
+de todas las ubicaciones; cada bodega guarda lo suyo y la "Bodega principal"
+es lo que no está en ninguna otra (inventario - bodegas). Toda variación queda
+en MovimientoBodega con usuario y nota."""
 from decimal import Decimal
 from django.db import transaction
 from django.db.models import Sum
@@ -10,7 +11,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Bodega, EntradaProducto, MovimientoBodega, Producto, StockBodega
+from .models import Bodega, MovimientoBodega, Producto, StockBodega
+from .utils import sin_asignar
 
 
 class BodegaSerializer(serializers.ModelSerializer):
@@ -23,10 +25,11 @@ class ExistenciaSerializer(serializers.Serializer):
     producto = serializers.PrimaryKeyRelatedField(queryset=Producto.objects.all())
     unidades = serializers.IntegerField(min_value=0, max_value=2147483647)
     kilos = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0'))
+    nota = serializers.CharField(max_length=180, required=False, allow_blank=True, default='')
 
 
 class TraspasoSerializer(serializers.Serializer):
-    """origen/destino nulos = "Sin asignar" (inventario fuera de toda bodega)."""
+    """origen/destino nulos = "Bodega principal" (inventario fuera de toda bodega)."""
     producto = serializers.PrimaryKeyRelatedField(queryset=Producto.objects.all())
     origen = serializers.PrimaryKeyRelatedField(queryset=Bodega.objects.all(), allow_null=True)
     destino = serializers.PrimaryKeyRelatedField(queryset=Bodega.objects.all(), allow_null=True)
@@ -42,15 +45,6 @@ class TraspasoSerializer(serializers.Serializer):
         return attrs
 
 
-def sin_asignar(producto):
-    """(unidades, kilos) del inventario que no está en ninguna bodega."""
-    ledger = EntradaProducto.objects.filter(producto=producto, congelado=False).aggregate(
-        u=Sum('cantidad_unidades'), k=Sum('cantidad_kilos'))
-    en_bodegas = StockBodega.objects.filter(producto=producto).aggregate(u=Sum('unidades'), k=Sum('kilos'))
-    return ((ledger['u'] or 0) - (en_bodegas['u'] or 0),
-            Decimal(ledger['k'] or 0) - Decimal(en_bodegas['k'] or 0))
-
-
 @transaction.atomic
 def traspasar(producto, origen, destino, unidades, kilos, nota='', usuario=None):
     """Mueve existencias de ``origen`` a ``destino`` (None = sin asignar).
@@ -63,7 +57,7 @@ def traspasar(producto, origen, destino, unidades, kilos, nota='', usuario=None)
         filas[bodega.pk], _ = StockBodega.objects.select_for_update().get_or_create(
             bodega=bodega, producto=producto)
     if origen is None:
-        nombre = 'Sin asignar'
+        nombre = 'Bodega principal'
         hay_u, hay_k = sin_asignar(producto)
     else:
         nombre = origen.nombre
@@ -90,10 +84,13 @@ def traspasar(producto, origen, destino, unidades, kilos, nota='', usuario=None)
 
 
 def movimiento_dict(m):
+    # Sin bodega en un lado y ligado a un pedido = venta/devolución, no "Bodega principal".
+    fuera = f"Pedido #{m.detalle.pedido_id}" if m.detalle_id else 'Bodega principal'
     return {
         'id': m.id, 'fecha': m.fecha, 'producto': m.producto_id, 'producto_nombre': m.producto.nombre,
-        'origen': m.origen_id, 'origen_nombre': m.origen.nombre if m.origen else 'Sin asignar',
-        'destino': m.destino_id, 'destino_nombre': m.destino.nombre if m.destino else 'Sin asignar',
+        'origen': m.origen_id, 'origen_nombre': m.origen.nombre if m.origen else fuera,
+        'destino': m.destino_id, 'destino_nombre': m.destino.nombre if m.destino else fuera,
+        'pedido': m.detalle.pedido_id if m.detalle_id else None,
         'unidades': m.unidades, 'kilos': m.kilos, 'nota': m.nota,
         'usuario': m.usuario.get_username() if m.usuario else None,
     }
@@ -114,7 +111,7 @@ class BodegasView(APIView):
 
 class ExistenciasBodegaView(APIView):
     """Corrección: fija lo que hay en la bodega; la diferencia entra o sale de
-    "Sin asignar", por lo que nunca puede superar el inventario real."""
+    "Bodega principal", por lo que nunca puede superar el inventario real."""
     permission_classes = [IsAuthenticated]
 
     def put(self, request, pk):
@@ -127,7 +124,7 @@ class ExistenciasBodegaView(APIView):
             actual, _ = StockBodega.objects.select_for_update().get_or_create(bodega=bodega, producto=producto)
             du = data['unidades'] - actual.unidades
             dk = data['kilos'] - actual.kilos
-            nota = 'Ajuste manual'
+            nota = f"Ajuste manual: {data['nota'].strip()}" if data['nota'].strip() else 'Ajuste manual'
             if max(du, 0) or max(dk, 0):
                 traspasar(producto, None, bodega, max(du, 0), max(dk, Decimal('0')), nota, request.user)
             if max(-du, 0) or max(-dk, 0):
@@ -140,7 +137,7 @@ class TraspasosView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        movimientos = MovimientoBodega.objects.select_related('producto', 'origen', 'destino', 'usuario')
+        movimientos = MovimientoBodega.objects.select_related('producto', 'origen', 'destino', 'usuario', 'detalle')
         if request.query_params.get('producto'):
             movimientos = movimientos.filter(producto_id=request.query_params['producto'])
         return Response([movimiento_dict(m) for m in movimientos[:200]])

@@ -325,8 +325,9 @@ export default function MovimientosInventario() {
         const saldoKg = acc.entradasKg - acc.salidasKg + acc.ajustesKg;
         const saldoUn = acc.entradasUn - acc.salidasUn + acc.ajustesUn;
         const real = stockPorProducto.get(producto);
-        const stockRealKg = real ? Number(real.kilos_actuales) : null;
-        const stockRealUn = real ? Number(real.disponibles) : null;
+        // Inventario total (principal + bodegas): es lo que cuadra con entradas/salidas.
+        const stockRealKg = real ? Number(real.inventario_kilos ?? real.kilos_actuales) : null;
+        const stockRealUn = real ? Number(real.inventario_unidades ?? real.disponibles) : null;
         return {
           producto,
           entradasKg: acc.entradasKg, entradasUn: acc.entradasUn,
