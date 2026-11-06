@@ -9,6 +9,7 @@ Tres cosas distintas que nunca se dan por hechas una a partir de otra:
   pruebas se muestran pero no cuentan.
 """
 import base64
+import hashlib
 import json
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -24,6 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import openfactura, sii
+from .sii_dte import SIIError, auth, certificado, rcv
 from .contabilidad import factor_iva
 from .models import (MEDIOS_PAGO, TIPOS_DTE, Cobro, ConfiguracionContable, DetallePedido,
                      DocumentoTributario, ImportacionSII, Pedido, Periodo, Vendedor)
@@ -560,41 +562,124 @@ class ImportacionSIIView(APIView):
         archivo = request.FILES.get('archivo')
         if not archivo:
             return _error('Sube el archivo CSV descargado del SII')
+        if archivo.size > 10 * 1024 * 1024:
+            return _error('El archivo supera 10 MB')
         try:
-            if archivo.size > 10 * 1024 * 1024:
-                return _error('El archivo supera 10 MB')
-            datos = sii.leer_rcv(archivo.read(), archivo.name, request.data.get('operacion', ''))
+            actualizado = request.data.get('datos_actualizados_al')
+            importacion = registrar_importacion(
+                archivo.read(), archivo.name, request.user, operacion=request.data.get('operacion', ''),
+                mes=request.data.get('mes', ''), estado_registro=request.data.get('estado_registro', ''),
+                actualizado=date.fromisoformat(actualizado) if actualizado else None)
         except ValueError as e:
             return _error(str(e))
-        mes = request.data.get('mes') or datos['mes']
-        if not datos['filas']:
-            return _error('El archivo no trae documentos')
-        if datos['tipo'] == 'resumen' and not mes:
-            return _error('Indica el mes del resumen')
+        return Response(_importacion_json(importacion), status=status.HTTP_201_CREATED)
+
+
+def registrar_importacion(contenido, nombre, usuario, operacion='', mes='', estado_registro='', actualizado=None):
+    """Lee un CSV del RCV y lo importa de forma atómica. Lanza ValueError con
+    un mensaje para el usuario. Lo usan la carga manual y la sincronización."""
+    datos = sii.leer_rcv(contenido, nombre, operacion)
+    mes = mes or datos['mes']
+    if not datos['filas']:
+        raise ValueError('El archivo no trae documentos')
+    if datos['tipo'] == 'resumen' and not mes:
+        raise ValueError('Indica el mes del resumen')
+    sii.validar_mes(mes)
+    try:
+        with transaction.atomic():
+            # Serializa importaciones de la empresa, además de la clave única documental.
+            ConfiguracionContable.actual()
+            config = ConfiguracionContable.objects.select_for_update().get(pk=1)
+            if datos['rut_empresa_archivo'] and datos['rut_empresa_archivo'] != sii.validar_rut(config.rut_empresa):
+                raise ValueError('El RUT del nombre de archivo no corresponde a la empresa')
+            importacion = ImportacionSII.objects.create(
+                nombre_archivo=nombre, tipo=datos['tipo'], mes=mes, filas=len(datos['filas']),
+                usuario=usuario, sha256=datos['sha256'], encabezados=datos['encabezados'],
+                estado_registro=estado_registro, datos_actualizados_al=actualizado)
+            if datos['tipo'] in ('ventas', 'compras'):
+                resultado = sii.importar_documentos(datos['filas'], importacion, usuario)
+                importacion.nuevos, importacion.actualizados = resultado['nuevos'], resultado['actualizados']
+            else:
+                resultado = sii.resumen_boletas(datos['filas'], mes)
+            importacion.resultado = sii.json_seguro(resultado)
+            importacion.save()
+    except IntegrityError as e:
+        raise ValueError('Conflicto de identidad documental; revisa los RUT y folios') from e
+    return importacion
+
+
+class ConexionSIIView(APIView):
+    """GET: si el certificado está configurado y sus datos (no llama al SII).
+    POST: prueba la conexión pidiendo un token al SII."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not certificado.configurado():
+            return Response({'configurado': False})
+        try:
+            c = certificado.cargar()
+        except SIIError as e:
+            return Response({'configurado': True, 'error': str(e)})
+        return Response({'configurado': True, 'titular': c.titular, 'rut': c.rut, 'vence': c.vence,
+                         'vencido': c.vence < datetime.now(c.vence.tzinfo)})
+
+    def post(self, request):
+        try:
+            auth.token('produccion', forzar=True)
+        except SIIError as e:
+            return _error(str(e), status.HTTP_502_BAD_GATEWAY)
+        return Response({'ok': True})
+
+
+class SincronizarRCVView(APIView):
+    """POST {mes}: descarga del SII el detalle de ventas y las cuatro secciones
+    de compras del mes y las importa como si se hubieran subido. Una sección
+    idéntica a la última importada no se vuelve a registrar."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        mes = request.data.get('mes', '')
         try:
             sii.validar_mes(mes)
-            actualizado = request.data.get('datos_actualizados_al')
-            actualizado = date.fromisoformat(actualizado) if actualizado else None
-            with transaction.atomic():
-                # Serializa importaciones de la empresa, además de la clave única documental.
-                ConfiguracionContable.actual()
-                config = ConfiguracionContable.objects.select_for_update().get(pk=1)
-                if datos['rut_empresa_archivo'] and datos['rut_empresa_archivo'] != sii.validar_rut(config.rut_empresa):
-                    raise ValueError('El RUT del nombre de archivo no corresponde a la empresa')
-                importacion = ImportacionSII.objects.create(
-                    nombre_archivo=archivo.name, tipo=datos['tipo'], mes=mes, filas=len(datos['filas']),
-                    usuario=request.user, sha256=datos['sha256'], encabezados=datos['encabezados'],
-                    estado_registro=request.data.get('estado_registro', ''), datos_actualizados_al=actualizado)
-                if datos['tipo'] in ('ventas', 'compras'):
-                    resultado = sii.importar_documentos(datos['filas'], importacion, request.user)
-                    importacion.nuevos, importacion.actualizados = resultado['nuevos'], resultado['actualizados']
-                else:
-                    resultado = sii.resumen_boletas(datos['filas'], mes)
-                importacion.resultado = sii.json_seguro(resultado)
-                importacion.save()
-        except (ValueError, IntegrityError) as e:
-            return _error(str(e) if isinstance(e, ValueError) else 'Conflicto de identidad documental; revisa los RUT y folios')
-        return Response(_importacion_json(importacion), status=status.HTTP_201_CREATED)
+            rut = sii.validar_rut(ConfiguracionContable.actual().rut_empresa)
+        except ValueError as e:
+            return _error(str(e))
+        if not certificado.configurado():
+            return _error('Falta configurar el certificado digital en el servidor')
+        hoy = datetime.now(ZONA).date()
+        pasos = [('ventas', '')] + [('compras', e) for e in rcv.ESTADOS_COMPRA]
+        resultados = []
+        for operacion, estado in pasos:
+            fila = {'operacion': operacion, 'estado_registro': estado}
+            resultados.append(fila)
+            try:
+                contenido = rcv.descargar(rut, mes, operacion, estado or 'registrado')
+            except SIIError as e:
+                fila['error'] = str(e)
+                if isinstance(e, rcv.TokenVencido) or len(resultados) == 1:
+                    break  # sin sesión o sin SII no tiene sentido seguir con las demás secciones
+                continue
+            if not contenido:
+                fila['resultado'] = 'sin_documentos'
+                continue
+            seccion = f'_{estado.upper()}' if estado else ''
+            nombre = f'RCV_{operacion.upper()}{seccion}_{rut}_{mes.replace("-", "")}.csv'
+            ultima = (ImportacionSII.objects.filter(mes=mes, tipo=operacion, estado_registro=estado,
+                                                    nombre_archivo__startswith='RCV_').order_by('-id').first())
+            if ultima and ultima.sha256 == hashlib.sha256(contenido).hexdigest():
+                fila['resultado'] = 'sin_cambios'
+                continue
+            try:
+                imp = registrar_importacion(contenido, nombre, request.user, operacion=operacion, mes=mes,
+                                            estado_registro=estado, actualizado=hoy)
+            except ValueError as e:
+                fila['error'] = str(e)
+                continue
+            fila['resultado'] = 'importado'
+            fila['importacion'] = _importacion_json(imp)
+        if not any('resultado' in f for f in resultados):
+            return _error(next(f['error'] for f in resultados if 'error' in f), status.HTTP_502_BAD_GATEWAY)
+        return Response({'mes': mes, 'secciones': resultados})
 
 
 def _rut_sii(rut):

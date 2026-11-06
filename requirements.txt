@@ -9,3 +9,5 @@ gunicorn
 python-dotenv
 djangorestframework-simplejwt
 anthropic
+cryptography
+lxml

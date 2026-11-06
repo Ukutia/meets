@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, FileUp, Info } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, FileUp, Info, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
-import { actualizarDocumento, getImportacionesSII, importarArchivoSII } from '@/services/api';
+import { actualizarDocumento, getConexionSII, getImportacionesSII, importarArchivoSII, probarConexionSII, sincronizarRCV } from '@/services/api';
 import { formatCLP, formatFecha } from '@/lib/utils';
 import { TIPOS_DOCUMENTO, type DocumentoCierre, type PedidoCierre } from '@/lib/cierre';
 
@@ -64,9 +64,11 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
 
   return (
     <div className="space-y-4">
+      <SincronizarSII mes={mes} onImportado={setUltima} />
+
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Subir registro del SII</CardTitle>
+          <CardTitle className="text-base">Subir registro del SII (manual)</CardTitle>
           <CardDescription>
             En sii.cl: Servicios online › Factura electrónica › Registro de compras y ventas. Elige el mes y descarga
             el <b>detalle de ventas</b>, el <b>detalle de compras</b> o el <b>resumen</b> (CSV). Puedes subir el mismo archivo varias veces: no se duplica.
@@ -164,6 +166,95 @@ export function DocumentosSII({ mes, pedidos, sinPedido }: { mes: string; pedido
         </Card>
       )}
     </div>
+  );
+}
+
+interface Conexion { configurado: boolean; titular?: string; rut?: string; vence?: string; vencido?: boolean; error?: string }
+interface Seccion { operacion: 'ventas' | 'compras'; estado_registro: string; resultado?: 'importado' | 'sin_cambios' | 'sin_documentos'; error?: string; importacion?: Importacion }
+
+const NOMBRE_SECCION: Record<string, string> = {
+  '': 'Ventas', registrado: 'Compras registradas', pendiente: 'Compras pendientes',
+  reclamado: 'Compras reclamadas', no_incluir: 'Compras no incluidas',
+};
+const NOMBRE_RESULTADO = { importado: 'Importado', sin_cambios: 'Sin cambios', sin_documentos: 'Sin documentos' };
+
+function SincronizarSII({ mes, onImportado }: { mes: string; onImportado: (i: Importacion) => void }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [secciones, setSecciones] = useState<Seccion[] | null>(null);
+  const { data: conexion } = useQuery({
+    queryKey: ['conexion-sii'],
+    queryFn: async () => (await getConexionSII()).data as Conexion,
+  });
+  const error = (e: unknown, def: string) => toast({
+    title: 'Error', variant: 'destructive',
+    description: (e as { response?: { data?: { error?: string } } })?.response?.data?.error || def,
+  });
+
+  const probar = useMutation({
+    mutationFn: probarConexionSII,
+    onSuccess: () => toast({ title: 'Conexión con el SII correcta' }),
+    onError: (e) => error(e, 'No se pudo conectar con el SII'),
+  });
+  const sincronizar = useMutation({
+    mutationFn: () => sincronizarRCV(mes),
+    onSuccess: (r) => {
+      const s: Seccion[] = r.data.secciones;
+      setSecciones(s);
+      const ultima = [...s].reverse().find((x) => x.importacion)?.importacion;
+      if (ultima) onImportado(ultima);
+      ['importaciones-sii', 'cierre-ventas', 'conciliacion', 'contabilidad'].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
+      toast({ title: s.some((x) => x.error) ? 'Sincronización con advertencias' : 'Registro del SII actualizado' });
+    },
+    onError: (e) => error(e, 'No se pudo descargar el registro'),
+  });
+
+  if (!conexion) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2"><Cloud className="h-4 w-4" />Traer del SII</CardTitle>
+        <CardDescription>
+          Descarga directo del Registro de Compras y Ventas el detalle de ventas y las cuatro secciones de compras de {mes}.
+          Puedes repetirlo cuando quieras: lo que no cambió no se vuelve a importar.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!conexion.configurado ? (
+          <p className="flex gap-2 text-sm text-muted-foreground"><Info className="h-4 w-4 shrink-0" />
+            Falta configurar el certificado digital en el servidor (SII_CERT_PFX_B64 y SII_CERT_PASSWORD). Mientras tanto, sube el CSV a mano.</p>
+        ) : conexion.error ? (
+          <p className="flex gap-2 text-sm text-destructive"><AlertTriangle className="h-4 w-4 shrink-0" />{conexion.error}</p>
+        ) : (
+          <>
+            <p className={`text-sm ${conexion.vencido ? 'text-destructive' : 'text-muted-foreground'}`}>
+              Certificado de {conexion.titular}{conexion.rut && ` (${conexion.rut})`} · {conexion.vencido ? 'venció' : 'vence'} el {formatFecha(conexion.vence!)}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => sincronizar.mutate()} disabled={sincronizar.isPending || conexion.vencido}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${sincronizar.isPending ? 'animate-spin' : ''}`} />
+                {sincronizar.isPending ? 'Descargando del SII...' : `Sincronizar ${mes}`}
+              </Button>
+              <Button variant="outline" onClick={() => probar.mutate()} disabled={probar.isPending}>
+                {probar.isPending ? 'Probando...' : 'Probar conexión'}
+              </Button>
+            </div>
+          </>
+        )}
+        {secciones && (
+          <ul className="space-y-1 text-sm">
+            {secciones.map((s) => (
+              <li key={s.estado_registro || s.operacion} className="flex flex-wrap gap-x-2">
+                <span className="font-medium">{NOMBRE_SECCION[s.estado_registro]}:</span>
+                {s.error ? <span className="text-destructive">{s.error}</span>
+                  : <span className="text-muted-foreground">{NOMBRE_RESULTADO[s.resultado!]}
+                    {s.importacion && ` · ${s.importacion.nuevos} nuevos, ${s.importacion.actualizados} actualizados`}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -365,6 +365,10 @@ export const emitirBoleta = (pedidoId: number) =>
   api.post(`/cierre/pedidos/${pedidoId}/emitir-boleta/`, undefined, { timeout: 120_000 });
 export const actualizarEstadoDocumento = (id: number) => api.post(`/cierre/documentos/${id}/estado/`);
 export const importarArchivoSII = (data: FormData) => api.post('/cierre/sii/', data, opcionesPara(data));
+export const getConexionSII = () => api.get('/cierre/sii/conexion/');
+export const probarConexionSII = () => api.post('/cierre/sii/conexion/', undefined, { timeout: 60_000 });
+// Descarga cinco secciones del RCV desde el SII: puede tardar.
+export const sincronizarRCV = (mes: string) => api.post('/cierre/sii/sincronizar/', { mes }, { timeout: 180_000 });
 export const getConciliacionMes = (mes: string, periodo?: number) => api.get('/cierre/conciliacion/', { params: { mes, periodo } });
 export const guardarConciliacionMes = (data: Record<string, unknown>) => api.put('/cierre/conciliacion/', data);
 export type AccionFacturaF29 = 'considerar' | 'postergar' | 'excluir';
