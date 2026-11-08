@@ -5,7 +5,7 @@ from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePed
 from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
 from .models import ConfiguracionContable
-from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega, devolver_a_bodega, unidades_vendibles, validar_sin_asignar
+from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega, devolver_a_bodega, cambiar_bodega_pedido, unidades_vendibles, validar_sin_asignar
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -351,6 +351,14 @@ class PedidoDetailView(APIView):
                     pedido.tipo_recibo = data['tipo_recibo']
                 if 'observaciones' in data:
                     pedido.observaciones = (data.get('observaciones') or '').strip()
+                if 'bodega' in data:
+                    bodega_id = data.get('bodega')
+                    nueva_bodega = None
+                    if bodega_id:
+                        nueva_bodega = Bodega.objects.filter(id=bodega_id).first()
+                        if nueva_bodega is None:
+                            raise ValidationError("Bodega no encontrada")
+                    cambiar_bodega_pedido(pedido, nueva_bodega)
 
                 # 2. Actualizar detalles (kilos y unidades)
                 detalles_data = data.get('detalles', [])

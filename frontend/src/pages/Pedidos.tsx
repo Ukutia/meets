@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/shared/RangoFechaSelect';
+import { useBodegas } from '@/components/shared/BodegasStock';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { usePeriodo } from '@/contexts/PeriodoContext';
 import { cn, decimalATexto, enRango, formatCLP, parseDecimal } from '@/lib/utils';
@@ -55,6 +56,8 @@ export default function Pedidos() {
   const [filterEstado, setFilterEstado] = useState(searchParams.get('estado') ?? 'Todos');
   const [rango, setRango] = useState<RangoState>(rangoInicial('todo'));
   const { confirm, dialog: confirmDialog } = useConfirm();
+  const { data: bodegas = [] } = useBodegas();
+  const [bodegaEdicion, setBodegaEdicion] = useState('ninguna');
   const [filterCorte, setFilterCorte] = useState('Todos');
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [selectedPedidoGanancia, setSelectedPedidoGanancia] = useState<Pedido | null>(null);
@@ -345,6 +348,7 @@ export default function Pedidos() {
       kilos: decimalATexto(d.cantidad_kilos),
       unidades: d.cantidad_unidades ? String(Math.trunc(Number(d.cantidad_unidades))) : '',
     }])));
+    setBodegaEdicion(pedido.bodega ? String(pedido.bodega) : 'ninguna');
     setSelectedPedido(pedido);
   };
   const productosDisponiblesParaAgregar = useMemo(() => {
@@ -796,6 +800,19 @@ export default function Pedidos() {
                 <span className="font-bold">Nota de entrega:</span> {selectedPedido.observaciones}
               </p>
             )}
+            {bodegas.length > 0 && selectedPedido && selectedPedido.estado !== 'Anulado' && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 ml-1">Bodega de origen</label>
+                <Select value={bodegaEdicion} onValueChange={setBodegaEdicion}>
+                  <SelectTrigger aria-label="Bodega de origen" className="h-12 bg-white"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ninguna">Bodega principal</SelectItem>
+                    {bodegas.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.nombre}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Al cambiarla, las unidades del pedido se pasan de la bodega anterior a esta.</p>
+              </div>
+            )}
             {selectedPedido?.detalles.map((det, idx) => {
               const cancelado = det.estado === 'Cancelado';
               return (
@@ -940,7 +957,7 @@ export default function Pedidos() {
                 if (selectedPedido) {
                   let p = {...selectedPedido};
                   if (todosPesados && p.estado === 'Reservado') p.estado = 'Preparado';
-                  mutation.mutate({ id: p.id, data: p });
+                  mutation.mutate({ id: p.id, data: { ...p, bodega: bodegaEdicion === 'ninguna' ? null : Number(bodegaEdicion) } });
                 }
               }}
             >

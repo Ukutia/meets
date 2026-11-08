@@ -380,6 +380,27 @@ def devolver_a_bodega(detalle, unidades=None):
         unidades=unidades, kilos=kilos, nota=f"Devolución pedido #{detalle.pedido_id}")
 
 
+def cambiar_bodega_pedido(pedido, nueva_bodega):
+    """Cambia de qué bodega sale un pedido (o la deja en la principal con
+    ``None``): devuelve a la bodega actual lo que sus líneas activas habían
+    tomado y lo vuelve a descontar de la nueva. Falla si la nueva no alcanza."""
+    if (pedido.bodega_id or None) == (nueva_bodega.id if nueva_bodega else None):
+        return
+    lineas = list(pedido.detalles.select_related('producto').filter(estado="Activo", congelado=False))
+    for detalle in lineas:
+        detalle.pedido = pedido
+        devolver_a_bodega(detalle)
+    pedido.bodega = nueva_bodega
+    if nueva_bodega is None:
+        return
+    for detalle in lineas:
+        detalle.refresh_from_db()
+        detalle.pedido = pedido
+        descontar_de_bodega(
+            detalle, nueva_bodega,
+            int(detalle.cantidad_unidades or 0) - int(detalle.unidades_pendientes or 0))
+
+
 def revertir_stock_detalle(detalle):
     """Devuelve al ledger (``EntradaProducto``) el stock+costo que una línea de
     venta (``DetallePedido``) consumió, lote por lote, vía sus

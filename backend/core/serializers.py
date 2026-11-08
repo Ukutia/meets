@@ -211,7 +211,7 @@ class PedidoSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Pedido
-        fields = ['id', 'cliente', 'vendedor', 'fecha', 'fecha_entrega', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco', 'bodega_nombre']
+        fields = ['id', 'cliente', 'vendedor', 'fecha', 'fecha_entrega', 'estado', 'detalles', 'total', 'observaciones', 'tipo_recibo', 'pagado_banco', 'bodega', 'bodega_nombre']
         read_only_fields = ['fecha']
 
     def get_pagado_banco(self, obj):

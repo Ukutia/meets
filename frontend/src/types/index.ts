@@ -92,6 +92,8 @@ export interface Pedido {
   observaciones?: string;
   tipo_recibo?: 'Boleta' | 'Factura';
   pagado_banco?: number;
+  bodega?: number | null;
+  bodega_nombre?: string | null;
 }
 
 
