@@ -250,7 +250,7 @@ export default function MovimientosInventario() {
   const filteredData = activeTab === 'entradas' ? filteredEntradas : filteredSalidas;
 
   const filaEntradaSalida = (item: any, tab: 'entradas' | 'salidas') => {
-    const base: Record<string, any> = {
+    const base = {
       'Fecha': formatFecha(item.fecha),
       '#': item.pedido || item.factura,
       'Cliente / Proveedor': item.cliente_nombre || item.proveedor_nombre || 'N/A',
@@ -263,11 +263,14 @@ export default function MovimientosInventario() {
     if (tab === 'salidas') {
       const costoConIva = Number(item.costo_por_kilo || 0) * FACTOR_IVA;
       const costoTotalConIva = Number(item.total_costo || 0) * FACTOR_IVA;
-      base['Vendedor'] = item.vendedor_nombre || 'N/A';
-      base['Costo/Kg'] = costoConIva;
-      base['Costo Total'] = costoTotalConIva;
-      base['Ganancia neta/Kg'] = gananciaNetaKg(item);
-      base['Ganancia neta Total'] = gananciaNetaTotal(item);
+      return {
+        ...base,
+        'Vendedor': item.vendedor_nombre || 'N/A',
+        'Costo/Kg': costoConIva,
+        'Costo Total': costoTotalConIva,
+        'Ganancia neta/Kg': gananciaNetaKg(item),
+        'Ganancia neta Total': gananciaNetaTotal(item),
+      };
     }
     return base;
   };
@@ -357,8 +360,8 @@ export default function MovimientosInventario() {
     'Diferencia (un)': r.diferenciaUn !== null ? r.diferenciaUn : 'N/A',
   }));
 
-  // El export siempre incluye Entradas, Salidas y Ajustes (con los filtros
-  // aplicados a cada una) más una hoja Stock con el cuadre por producto,
+  // Entradas, Salidas, Ajustes y el resumen por corte usan los filtros
+  // aplicados a cada movimiento. La hoja Stock incluye el cuadre histórico por producto,
   // para que la planilla se pueda reconciliar contra Stock:
   // Stock = Entradas - Salidas +/- Ajustes. Los pedidos Anulados ya vienen
   // excluidos desde el backend (DetallePedidosList), así que nunca se
@@ -375,10 +378,45 @@ export default function MovimientosInventario() {
       'Razón': a.razon || '',
     }));
 
+    const movimientos = [
+      ['Entradas', filasEntradas],
+      ['Salidas', filasSalidas],
+      ['Ajustes', filasAjustes],
+    ] as const;
+    type TipoMovimiento = (typeof movimientos)[number][0];
+    type Cantidades = { unidades: number; kilos: number };
+    const porCorte = new Map<string, Record<TipoMovimiento, Cantidades>>();
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasEntradas), 'Entradas');
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasSalidas), 'Salidas');
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasAjustes), 'Ajustes');
+
+    for (const [tipo, filas] of movimientos) {
+      for (const fila of filas) {
+        const corte = fila.Producto;
+        const totales = porCorte.get(corte) ?? {
+          Entradas: { unidades: 0, kilos: 0 },
+          Salidas: { unidades: 0, kilos: 0 },
+          Ajustes: { unidades: 0, kilos: 0 },
+        };
+        totales[tipo].unidades += fila.Unidades;
+        totales[tipo].kilos += fila.Kilos;
+        porCorte.set(corte, totales);
+      }
+    }
+
+    const encabezado = ['Corte', ...movimientos.flatMap(([tipo]) => [`${tipo} (un)`, `${tipo} (kg)`])];
+    const filasResumen = Array.from(porCorte)
+      .sort(([a], [b]) => a.localeCompare(b, 'es-CL'))
+      .map(([corte, totales]) => [corte, ...movimientos.flatMap(([tipo]) => [
+        Number(totales[tipo].unidades.toFixed(2)),
+        Number(totales[tipo].kilos.toFixed(2)),
+      ])]);
+    const resumen = XLSX.utils.aoa_to_sheet([encabezado, ...filasResumen]);
+    resumen['!cols'] = [{ wch: 32 }, ...encabezado.slice(1).map(() => ({ wch: 16 }))];
+    resumen['!autofilter'] = { ref: resumen['!ref']! };
+    XLSX.utils.book_append_sheet(workbook, resumen, 'Resumen por corte');
+
+    for (const [tipo, filas] of movimientos) {
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filas), tipo);
+    }
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(filasStockCalculado()), 'Stock');
 
     const fecha = hoyISO();
@@ -497,7 +535,7 @@ export default function MovimientosInventario() {
               className="gap-2"
               onClick={exportarExcel}
               disabled={filteredEntradas.length === 0 && filteredSalidas.length === 0 && filteredAjustes.length === 0}
-              title="Descarga entradas, salidas y ajustes en un solo Excel (con los filtros aplicados)"
+              title="Descarga los movimientos filtrados y su resumen por corte en un solo Excel"
             >
               <FileSpreadsheet className="h-4 w-4" />
               Exportar a Excel
