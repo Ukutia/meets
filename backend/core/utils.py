@@ -225,7 +225,7 @@ def restituir_unidades_fifo(producto, unidades_a_devolver, congelado=False):
     return unidades_a_devolver
 
 
-def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar):
+def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar, congelado=False):
     """Suma al ledger (``EntradaProducto``) unidades y/o kilos encontrados en
     un conteo físico que superó al stock del sistema (ajuste tipo "exceso").
 
@@ -240,7 +240,7 @@ def agregar_exceso_fifo(producto, unidades_a_agregar, kilos_a_agregar):
         return
 
     entrada = (
-        EntradaProducto.objects.filter(producto=producto, congelado=False)
+        EntradaProducto.objects.filter(producto=producto, congelado=congelado)
         .order_by('fecha_entrada')
         .first()
     )

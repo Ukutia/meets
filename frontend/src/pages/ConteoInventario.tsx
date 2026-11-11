@@ -2,10 +2,12 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, ClipboardCheck, Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   AlertDialog,
@@ -19,11 +21,14 @@ import {
 } from '@/components/ui/alert-dialog';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import { ErrorMessage } from '@/components/shared/ErrorMessage';
+import { useBodegas } from '@/components/shared/BodegasStock';
 import { useToast } from '@/hooks/use-toast';
 import { createConteo, getConteos, getStockFisico } from '@/services/api';
 import { formatFecha } from '@/lib/utils';
 
 type Contado = { kilos: string; unidades: string };
+type Borrador = { contado: Record<number, Contado>; notas: string };
+const borradorVacio: Borrador = { contado: {}, notas: '' };
 
 const aNumero = (v: string) => Number(v.replace(',', '.'));
 const vacio = (v: string) => v.trim() === '';
@@ -50,30 +55,38 @@ export default function ConteoInventario() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
-  const [contado, setContado] = useState<Record<number, Contado>>({});
-  const [notas, setNotas] = useState('');
+  const [ubicacion, setUbicacion] = useState('');
+  const [borradores, setBorradores] = useState<Record<string, Borrador>>({});
   const [confirmando, setConfirmando] = useState(false);
+  const { data: bodegas = [], isError: errorBodegas } = useBodegas();
+  const opciones = [
+    { valor: 'principal', nombre: 'Bodega principal' },
+    { valor: 'congelado', nombre: 'Congelado' },
+    ...bodegas.map((b) => ({ valor: String(b.id), nombre: b.nombre })),
+  ];
+  const nombreUbicacion = opciones.find((opcion) => opcion.valor === ubicacion)?.nombre;
+  const { contado, notas } = borradores[ubicacion] ?? borradorVacio;
 
   const stock = useQuery({
-    queryKey: ['stock-fisico'],
-    queryFn: async () => (await getStockFisico()).data,
+    queryKey: ['stock-fisico', ubicacion],
+    queryFn: async () => (await getStockFisico(ubicacion)).data,
+    enabled: Boolean(nombreUbicacion),
     refetchOnMount: true,
   });
   const historial = useQuery({ queryKey: ['conteos'], queryFn: async () => (await getConteos()).data });
 
   const guardar = useMutation({
     mutationFn: createConteo,
-    onSuccess: ({ data }) => {
+    onSuccess: ({ data }, variables) => {
       toast({
         title: 'Conteo registrado',
         description: data.productos_con_diferencia
           ? `${data.productos_con_diferencia} producto(s) con diferencia, stock ajustado`
           : 'Todo calzó con el sistema',
       });
-      setContado({});
-      setNotas('');
+      setBorradores((prev) => ({ ...prev, [variables.ubicacion]: borradorVacio }));
       setConfirmando(false);
-      ['stock-fisico', 'conteos', 'stock', 'ajustes-inventario'].forEach((k) =>
+      ['stock-fisico', 'conteos', 'stock', 'ajustes-inventario', 'traspasos'].forEach((k) =>
         queryClient.invalidateQueries({ queryKey: [k] })
       );
     },
@@ -113,11 +126,18 @@ export default function ConteoInventario() {
   const hayInvalidas = filas.some((f) => f.invalido);
   const visibles = filas.filter((f) => f.p.nombre.toLowerCase().includes(search.toLowerCase()));
 
+  const actualizarBorrador = (actualizar: (prev: Borrador) => Borrador) =>
+    setBorradores((prev) => ({ ...prev, [ubicacion]: actualizar(prev[ubicacion] ?? borradorVacio) }));
+
   const setCampo = (id: number, campo: keyof Contado, valor: string) =>
-    setContado((prev) => ({ ...prev, [id]: { ...(prev[id] ?? { kilos: '', unidades: '' }), [campo]: valor } }));
+    actualizarBorrador((prev) => ({ ...prev, contado: {
+      ...prev.contado,
+      [id]: { ...(prev.contado[id] ?? { kilos: '', unidades: '' }), [campo]: valor },
+    } }));
 
   const registrar = () =>
     guardar.mutate({
+      ubicacion,
       notas,
       lineas: contadas.map((f) => ({
         producto: f.p.id,
@@ -125,9 +145,6 @@ export default function ConteoInventario() {
         contado_unidades: vacio(f.c.unidades) ? undefined : f.c.unidades,
       })),
     });
-
-  if (stock.isLoading) return <LoadingSpinner />;
-  if (stock.error) return <ErrorMessage message="No se pudo cargar el inventario" />;
 
   return (
     <div className="space-y-6">
@@ -145,6 +162,21 @@ export default function ConteoInventario() {
         </TabsList>
 
         <TabsContent value="contar" className="space-y-4">
+          <div className="max-w-sm space-y-2">
+            <Label htmlFor="ubicacion-conteo">Ubicación del conteo</Label>
+            <Select value={ubicacion} onValueChange={setUbicacion} disabled={guardar.isPending}>
+              <SelectTrigger id="ubicacion-conteo">
+                <SelectValue placeholder="Selecciona una ubicación" />
+              </SelectTrigger>
+              <SelectContent>
+                {opciones.map(({ valor, nombre }) => <SelectItem key={valor} value={valor}>{nombre}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {errorBodegas && <ErrorMessage message="No se pudo cargar la lista de otras bodegas" />}
+          </div>
+          {stock.isLoading && <LoadingSpinner />}
+          {stock.error && <ErrorMessage message="No se pudo cargar el inventario de esta ubicación" />}
+          {nombreUbicacion && stock.isSuccess && <>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input placeholder="Buscar producto..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
@@ -200,7 +232,8 @@ export default function ConteoInventario() {
             </Table>
           </div>
 
-          <Input placeholder="Notas del conteo (opcional)" value={notas} maxLength={255} onChange={(e) => setNotas(e.target.value)} />
+          <Input placeholder="Notas del conteo (opcional)" value={notas} maxLength={255}
+            onChange={(e) => actualizarBorrador((prev) => ({ ...prev, notas: e.target.value }))} />
 
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
@@ -210,6 +243,7 @@ export default function ConteoInventario() {
               <ClipboardCheck className="mr-2 h-4 w-4" /> Registrar conteo
             </Button>
           </div>
+          </>}
         </TabsContent>
 
         <TabsContent value="historial" className="space-y-3">
@@ -220,6 +254,7 @@ export default function ConteoInventario() {
               <CardContent className="space-y-3 pt-6">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold">Conteo #{conteo.id}</span>
+                  <Badge variant="outline">{conteo.ubicacion ?? 'Sin ubicación registrada'}</Badge>
                   <span className="text-sm text-muted-foreground">
                     {formatFecha(conteo.fecha)}{conteo.usuario ? ` · ${conteo.usuario}` : ''}
                   </span>
@@ -266,7 +301,7 @@ export default function ConteoInventario() {
       <AlertDialog open={confirmando} onOpenChange={setConfirmando}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Registrar conteo</AlertDialogTitle>
+            <AlertDialogTitle>Registrar conteo en {nombreUbicacion}</AlertDialogTitle>
             <AlertDialogDescription>
               {conDiferencia.length
                 ? `El stock de ${conDiferencia.length} producto(s) se ajustará a lo contado y las diferencias quedarán registradas:`

@@ -75,9 +75,8 @@ class StockBodega(models.Model):
 
 
 class MovimientoBodega(models.Model):
-    """Traspaso de existencias. ``origen``/``destino`` nulos = "Sin asignar"
-    (stock del inventario que no está en ninguna bodega). Siempre sale de un
-    lado y entra al otro, así el total nunca cambia."""
+    """Movimiento de existencias. Un extremo nulo representa la principal,
+    un pedido o un conteo según el origen del movimiento."""
     producto = models.ForeignKey('Producto', on_delete=models.CASCADE, related_name='movimientos_bodega')
     origen = models.ForeignKey(Bodega, on_delete=models.SET_NULL, null=True, blank=True, related_name='salidas')
     destino = models.ForeignKey(Bodega, on_delete=models.SET_NULL, null=True, blank=True, related_name='entradas')
@@ -88,6 +87,8 @@ class MovimientoBodega(models.Model):
     # Venta (sale de la bodega) o devolución (vuelve) de esta línea de pedido.
     detalle = models.ForeignKey('DetallePedido', on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name='movimientos_bodega')
+    conteo = models.ForeignKey('ConteoInventario', on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='movimientos_bodega')
     fecha = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -732,6 +733,7 @@ class ConteoInventario(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="conteos_inventario"
     )
     notas = models.CharField(max_length=255, blank=True, default="")
+    ubicacion = models.CharField(max_length=80, blank=True, default="")
 
     class Meta:
         ordering = ["-fecha", "-id"]

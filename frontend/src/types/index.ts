@@ -206,6 +206,7 @@ export interface MovimientoCongelado {
 }
 
 export interface AjusteInventario {
+  de_conteo?: boolean;
   id: number;
   producto: number;
   producto_nombre: string;
@@ -264,6 +265,7 @@ export interface ConteoInventario {
   id: number;
   fecha: string;
   usuario: string | null;
+  ubicacion: string | null;
   notas: string;
   detalles: DetalleConteo[];
   productos_con_diferencia: number;

@@ -84,8 +84,12 @@ def traspasar(producto, origen, destino, unidades, kilos, nota='', usuario=None)
 
 
 def movimiento_dict(m):
-    # Sin bodega en un lado y ligado a un pedido = venta/devolución, no "Bodega principal".
-    fuera = f"Pedido #{m.detalle.pedido_id}" if m.detalle_id else 'Bodega principal'
+    # El extremo sin bodega indica de dónde vino el movimiento.
+    fuera = 'Bodega principal'
+    if m.detalle_id:
+        fuera = f"Pedido #{m.detalle.pedido_id}"
+    elif m.conteo_id:
+        fuera = f"Conteo #{m.conteo_id}"
     return {
         'id': m.id, 'fecha': m.fecha, 'producto': m.producto_id, 'producto_nombre': m.producto.nombre,
         'origen': m.origen_id, 'origen_nombre': m.origen.nombre if m.origen else fuera,

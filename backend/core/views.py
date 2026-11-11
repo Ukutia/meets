@@ -4,10 +4,11 @@ from rest_framework import status
 from .models import Producto, Pedido, FacturaDetallePedido, Vendedor, DetallePedido, Cliente, Factura, DetalleFactura, PagoFactura, EntradaProducto,Proveedor, PagoVendedor, AjusteInventario, HistorialPrecioProducto, PerfilUsuario, NotaCredito, MovimientoCongelado, RegistroPreReserva, Bodega
 from .serializers import RegistroPreReservaSerializer, MovimientoCongeladoSerializer, NotaCreditoSerializer, MyTokenObtainPairSerializer, ProductoSerializer, PedidoSerializer,ProveedorSerializer, ClienteSerializer, FacturaSerializer, PagoFacturaSerializer, VendedorSerializer, HistorialPrecioProductoSerializer, AjusteInventarioSerializer
 from .contabilidad import mermas_valorizadas, resumen_mensual, resumen_anual
-from .models import ConfiguracionContable
+from .models import ConfiguracionContable, DetalleConteo
 from .utils import estado_consumo_detalle, consumir_fifo, costo_por_kilo_ponderado, descontar_kilos_fifo, restituir_kilos_fifo, restituir_unidades_fifo, revertir_stock_detalle, agregar_exceso_fifo, unidades_en_stock, vincular_lotes, actualizar_estado_pre_reserva, asignar_pre_reservas, mover_stock_congelado, registrar_pre_reserva, descontar_de_bodega, devolver_a_bodega, cambiar_bodega_pedido, unidades_vendibles, validar_sin_asignar
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Exists
 from django.utils import timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 
@@ -1193,7 +1194,7 @@ class ObtenerPedido(APIView):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         
 
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, OuterRef
 
 from rest_framework import generics
 
@@ -1548,12 +1549,17 @@ class StockProductosView(APIView):
         return Response(stock_data, status=status.HTTP_200_OK)
 
 
+def _ajustes_con_origen():
+    conteos = DetalleConteo.objects.filter(ajuste_id=OuterRef('pk')).exclude(conteo__ubicacion='')
+    return AjusteInventario.objects.select_related('producto').annotate(de_conteo=Exists(conteos))
+
+
 class AjusteInventarioListView(APIView):
     """Lista los ajustes de inventario (mermas, excesos y ajustes manuales)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ajustes = AjusteInventario.objects.select_related('producto').order_by('-fecha', '-id')
+        ajustes = _ajustes_con_origen().order_by('-fecha', '-id')
 
         producto_id = request.query_params.get('producto')
         if producto_id:
@@ -1778,12 +1784,14 @@ class AjusteInventarioDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _get_ajuste(self, pk):
-        return AjusteInventario.objects.select_related('producto').filter(pk=pk).first()
+        return _ajustes_con_origen().filter(pk=pk).first()
 
     def put(self, request, pk, *args, **kwargs):
         ajuste = self._get_ajuste(pk)
         if ajuste is None:
             return Response({'error': 'Ajuste no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        if ajuste.de_conteo:
+            return Response({'error': 'Para corregir este ajuste, registra un nuevo conteo en la misma ubicación.'}, status=status.HTTP_400_BAD_REQUEST)
 
         datos, error = _validar_datos_ajuste(request.data, ajuste_actual=ajuste)
         if error:
@@ -1821,6 +1829,8 @@ class AjusteInventarioDetailView(APIView):
         ajuste = self._get_ajuste(pk)
         if ajuste is None:
             return Response({'error': 'Ajuste no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+        if ajuste.de_conteo:
+            return Response({'error': 'Para corregir este ajuste, registra un nuevo conteo en la misma ubicación.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             with transaction.atomic():
@@ -1909,7 +1919,7 @@ class MovimientoCongeladoView(APIView):
 # ============================================================================
 # REPORTES FINANCIEROS (Plan 03 — Ganancias, Márgenes y Estadísticas)
 # ============================================================================
-from django.db.models import Avg, F, OuterRef, Subquery, DecimalField
+from django.db.models import Avg, F, Subquery, DecimalField
 from django.db.models.functions import TruncMonth, TruncDate, Coalesce
 
 

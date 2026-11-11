@@ -381,12 +381,13 @@ export const guardarFechaEntrega = (id: number, fecha_entrega: string | null) =>
 export default api;
 
 // Cuadratura de inventario: stock que el sistema cree que hay y conteos ya registrados.
-export const getStockFisico = () =>
+export const getStockFisico = (ubicacion: string) =>
   api.get<{ id: number; nombre: string; categoria?: string | null; sistema_kilos: string; sistema_unidades: number }[]>(
-    '/inventario/stock-fisico/'
+    '/inventario/stock-fisico/', { params: { ubicacion } }
   );
 export const getConteos = () => api.get<ConteoInventario[]>('/inventario/conteos/');
 export const createConteo = (data: {
+  ubicacion: string;
   notas?: string;
   lineas: { producto: number; contado_kilos?: string; contado_unidades?: string }[];
 }) => api.post<ConteoInventario>('/inventario/conteos/', data);

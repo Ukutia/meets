@@ -633,7 +633,7 @@ export default function MovimientosInventario() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">{a.razon || '—'}</TableCell>
                       <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
+                        {a.de_conteo ? <span className="text-sm text-muted-foreground">Conteo</span> : <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"
                             size="icon"
@@ -652,7 +652,7 @@ export default function MovimientosInventario() {
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
-                        </div>
+                        </div>}
                       </TableCell>
                     </TableRow>
                   ))}

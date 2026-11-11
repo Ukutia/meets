@@ -89,10 +89,11 @@ class HistorialPrecioProductoSerializer(serializers.ModelSerializer):
 
 class AjusteInventarioSerializer(serializers.ModelSerializer):
     producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+    de_conteo = serializers.BooleanField(read_only=True, default=False)
 
     class Meta:
         model = AjusteInventario
-        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'cantidad_unidades', 'tipo', 'razon', 'fecha']
+        fields = ['id', 'producto', 'producto_nombre', 'cantidad', 'cantidad_unidades', 'tipo', 'razon', 'fecha', 'de_conteo']
 
 
 class RegistroPreReservaSerializer(serializers.ModelSerializer):
