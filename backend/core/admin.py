@@ -23,3 +23,5 @@ admin.site.register(models.HistorialPrecioProducto)
 
 admin.site.register(models.MovimientoCongelado)
 admin.site.register(models.RegistroPreReserva)
+admin.site.register(models.MovimientoCaja)
+admin.site.register(models.ComentarioCaja)

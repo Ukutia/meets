@@ -701,6 +701,49 @@ class Gasto(models.Model):
         ordering = ['-fecha', '-id']
 
 
+CATEGORIAS_CAJA = [
+    ("saldo_inicial", "Saldo inicial"),
+    ("aporte", "Aporte de socios"),
+    ("retiro", "Retiro"),
+    ("venta", "Venta / cobro"),
+    ("gasto", "Gasto"),
+    ("traspaso", "Traspaso"),
+    ("impuesto", "Impuestos"),
+    ("otro", "Otro"),
+]
+
+
+class MovimientoCaja(models.Model):
+    """Entrada o salida manual del libro de caja (saldo inicial, aportes,
+    retiros...). Los cobros de pedidos y pagos de facturas NO se copian aquí:
+    el libro los lee de Cobro y PagoFactura (ver libro_caja.py)."""
+    TIPOS = [("entrada", "Entrada"), ("salida", "Salida")]
+    fecha = models.DateField()
+    tipo = models.CharField(max_length=10, choices=TIPOS)
+    monto = models.DecimalField(max_digits=14, decimal_places=2)  # siempre positivo
+    descripcion = models.CharField(max_length=255)
+    categoria = models.CharField(max_length=20, choices=CATEGORIAS_CAJA, default="otro")
+    comentario = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+
+class ComentarioCaja(models.Model):
+    """Comentario sobre una línea del libro de caja. `clave` es la de la línea
+    (cobro-12, pago-5, manual-3), así sirve también para los movimientos que
+    el libro lee de Cobro y PagoFactura."""
+    clave = models.CharField(max_length=40, db_index=True)
+    texto = models.TextField()
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['creado', 'id']
+
+
 class ConfiguracionContable(models.Model):
     """Fila única (pk=1) con las tasas usadas en las estimaciones."""
     tasa_impuesto_renta = models.DecimalField(max_digits=5, decimal_places=2, default=25,

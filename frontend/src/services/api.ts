@@ -338,6 +338,14 @@ export const getGastos = (params?: Record<string, string>) => api.get('/tesoreri
 export const createGasto = (data: Record<string, unknown>) => api.post('/tesoreria/gastos/', data);
 export const updateGasto = (id: number, data: Record<string, unknown>) => api.put(`/tesoreria/gastos/${id}/`, data);
 export const deleteGasto = (id: number) => api.delete(`/tesoreria/gastos/${id}/`);
+export const getLibroCaja = (params?: { desde?: string; hasta?: string; receptor?: string }) =>
+  api.get('/tesoreria/libro-caja/', { params });
+export const createMovimientoCaja = (data: Record<string, unknown>) => api.post('/tesoreria/libro-caja/movimientos/', data);
+export const updateMovimientoCaja = (id: number, data: Record<string, unknown>) => api.put(`/tesoreria/libro-caja/movimientos/${id}/`, data);
+export const deleteMovimientoCaja = (id: number) => api.delete(`/tesoreria/libro-caja/movimientos/${id}/`);
+export const createComentarioCaja = (clave: string, texto: string) =>
+  api.post('/tesoreria/libro-caja/comentarios/', { clave, texto });
+export const deleteComentarioCaja = (id: number) => api.delete(`/tesoreria/libro-caja/comentarios/${id}/`);
 export const getContabilidad = (params?: { desde?: string; hasta?: string }) => api.get('/tesoreria/contabilidad/', { params });
 export interface ConfiguracionContable {
   tasa_impuesto_renta: string; tasa_ppm: string; tasa_iva: string; tasa_anticipo_carne: string;

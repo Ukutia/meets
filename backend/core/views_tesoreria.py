@@ -11,9 +11,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .cartola import asignar_huellas, extraer_con_ia, normalizar_filas, parse_fecha, parse_monto
+from .libro_caja import construir_libro
 from .contabilidad import factor_iva, resumen_anual, resumen_mensual
-from .models import (CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola, Cobro,
-                     ConfiguracionContable, Factura, Gasto, MovimientoBancario, Pedido)
+from .models import (CATEGORIAS_CAJA, CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola, Cobro, ComentarioCaja,
+                     ConfiguracionContable, Factura, Gasto, MovimientoBancario, MovimientoCaja, PagoFactura, Pedido)
 
 def _error(mensaje, codigo=status.HTTP_400_BAD_REQUEST):
     return Response({'error': mensaje}, status=codigo)
@@ -465,3 +466,135 @@ class ConfiguracionContableView(APIView):
             config.receptor_cobro = request.data['receptor_cobro']
         config.save()
         return Response(config_json(config))
+
+
+# --- Libro de caja ---
+
+def _num(v):
+    """Decimal -> int si es entero, si no float (JSON numérico)."""
+    return int(v) if v == v.to_integral_value() else float(v)
+
+
+def _libro_json(o):
+    if isinstance(o, Decimal):
+        return _num(o)
+    if isinstance(o, dict):
+        return {k: _libro_json(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_libro_json(v) for v in o]
+    return o
+
+
+def _movimiento_caja_json(m):
+    return {
+        'id': m.id, 'fecha': m.fecha.isoformat(), 'tipo': m.tipo, 'monto': _num(m.monto),
+        'descripcion': m.descripcion, 'categoria': m.categoria, 'comentario': m.comentario,
+    }
+
+
+def _datos_movimiento_caja(data, actual=None):
+    def campo(k, defecto=None):
+        return data[k] if k in data else (getattr(actual, k) if actual else defecto)
+
+    fecha = parse_fecha(campo('fecha'))
+    if not fecha:
+        raise ValueError('Fecha inválida')
+    tipo = campo('tipo')
+    if tipo not in dict(MovimientoCaja.TIPOS):
+        raise ValueError('Tipo inválido (entrada o salida)')
+    monto = _decimal(campo('monto'), 'El monto')
+    if monto <= 0:
+        raise ValueError('El monto debe ser mayor a 0')
+    descripcion = str(campo('descripcion', '') or '').strip()
+    if not descripcion:
+        raise ValueError('La descripción es obligatoria')
+    categoria = campo('categoria', 'otro')
+    if categoria not in dict(CATEGORIAS_CAJA):
+        raise ValueError('Categoría inválida')
+    return {'fecha': fecha, 'tipo': tipo, 'monto': monto, 'descripcion': descripcion[:255],
+            'categoria': categoria, 'comentario': str(campo('comentario', '') or '')}
+
+
+class LibroCajaView(APIView):
+    """Libro de caja con saldo acumulado (ver libro_caja.construir_libro)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        desde = hasta = None
+        if request.query_params.get('desde'):
+            desde = parse_fecha(request.query_params['desde'])
+            if not desde:
+                return _error('Fecha "desde" inválida')
+        if request.query_params.get('hasta'):
+            hasta = parse_fecha(request.query_params['hasta'])
+            if not hasta:
+                return _error('Fecha "hasta" inválida')
+        receptor = request.query_params.get('receptor', 'todos')
+        if receptor not in ('todos', 'empresa'):
+            return _error('Receptor inválido')
+        libro = _libro_json(construir_libro(desde, hasta, receptor))
+        libro['categorias'] = [{'value': v, 'label': l} for v, l in CATEGORIAS_CAJA]
+        return Response(libro)
+
+
+class MovimientoCajaListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response([_movimiento_caja_json(m) for m in MovimientoCaja.objects.all()])
+
+    def post(self, request):
+        try:
+            datos = _datos_movimiento_caja(request.data)
+        except ValueError as e:
+            return _error(str(e))
+        m = MovimientoCaja.objects.create(usuario=request.user, **datos)
+        return Response(_movimiento_caja_json(m), status=status.HTTP_201_CREATED)
+
+
+class MovimientoCajaDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        m = MovimientoCaja.objects.filter(pk=pk).first()
+        if not m:
+            return _error('Movimiento no encontrado', status.HTTP_404_NOT_FOUND)
+        try:
+            datos = _datos_movimiento_caja(request.data, m)
+        except ValueError as e:
+            return _error(str(e))
+        for k, v in datos.items():
+            setattr(m, k, v)
+        m.save()
+        return Response(_movimiento_caja_json(m))
+
+    def delete(self, request, pk):
+        ComentarioCaja.objects.filter(clave=f'manual-{pk}').delete()
+        MovimientoCaja.objects.filter(pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ComentarioCajaListView(APIView):
+    """Agrega un comentario a una línea del libro (clave: cobro-N, pago-N, manual-N)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        clave = str(request.data.get('clave', '')).strip()
+        texto = str(request.data.get('texto', '')).strip()
+        origen, _, numero = clave.partition('-')
+        modelo = {'cobro': Cobro, 'pago': PagoFactura, 'manual': MovimientoCaja}.get(origen)
+        if not modelo or not numero.isdigit() or not modelo.objects.filter(pk=int(numero)).exists():
+            return _error('Movimiento no encontrado', status.HTTP_404_NOT_FOUND)
+        if not texto:
+            return _error('El comentario no puede estar vacío')
+        c = ComentarioCaja.objects.create(clave=clave, texto=texto[:2000], usuario=request.user)
+        return Response({'id': c.id, 'texto': c.texto, 'creado': c.creado.isoformat(),
+                         'usuario': request.user.get_username()}, status=status.HTTP_201_CREATED)
+
+
+class ComentarioCajaDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        ComentarioCaja.objects.filter(pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

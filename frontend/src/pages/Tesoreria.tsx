@@ -5,8 +5,9 @@ import { RangoFechaSelect, rangoInicial, type RangoState } from '@/components/sh
 import { ResumenContable } from '@/components/tesoreria/ResumenContable';
 import { MovimientosBanco } from '@/components/tesoreria/MovimientosBanco';
 import { GastosEmpresa } from '@/components/tesoreria/GastosEmpresa';
+import { LibroCaja } from '@/components/tesoreria/LibroCaja';
 
-const PESTANAS = ['contabilidad', 'banco', 'gastos'] as const;
+const PESTANAS = ['contabilidad', 'banco', 'gastos', 'caja'] as const;
 
 export default function Tesoreria() {
   const [params, setParams] = useSearchParams();
@@ -28,6 +29,7 @@ export default function Tesoreria() {
           <TabsTrigger value="contabilidad">Contabilidad</TabsTrigger>
           <TabsTrigger value="banco">Banco</TabsTrigger>
           <TabsTrigger value="gastos">Gastos</TabsTrigger>
+          <TabsTrigger value="caja">Libro de caja</TabsTrigger>
         </TabsList>
         <TabsContent value="contabilidad">
           <ResumenContable rango={rango.rango} />
@@ -37,6 +39,9 @@ export default function Tesoreria() {
         </TabsContent>
         <TabsContent value="gastos">
           <GastosEmpresa rango={rango.rango} />
+        </TabsContent>
+        <TabsContent value="caja">
+          <LibroCaja rango={rango.rango} />
         </TabsContent>
       </Tabs>
     </div>
