@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDownCircle, ArrowUpCircle, Landmark, MessageSquare, Pencil, Plus, Trash2, Wallet, X } from 'lucide-react';
+import {
+  ArrowDownCircle, ArrowUpCircle, Landmark, Lock, MessageSquare, Pencil, Plus, Search, Trash2, Wallet, X,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DecimalInput } from '@/components/shared/DecimalInput';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
@@ -14,13 +16,17 @@ import { StatCard } from '@/components/shared/StatCard';
 import { useConfirm } from '@/components/shared/ConfirmDialog';
 import { useToast } from '@/hooks/use-toast';
 import {
-  createComentarioCaja, createMovimientoCaja, deleteComentarioCaja, deleteMovimientoCaja, getLibroCaja, updateMovimientoCaja,
+  actualizarCobro, createComentarioCaja, createMovimientoCaja, deleteComentarioCaja, deleteMovimientoCaja, getLibroCaja,
+  updateMovimientoCaja,
 } from '@/services/api';
+import { MEDIOS_PAGO } from '@/lib/cierre';
 import { cn, decimalATexto, formatCLP, formatFecha, hoyISO, parseDecimal, type RangoFecha } from '@/lib/utils';
+import { CierreCajaPanel, type Cierre } from './CierreCaja';
 
 interface Comentario { id: number; texto: string; creado: string; usuario: string }
 
 type Origen = 'pedido' | 'factura' | 'manual';
+type Estado = 'todos' | 'por_confirmar' | 'con_comentarios' | 'abiertos';
 
 interface Linea {
   clave: string;
@@ -31,6 +37,7 @@ interface Linea {
   salida: number;
   saldo: number;
   editable: boolean;
+  cerrado: boolean;
   ref: Record<string, number | string>;
   categoria?: string;
   comentario?: string;
@@ -47,34 +54,71 @@ interface Libro {
   saldo_final: number;
   movimientos: Linea[];
   categorias: { value: string; label: string }[];
+  cierre: Cierre | null;
 }
 
 const ETIQUETA_ORIGEN: Record<Origen, string> = { pedido: 'Pedido', factura: 'Factura', manual: 'Manual' };
 const VACIO = { fecha: hoyISO(), monto: '', descripcion: '', categoria: 'otro', comentario: '' };
+const FILTROS_VACIOS = { texto: '', origen: 'todos', tipo: 'todos', categoria: 'todas', estado: 'todos' as Estado };
+
+// Minúsculas y sin tildes, para buscar "credito" y encontrar "Crédito".
+const normalizar = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const nombreMedio = (v?: string) => MEDIOS_PAGO.find((m) => m.value === v)?.label ?? v ?? '';
 
 export function LibroCaja({ rango }: { rango: RangoFecha }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [receptor, setReceptor] = useState<'todos' | 'empresa'>('todos');
-  const [origen, setOrigen] = useState<'todos' | Origen>('todos');
+  const [filtros, setFiltros] = useState(FILTROS_VACIOS);
   const [editando, setEditando] = useState<{ id?: number; tipo: 'entrada' | 'salida' } | null>(null);
   const [form, setForm] = useState(VACIO);
   const [guardando, setGuardando] = useState(false);
   const [abierta, setAbierta] = useState<string | null>(null);
   const [nuevo, setNuevo] = useState('');
+  const [confirmando, setConfirmando] = useState<Linea | null>(null);
+  const [formCobro, setFormCobro] = useState({ fecha: '', medio: 'transferencia', receptor: 'vendedor' });
 
   const q = useQuery({
     queryKey: ['libro-caja', rango.desde, rango.hasta, receptor],
     queryFn: async () => (await getLibroCaja({ desde: rango.desde, hasta: rango.hasta, receptor })).data as Libro,
   });
   const libro = q.data;
-  const categorias = libro?.categorias ?? [];
+  const categorias = useMemo(() => libro?.categorias ?? [], [libro]);
   const nombreCategoria = (v?: string) => categorias.find((c) => c.value === v)?.label ?? v ?? '';
-  const lineas = useMemo(
-    () => (libro?.movimientos ?? []).filter((l) => origen === 'todos' || l.origen === origen),
-    [libro, origen],
-  );
+  const filtrar = (cambio: Partial<typeof FILTROS_VACIOS>) => setFiltros((f) => ({ ...f, ...cambio }));
+  const hayFiltros = JSON.stringify(filtros) !== JSON.stringify(FILTROS_VACIOS);
+
+  const todas = useMemo(() => libro?.movimientos ?? [], [libro]);
+  const porConfirmar = todas.filter((l) => l.automatico).length;
+  const lineas = useMemo(() => {
+    const texto = normalizar(filtros.texto.trim());
+    const digitos = filtros.texto.replace(/[^\d]/g, '');
+    const nombreCat = (v?: string) => categorias.find((c) => c.value === v)?.label ?? '';
+    return todas.filter((l) => {
+      if (filtros.origen !== 'todos' && l.origen !== filtros.origen) return false;
+      if (filtros.tipo === 'entradas' && !(l.entrada > 0)) return false;
+      if (filtros.tipo === 'salidas' && !(l.salida > 0)) return false;
+      if (filtros.categoria !== 'todas' && l.categoria !== filtros.categoria) return false;
+      if (filtros.estado === 'por_confirmar' && !l.automatico) return false;
+      if (filtros.estado === 'con_comentarios' && l.comentarios.length === 0) return false;
+      if (filtros.estado === 'abiertos' && l.cerrado) return false;
+      if (!texto) return true;
+      const campos = [l.descripcion, l.comentario, nombreCat(l.categoria), nombreMedio(l.medio),
+        ETIQUETA_ORIGEN[l.origen], ...l.comentarios.map((c) => c.texto)];
+      if (campos.some((c) => c && normalizar(c).includes(texto))) return true;
+      // "24000" o "24.000" encuentran un movimiento de $24.000.
+      return digitos.length >= 3 && String(Math.round(l.entrada || l.salida)).includes(digitos);
+    });
+  }, [todas, filtros, categorias]);
+  const sumaEntradas = lineas.reduce((t, l) => t + l.entrada, 0);
+  const sumaSalidas = lineas.reduce((t, l) => t + l.salida, 0);
+
+  const refrescar = () => queryClient.invalidateQueries({ queryKey: ['libro-caja'] });
+  const errorToast = (e: unknown, defecto: string) => {
+    const err = e as { response?: { data?: { error?: string } } };
+    toast({ title: 'Error', description: err.response?.data?.error || defecto, variant: 'destructive' });
+  };
 
   const abrir = (tipo: 'entrada' | 'salida', l?: Linea) => {
     setEditando({ id: l ? Number(l.ref.id) : undefined, tipo });
@@ -91,21 +135,15 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
       const datos = { ...form, monto: parseDecimal(form.monto), tipo: editando.tipo };
       if (editando.id) await updateMovimientoCaja(editando.id, datos);
       else await createMovimientoCaja(datos);
-      queryClient.invalidateQueries({ queryKey: ['libro-caja'] });
+      refrescar();
       setEditando(null);
     } catch (e) {
-      const err = e as { response?: { data?: { error?: string } } };
-      toast({ title: 'Error', description: err.response?.data?.error || 'No se pudo guardar', variant: 'destructive' });
+      errorToast(e, 'No se pudo guardar');
     } finally {
       setGuardando(false);
     }
   };
 
-  const refrescar = () => queryClient.invalidateQueries({ queryKey: ['libro-caja'] });
-  const errorToast = (e: unknown, defecto: string) => {
-    const err = e as { response?: { data?: { error?: string } } };
-    toast({ title: 'Error', description: err.response?.data?.error || defecto, variant: 'destructive' });
-  };
   const comentar = async (clave: string) => {
     const texto = nuevo.trim();
     if (!texto) return;
@@ -123,6 +161,24 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
       refrescar();
     } catch (e) {
       errorToast(e, 'No se pudo eliminar el comentario');
+    }
+  };
+
+  const abrirConfirmar = (l: Linea) => {
+    setConfirmando(l);
+    setFormCobro({ fecha: l.fecha, medio: l.medio && l.medio !== 'otro' ? l.medio : 'transferencia', receptor: l.receptor ?? 'vendedor' });
+  };
+  const confirmarCobro = async () => {
+    if (!confirmando) return;
+    setGuardando(true);
+    try {
+      await actualizarCobro(Number(confirmando.clave.replace('cobro-', '')), formCobro);
+      refrescar();
+      setConfirmando(null);
+    } catch (e) {
+      errorToast(e, 'No se pudo confirmar el cobro');
+    } finally {
+      setGuardando(false);
     }
   };
 
@@ -146,17 +202,56 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
         />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <CierreCajaPanel receptor={receptor} ultimo={libro.cierre} />
+
+      {porConfirmar > 0 && filtros.estado !== 'por_confirmar' && (
+        <button
+          type="button"
+          onClick={() => filtrar({ estado: 'por_confirmar' })}
+          className="w-full rounded-lg border border-amber-500/50 bg-amber-50 px-3 py-2 text-left text-sm text-amber-800 hover:bg-amber-100 dark:bg-amber-950/30 dark:text-amber-300"
+        >
+          {porConfirmar === 1
+            ? '1 cobro está por confirmar: se registró solo al marcar el pedido Pagado.'
+            : `${porConfirmar} cobros están por confirmar: se registraron solos al marcar los pedidos Pagados.`}
+          {' '}Revisa su fecha y medio de pago →
+        </button>
+      )}
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filtros.texto}
+              onChange={(e) => filtrar({ texto: e.target.value })}
+              placeholder="Buscar cliente, factura, comentario o monto…"
+              className="pl-8"
+              aria-label="Buscar movimientos"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => abrir('entrada')}><Plus className="mr-1 h-4 w-4" /> Entrada</Button>
+            <Button variant="outline" onClick={() => abrir('salida')}><Plus className="mr-1 h-4 w-4" /> Salida</Button>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Select value={receptor} onValueChange={(v) => setReceptor(v as 'todos' | 'empresa')}>
-            <SelectTrigger className="w-[210px]" aria-label="Cobros"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-9 w-[190px]" aria-label="Cobros"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="todos">Cobros: Todos</SelectItem>
-              <SelectItem value="empresa">Cobros: Solo cuenta empresa</SelectItem>
+              <SelectItem value="todos">Cobros: todos</SelectItem>
+              <SelectItem value="empresa">Cobros: cuenta empresa</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={origen} onValueChange={(v) => setOrigen(v as 'todos' | Origen)}>
-            <SelectTrigger className="w-[160px]" aria-label="Origen"><SelectValue /></SelectTrigger>
+          <Select value={filtros.tipo} onValueChange={(v) => filtrar({ tipo: v })}>
+            <SelectTrigger className="h-9 w-[150px]" aria-label="Tipo"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todos">Entradas y salidas</SelectItem>
+              <SelectItem value="entradas">Solo entradas</SelectItem>
+              <SelectItem value="salidas">Solo salidas</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filtros.origen} onValueChange={(v) => filtrar({ origen: v, categoria: v === 'manual' ? filtros.categoria : 'todas' })}>
+            <SelectTrigger className="h-9 w-[160px]" aria-label="Origen"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="todos">Todos los orígenes</SelectItem>
               <SelectItem value="pedido">Pedidos</SelectItem>
@@ -164,107 +259,152 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
               <SelectItem value="manual">Manuales</SelectItem>
             </SelectContent>
           </Select>
+          {filtros.origen === 'manual' && (
+            <Select value={filtros.categoria} onValueChange={(v) => filtrar({ categoria: v })}>
+              <SelectTrigger className="h-9 w-[170px]" aria-label="Categoría"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todas">Todas las categorías</SelectItem>
+                {categorias.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
+          <Select value={filtros.estado} onValueChange={(v) => filtrar({ estado: v as Estado })}>
+            <SelectTrigger className="h-9 w-[170px]" aria-label="Estado"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="todos">Cualquier estado</SelectItem>
+              <SelectItem value="por_confirmar">Por confirmar ({porConfirmar})</SelectItem>
+              <SelectItem value="con_comentarios">Con comentarios</SelectItem>
+              {libro.cierre && <SelectItem value="abiertos">Después del cierre</SelectItem>}
+            </SelectContent>
+          </Select>
+          {hayFiltros && (
+            <Button variant="ghost" size="sm" onClick={() => setFiltros(FILTROS_VACIOS)}>
+              <X className="mr-1 h-3.5 w-3.5" /> Limpiar
+            </Button>
+          )}
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => abrir('entrada')}><Plus className="mr-1 h-4 w-4" /> Nueva entrada</Button>
-          <Button variant="outline" onClick={() => abrir('salida')}><Plus className="mr-1 h-4 w-4" /> Nueva salida</Button>
-        </div>
+        {hayFiltros && (
+          <p className="text-xs text-muted-foreground">
+            {lineas.length} de {todas.length} movimientos · entradas {formatCLP(sumaEntradas)} · salidas {formatCLP(sumaSalidas)}
+            {' '}· neto {formatCLP(sumaEntradas - sumaSalidas)}
+          </p>
+        )}
       </div>
 
       <div className="rounded-xl border bg-card">
-        <div className="hidden grid-cols-[6rem_1fr_7rem_7rem_8rem_4.5rem] gap-3 border-b px-4 py-2 text-xs font-medium text-muted-foreground md:grid">
+        <div className="hidden grid-cols-[6rem_1fr_7rem_7rem_8rem_auto] gap-3 border-b px-4 py-2 text-xs font-medium text-muted-foreground xl:grid">
           <span>Fecha</span><span>Descripción</span>
           <span className="text-right">Entrada</span><span className="text-right">Salida</span>
           <span className="text-right">Saldo</span><span />
         </div>
-        {lineas.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Sin movimientos en este período.</p>}
+        {lineas.length === 0 && (
+          <p className="p-6 text-center text-sm text-muted-foreground">
+            {hayFiltros ? 'Ningún movimiento coincide con la búsqueda.' : 'Sin movimientos en este período.'}
+          </p>
+        )}
         <div className="divide-y">
           {lineas.map((l) => (
             <div key={l.clave}>
-            <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 px-4 py-3 md:grid-cols-[6rem_1fr_7rem_7rem_8rem_4.5rem]">
-              <span className="text-xs text-muted-foreground tabular-nums md:text-sm md:text-foreground">{formatFecha(l.fecha)}</span>
-              <span className="row-span-2 text-right font-semibold tabular-nums md:hidden">
-                <span className={l.entrada > 0 ? 'text-green-600' : 'text-destructive'}>
-                  {l.entrada > 0 ? '+' : '−'}{formatCLP(l.entrada || l.salida)}
+              <div className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 px-4 py-3 xl:grid-cols-[6rem_1fr_7rem_7rem_8rem_auto]">
+                <span className="flex items-center gap-1 text-xs text-muted-foreground tabular-nums xl:text-sm xl:text-foreground">
+                  {l.cerrado && <Lock className="h-3 w-3 text-muted-foreground" aria-label="Cerrado" />}
+                  {formatFecha(l.fecha)}
                 </span>
-                <span className="block text-[11px] font-normal text-muted-foreground">saldo {formatCLP(l.saldo)}</span>
-              </span>
-              <div className="min-w-0 md:col-start-2 md:row-start-1">
-                <p className="truncate text-sm font-medium">{l.descripcion}</p>
-                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                  <Badge variant="secondary" className="text-[10px]">{ETIQUETA_ORIGEN[l.origen]}</Badge>
-                  {l.automatico && <Badge variant="outline" className="border-amber-500 text-[10px] text-amber-600">por confirmar</Badge>}
-                  {l.origen === 'manual' && <span className="text-xs text-muted-foreground">{nombreCategoria(l.categoria)}</span>}
-                  {l.comentario && <span className="truncate text-xs text-muted-foreground">· {l.comentario}</span>}
+                <span className="row-span-2 text-right font-semibold tabular-nums xl:hidden">
+                  <span className={l.entrada > 0 ? 'text-green-600' : 'text-destructive'}>
+                    {l.entrada > 0 ? '+' : '−'}{formatCLP(l.entrada || l.salida)}
+                  </span>
+                  <span className="block text-[11px] font-normal text-muted-foreground">saldo {formatCLP(l.saldo)}</span>
+                </span>
+                <div className="min-w-0 xl:col-start-2 xl:row-start-1">
+                  <p className="truncate text-sm font-medium">{l.descripcion}</p>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                    <Badge variant="secondary" className="text-[10px]">{ETIQUETA_ORIGEN[l.origen]}</Badge>
+                    {l.automatico && (
+                      <button type="button" onClick={() => abrirConfirmar(l)} title="Confirmar fecha y medio de pago">
+                        <Badge variant="outline" className="border-amber-500 text-[10px] text-amber-600 hover:bg-amber-50">
+                          por confirmar
+                        </Badge>
+                      </button>
+                    )}
+                    {l.origen === 'pedido' && !l.automatico && l.medio && (
+                      <span className="text-xs text-muted-foreground">{nombreMedio(l.medio)}</span>
+                    )}
+                    {l.origen === 'manual' && <span className="text-xs text-muted-foreground">{nombreCategoria(l.categoria)}</span>}
+                    {l.comentario && <span className="truncate text-xs text-muted-foreground">· {l.comentario}</span>}
+                  </div>
+                </div>
+                <span className={cn('hidden text-right tabular-nums xl:block', l.entrada > 0 && 'font-medium text-green-600')}>
+                  {l.entrada > 0 ? formatCLP(l.entrada) : ''}
+                </span>
+                <span className={cn('hidden text-right tabular-nums xl:block', l.salida > 0 && 'font-medium text-destructive')}>
+                  {l.salida > 0 ? formatCLP(l.salida) : ''}
+                </span>
+                <span className={cn('hidden text-right font-semibold tabular-nums xl:block', l.saldo < 0 && 'text-destructive')}>
+                  {formatCLP(l.saldo)}
+                </span>
+                <div className="col-span-2 flex justify-end xl:col-span-1">
+                  <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs" aria-label="Comentarios"
+                    aria-expanded={abierta === l.clave}
+                    onClick={() => { setAbierta(abierta === l.clave ? null : l.clave); setNuevo(''); }}>
+                    <MessageSquare className={cn('h-3.5 w-3.5', l.comentarios.length > 0 && 'text-primary')} />
+                    {l.comentarios.length > 0 && l.comentarios.length}
+                  </Button>
+                  {l.editable && (
+                    <>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Editar movimiento"
+                        onClick={() => abrir(l.entrada > 0 ? 'entrada' : 'salida', l)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label="Eliminar movimiento"
+                        onClick={() => confirm({
+                          title: '¿Eliminar este movimiento?',
+                          description: `${l.descripcion} · ${formatCLP(l.entrada || l.salida)}`,
+                          confirmLabel: 'Eliminar',
+                          destructive: true,
+                          onConfirm: async () => {
+                            try {
+                              await deleteMovimientoCaja(Number(l.ref.id));
+                              refrescar();
+                            } catch (e) {
+                              errorToast(e, 'No se pudo eliminar');
+                            }
+                          },
+                        })}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
-              <span className={cn('hidden text-right tabular-nums md:block', l.entrada > 0 && 'font-medium text-green-600')}>
-                {l.entrada > 0 ? formatCLP(l.entrada) : ''}
-              </span>
-              <span className={cn('hidden text-right tabular-nums md:block', l.salida > 0 && 'font-medium text-destructive')}>
-                {l.salida > 0 ? formatCLP(l.salida) : ''}
-              </span>
-              <span className={cn('hidden text-right font-semibold tabular-nums md:block', l.saldo < 0 && 'text-destructive')}>
-                {formatCLP(l.saldo)}
-              </span>
-              <div className="col-span-2 flex justify-end md:col-span-1">
-                <Button variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs" aria-label="Comentarios"
-                  aria-expanded={abierta === l.clave}
-                  onClick={() => { setAbierta(abierta === l.clave ? null : l.clave); setNuevo(''); }}>
-                  <MessageSquare className={cn('h-3.5 w-3.5', l.comentarios.length > 0 && 'text-primary')} />
-                  {l.comentarios.length > 0 && l.comentarios.length}
-                </Button>
-                {l.editable && (
-                  <>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Editar movimiento"
-                      onClick={() => abrir(l.entrada > 0 ? 'entrada' : 'salida', l)}>
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      aria-label="Eliminar movimiento"
-                      onClick={() => confirm({
-                        title: '¿Eliminar este movimiento?',
-                        description: `${l.descripcion} · ${formatCLP(l.entrada || l.salida)}`,
-                        confirmLabel: 'Eliminar',
-                        destructive: true,
-                        onConfirm: async () => {
-                          await deleteMovimientoCaja(Number(l.ref.id));
-                          queryClient.invalidateQueries({ queryKey: ['libro-caja'] });
-                        },
-                      })}
-                    >
-                      <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-            {abierta === l.clave && (
-              <div className="space-y-2 bg-muted/40 px-4 py-3">
-                {l.comentarios.length === 0 && <p className="text-xs text-muted-foreground">Sin comentarios.</p>}
-                {l.comentarios.map((c) => (
-                  <div key={c.id} className="flex items-start justify-between gap-2 text-sm">
-                    <div className="min-w-0">
-                      <p className="whitespace-pre-wrap break-words">{c.texto}</p>
-                      <p className="text-[11px] text-muted-foreground">
-                        {c.usuario && `${c.usuario} · `}{formatFecha(c.creado.slice(0, 10))}
-                      </p>
+              {abierta === l.clave && (
+                <div className="space-y-2 bg-muted/40 px-4 py-3">
+                  {l.comentarios.length === 0 && <p className="text-xs text-muted-foreground">Sin comentarios.</p>}
+                  {l.comentarios.map((c) => (
+                    <div key={c.id} className="flex items-start justify-between gap-2 text-sm">
+                      <div className="min-w-0">
+                        <p className="whitespace-pre-wrap break-words">{c.texto}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {c.usuario && `${c.usuario} · `}{formatFecha(c.creado.slice(0, 10))}
+                        </p>
+                      </div>
+                      <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" aria-label="Eliminar comentario"
+                        onClick={() => quitarComentario(c.id)}>
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" aria-label="Eliminar comentario"
-                      onClick={() => quitarComentario(c.id)}>
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-                <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); comentar(l.clave); }}>
-                  <Input value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Agregar comentario…" maxLength={2000} />
-                  <Button type="submit" size="sm" disabled={!nuevo.trim()}>Agregar</Button>
-                </form>
-              </div>
-            )}
+                  ))}
+                  <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); comentar(l.clave); }}>
+                    <Input value={nuevo} onChange={(e) => setNuevo(e.target.value)} placeholder="Agregar comentario…" maxLength={2000} />
+                    <Button type="submit" size="sm" disabled={!nuevo.trim()}>Agregar</Button>
+                  </form>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -288,6 +428,9 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
                 <DecimalInput value={form.monto} onValueChange={(t) => setForm({ ...form, monto: t })} placeholder="$" />
               </div>
             </div>
+            {libro.cierre && form.fecha && form.fecha <= libro.cierre.fecha && (
+              <p className="text-sm text-destructive">La caja está cerrada hasta el {formatFecha(libro.cierre.fecha)}: usa una fecha posterior.</p>
+            )}
             <div className="space-y-1.5">
               <Label>Descripción</Label>
               <Input value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} placeholder="Ej: aporte de capital" />
@@ -297,7 +440,7 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
               <Select value={form.categoria} onValueChange={(v) => setForm({ ...form, categoria: v })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {categorias.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                  {categorias.filter((c) => c.value !== 'ajuste').map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -309,6 +452,49 @@ export function LibroCaja({ rango }: { rango: RangoFecha }) {
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditando(null)}>Cancelar</Button>
             <Button disabled={guardando || !form.descripcion.trim() || monto <= 0} onClick={guardar}>Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!confirmando} onOpenChange={(o) => !o && setConfirmando(null)}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Confirmar cobro</DialogTitle>
+            <DialogDescription>
+              {confirmando?.descripcion} · {formatCLP(confirmando?.entrada ?? 0)}. Se registró solo al marcar el pedido
+              Pagado; indica cuándo y cómo llegó realmente la plata.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="space-y-1.5">
+              <Label>Fecha en que se recibió</Label>
+              <Input type="date" value={formCobro.fecha} onChange={(e) => setFormCobro({ ...formCobro, fecha: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Medio de pago</Label>
+                <Select value={formCobro.medio} onValueChange={(v) => setFormCobro({ ...formCobro, medio: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MEDIOS_PAGO.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Lo recibió</Label>
+                <Select value={formCobro.receptor} onValueChange={(v) => setFormCobro({ ...formCobro, receptor: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="vendedor">Vendedor</SelectItem>
+                    <SelectItem value="empresa">Cuenta empresa</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmando(null)}>Cancelar</Button>
+            <Button disabled={guardando || !formCobro.fecha} onClick={confirmarCobro}>Confirmar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

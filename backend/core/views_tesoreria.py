@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from .cartola import asignar_huellas, extraer_con_ia, normalizar_filas, parse_fecha, parse_monto
 from .libro_caja import construir_libro
 from .contabilidad import factor_iva, resumen_anual, resumen_mensual
-from .models import (CATEGORIAS_CAJA, CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola, Cobro, ComentarioCaja,
+from .models import (CATEGORIAS_CAJA, CATEGORIAS_GASTO, CATEGORIAS_MOVIMIENTO, AsignacionMovimiento, Cartola, CierreCaja, Cobro, ComentarioCaja,
                      ConfiguracionContable, Factura, Gasto, MovimientoBancario, MovimientoCaja, PagoFactura, Pedido)
 
 def _error(mensaje, codigo=status.HTTP_400_BAD_REQUEST):
@@ -492,6 +492,17 @@ def _movimiento_caja_json(m):
     }
 
 
+def _ultimo_cierre():
+    return CierreCaja.objects.order_by('-fecha').first()
+
+
+def _validar_abierta(*fechas):
+    cierre = _ultimo_cierre()
+    if cierre and any(f and f <= cierre.fecha for f in fechas):
+        raise ValueError(f'La caja está cerrada hasta el {cierre.fecha:%d-%m-%Y}. '
+                         'Elimina ese cierre para modificar movimientos anteriores.')
+
+
 def _datos_movimiento_caja(data, actual=None):
     def campo(k, defecto=None):
         return data[k] if k in data else (getattr(actual, k) if actual else defecto)
@@ -499,6 +510,7 @@ def _datos_movimiento_caja(data, actual=None):
     fecha = parse_fecha(campo('fecha'))
     if not fecha:
         raise ValueError('Fecha inválida')
+    _validar_abierta(fecha, actual.fecha if actual else None)
     tipo = campo('tipo')
     if tipo not in dict(MovimientoCaja.TIPOS):
         raise ValueError('Tipo inválido (entrada o salida)')
@@ -534,6 +546,12 @@ class LibroCajaView(APIView):
             return _error('Receptor inválido')
         libro = _libro_json(construir_libro(desde, hasta, receptor))
         libro['categorias'] = [{'value': v, 'label': l} for v, l in CATEGORIAS_CAJA]
+        cierre = _ultimo_cierre()
+        libro['cierre'] = _cierre_json(cierre) if cierre else None
+        for m in libro['movimientos']:
+            m['cerrado'] = bool(cierre) and m['fecha'] <= cierre.fecha.isoformat()
+            if m['cerrado']:
+                m['editable'] = False
         return Response(libro)
 
 
@@ -569,8 +587,14 @@ class MovimientoCajaDetailView(APIView):
         return Response(_movimiento_caja_json(m))
 
     def delete(self, request, pk):
-        ComentarioCaja.objects.filter(clave=f'manual-{pk}').delete()
-        MovimientoCaja.objects.filter(pk=pk).delete()
+        m = MovimientoCaja.objects.filter(pk=pk).first()
+        if m:
+            try:
+                _validar_abierta(m.fecha)
+            except ValueError as e:
+                return _error(str(e))
+            ComentarioCaja.objects.filter(clave=f'manual-{pk}').delete()
+            m.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -597,4 +621,76 @@ class ComentarioCajaDetailView(APIView):
 
     def delete(self, request, pk):
         ComentarioCaja.objects.filter(pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _cierre_json(c, con_estado=False):
+    datos = {
+        'id': c.id, 'fecha': c.fecha.isoformat(), 'receptor': c.receptor,
+        'saldo_sistema': _num(c.saldo_sistema), 'saldo_real': _num(c.saldo_real),
+        'diferencia': _num(c.saldo_real - c.saldo_sistema), 'saldo_cerrado': _num(c.saldo_cerrado),
+        'ajustado': c.ajuste_id is not None, 'comentario': c.comentario,
+        'usuario': c.usuario.get_username() if c.usuario else '', 'creado': c.creado.isoformat(),
+    }
+    if con_estado:
+        # Cobros y pagos de facturas no se bloquean (vienen de otras pantallas):
+        # si alguien cambió algo de antes del cierre, el saldo de hoy ya no calza.
+        hoy = construir_libro(hasta=c.fecha, receptor=c.receptor)['saldo_final']
+        datos['saldo_hoy'] = _num(hoy)
+        datos['alterado'] = hoy != c.saldo_cerrado
+    return datos
+
+
+class CierreCajaListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        cierres = CierreCaja.objects.select_related('usuario')[:24]
+        return Response([_cierre_json(c, con_estado=True) for c in cierres])
+
+    def post(self, request):
+        fecha = parse_fecha(request.data.get('fecha'))
+        if not fecha:
+            return _error('Fecha inválida')
+        ultimo = _ultimo_cierre()
+        if ultimo and fecha <= ultimo.fecha:
+            return _error(f'Ya hay un cierre al {ultimo.fecha:%d-%m-%Y}: la nueva fecha debe ser posterior')
+        receptor = request.data.get('receptor', 'todos')
+        if receptor not in ('todos', 'empresa'):
+            return _error('Receptor inválido')
+        try:
+            saldo_real = _decimal(request.data.get('saldo_real'), 'El saldo real')
+        except ValueError as e:
+            return _error(str(e))
+        ajustar = str(request.data.get('ajustar', '')).lower() in ('1', 'true', 'si', 'sí')
+
+        with transaction.atomic():
+            sistema = construir_libro(hasta=fecha, receptor=receptor)['saldo_final']
+            diferencia = saldo_real - sistema
+            ajuste = None
+            if ajustar and diferencia:
+                ajuste = MovimientoCaja.objects.create(
+                    fecha=fecha, tipo='entrada' if diferencia > 0 else 'salida', monto=abs(diferencia),
+                    descripcion='Ajuste por cierre de caja', categoria='ajuste', usuario=request.user)
+            cierre = CierreCaja.objects.create(
+                fecha=fecha, receptor=receptor, saldo_sistema=sistema, saldo_real=saldo_real,
+                saldo_cerrado=saldo_real if ajuste or not diferencia else sistema, ajuste=ajuste,
+                comentario=str(request.data.get('comentario', '') or ''), usuario=request.user)
+        return Response(_cierre_json(cierre, con_estado=True), status=status.HTTP_201_CREATED)
+
+
+class CierreCajaDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        cierre = CierreCaja.objects.filter(pk=pk).first()
+        if not cierre:
+            return _error('Cierre no encontrado', status.HTTP_404_NOT_FOUND)
+        if cierre != _ultimo_cierre():
+            return _error('Solo se puede eliminar el último cierre')
+        with transaction.atomic():
+            if cierre.ajuste_id:
+                ComentarioCaja.objects.filter(clave=f'manual-{cierre.ajuste_id}').delete()
+                cierre.ajuste.delete()
+            cierre.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

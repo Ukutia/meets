@@ -162,3 +162,60 @@ class ComentariosCajaTests(LibroCajaBase):
         self.assertEqual(ComentarioCaja.objects.count(), 1)
         self.client.delete(reverse('movimiento_caja', args=[mid]))
         self.assertEqual(ComentarioCaja.objects.count(), 0)
+
+
+class CierreCajaTests(LibroCajaBase):
+    def cerrar(self, fecha, saldo_real, **extra):
+        return self.client.post(reverse('cierres_caja'), {'fecha': fecha, 'saldo_real': saldo_real, **extra}, format='json')
+
+    def test_cierre_sin_ajuste_registra_diferencia(self):
+        self.manual('entrada', 100000, '2026-10-01')
+        r = self.cerrar('2026-10-31', 98000)
+        self.assertEqual(r.status_code, 201, r.content)
+        c = r.json()
+        self.assertEqual((c['saldo_sistema'], c['saldo_real'], c['diferencia']), (100000, 98000, -2000))
+        self.assertEqual((c['saldo_cerrado'], c['ajustado'], c['alterado']), (100000, False, False))
+        self.assertEqual(self.libro()['saldo_final'], 100000)
+
+    def test_cierre_con_ajuste_cuadra_el_libro(self):
+        self.manual('entrada', 100000, '2026-10-01')
+        c = self.cerrar('2026-10-31', 98000, ajustar=True).json()
+        self.assertTrue(c['ajustado'])
+        libro = self.libro()
+        self.assertEqual(libro['saldo_final'], 98000)
+        ajuste = libro['movimientos'][-1]
+        self.assertEqual((ajuste['categoria'], ajuste['salida'], ajuste['cerrado']), ('ajuste', 2000, True))
+        self.assertEqual(libro['cierre']['fecha'], '2026-10-31')
+
+    def test_bloquea_movimientos_manuales_hasta_la_fecha(self):
+        pk = self.manual('entrada', 1000, '2026-10-01').json()['id']
+        self.cerrar('2026-10-31', 1000)
+        self.assertEqual(self.manual('entrada', 5, '2026-10-15').status_code, 400)
+        url = reverse('movimiento_caja', args=[pk])
+        self.assertEqual(self.client.put(url, {'monto': 2}, format='json').status_code, 400)
+        self.assertEqual(self.client.delete(url).status_code, 400)
+        self.assertEqual(self.manual('entrada', 5, '2026-11-01').status_code, 201)
+        self.assertFalse(self.libro()['movimientos'][0]['editable'])
+
+    def test_detecta_cambios_posteriores_en_cobros(self):
+        self.manual('entrada', 1000, '2026-10-01')
+        self.cerrar('2026-10-31', 1000)
+        self.cobro(500, date(2026, 10, 20))
+        [c] = self.client.get(reverse('cierres_caja')).json()
+        self.assertTrue(c['alterado'])
+        self.assertEqual(c['saldo_hoy'], 1500)
+
+    def test_fecha_posterior_y_borrar_solo_el_ultimo(self):
+        primero = self.cerrar('2026-10-31', 0).json()
+        self.assertEqual(self.cerrar('2026-10-15', 0).status_code, 400)
+        segundo = self.cerrar('2026-11-30', 10, ajustar=True).json()
+        self.assertEqual(self.client.delete(reverse('cierre_caja', args=[primero['id']])).status_code, 400)
+        self.assertEqual(self.client.delete(reverse('cierre_caja', args=[segundo['id']])).status_code, 204)
+        # Al borrar el cierre se va también su ajuste.
+        self.assertFalse(MovimientoCaja.objects.filter(categoria='ajuste').exists())
+        self.assertEqual(self.client.delete(reverse('cierre_caja', args=[primero['id']])).status_code, 204)
+
+    def test_validaciones(self):
+        self.assertEqual(self.cerrar('x', 0).status_code, 400)
+        self.assertEqual(self.cerrar('2026-10-31', 'abc').status_code, 400)
+        self.assertEqual(self.cerrar('2026-10-31', 0, receptor='zz').status_code, 400)

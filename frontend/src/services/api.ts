@@ -346,6 +346,9 @@ export const deleteMovimientoCaja = (id: number) => api.delete(`/tesoreria/libro
 export const createComentarioCaja = (clave: string, texto: string) =>
   api.post('/tesoreria/libro-caja/comentarios/', { clave, texto });
 export const deleteComentarioCaja = (id: number) => api.delete(`/tesoreria/libro-caja/comentarios/${id}/`);
+export const getCierresCaja = () => api.get('/tesoreria/libro-caja/cierres/');
+export const createCierreCaja = (data: Record<string, unknown>) => api.post('/tesoreria/libro-caja/cierres/', data);
+export const deleteCierreCaja = (id: number) => api.delete(`/tesoreria/libro-caja/cierres/${id}/`);
 export const getContabilidad = (params?: { desde?: string; hasta?: string }) => api.get('/tesoreria/contabilidad/', { params });
 export interface ConfiguracionContable {
   tasa_impuesto_renta: string; tasa_ppm: string; tasa_iva: string; tasa_anticipo_carne: string;

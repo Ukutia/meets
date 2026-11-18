@@ -709,6 +709,7 @@ CATEGORIAS_CAJA = [
     ("gasto", "Gasto"),
     ("traspaso", "Traspaso"),
     ("impuesto", "Impuestos"),
+    ("ajuste", "Ajuste de cierre"),
     ("otro", "Otro"),
 ]
 
@@ -742,6 +743,25 @@ class ComentarioCaja(models.Model):
 
     class Meta:
         ordering = ['creado', 'id']
+
+
+class CierreCaja(models.Model):
+    """Arqueo del libro de caja a una fecha: lo que dice el sistema contra el
+    saldo real (banco o efectivo contado). Bloquea los movimientos manuales
+    hasta esa fecha; la diferencia se puede registrar como ajuste."""
+    fecha = models.DateField(unique=True)
+    receptor = models.CharField(max_length=10, default='todos')  # todos | empresa
+    saldo_sistema = models.DecimalField(max_digits=14, decimal_places=2)
+    saldo_real = models.DecimalField(max_digits=14, decimal_places=2)
+    # Saldo del libro al cerrar: el real si se ajustó la diferencia, si no el del sistema.
+    saldo_cerrado = models.DecimalField(max_digits=14, decimal_places=2)
+    ajuste = models.OneToOneField('MovimientoCaja', on_delete=models.SET_NULL, null=True, blank=True, related_name='cierre')
+    comentario = models.TextField(blank=True, default='')
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha']
 
 
 class ConfiguracionContable(models.Model):
